@@ -108,7 +108,6 @@ const Player = {
             }
             url = track.contentUrl.startsWith('http')
                 ? track.contentUrl : `${ABS.serverUrl}${track.contentUrl}?token=${ABS.token}`;
-            url = ABS._proxyUrl(url);
         } else if (this.tracks.length) {
             let elapsed = 0;
             for (let i = 0; i < this.tracks.length; i++) {
@@ -277,9 +276,8 @@ const Player = {
             this.currentTrackIndex++;
             if (this.session?.audioTracks) {
                 const t = this.session.audioTracks[this.currentTrackIndex];
-                let url = t.contentUrl.startsWith('http')
+                this.audio.src = t.contentUrl.startsWith('http')
                     ? t.contentUrl : `${ABS.serverUrl}${t.contentUrl}?token=${ABS.token}`;
-                this.audio.src = ABS._proxyUrl(url);
             } else {
                 this.audio.src = ABS.trackUrl(this.item.id, this.tracks[this.currentTrackIndex].ino);
             }

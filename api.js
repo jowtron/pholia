@@ -104,14 +104,14 @@ const ABS = {
         return this.request(`/api/items/${itemId}?expanded=1`);
     },
 
-    // Cover art URL
+    // Cover art URL (direct — img tags don't need CORS proxy)
     coverUrl(itemId) {
-        return this._proxyUrl(`${this.serverUrl}/api/items/${itemId}/cover?token=${this.token}`);
+        return `${this.serverUrl}/api/items/${itemId}/cover?token=${this.token}`;
     },
 
-    // Audio track URL
+    // Audio track URL (direct — audio tags don't need CORS proxy)
     trackUrl(itemId, ino) {
-        return this._proxyUrl(`${this.serverUrl}/api/items/${itemId}/file/${ino}?token=${this.token}`);
+        return `${this.serverUrl}/api/items/${itemId}/file/${ino}?token=${this.token}`;
     },
 
     // Start playback session
