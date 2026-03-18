@@ -179,9 +179,11 @@ const App = {
                     // Network error or server down — keep credentials, show main UI
                     this._offlineMode = true;
                     this.showMain();
+                    const serverLink = ABS.serverUrl || localStorage.getItem('cadence_server') || '';
                     this.setContent(
                         '<div class="loading">' +
                         'Could not reach server. Your session is saved.' +
+                        (serverLink ? `<br><a href="${serverLink}" target="_blank" style="color:var(--accent);font-size:0.85rem">Open server to wake connection</a>` : '') +
                         '<br><button id="retry-connect" class="text-btn" style="margin-top:1rem;font-size:1rem">Retry</button>' +
                         '</div>'
                     );
@@ -233,7 +235,7 @@ const App = {
             this.showMain();
             this.switchTab('home');
         } catch (e) {
-            errorEl.textContent = e.message;
+            errorEl.innerHTML = e.message;
         }
     },
 

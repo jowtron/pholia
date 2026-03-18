@@ -52,9 +52,9 @@ const ABS = {
                 body: JSON.stringify({ username, password }),
             });
         } catch (e) {
+            const cleanUrl = serverUrl.replace(/\/+$/, '');
             throw new Error(
-                'Could not reach server. This may be a CORS issue. ' +
-                'Ensure ALLOW_CORS=1 is set on your Audiobookshelf server. (' + e.message + ')'
+                `Could not connect to server. <a href="${cleanUrl}" target="_blank" style="color:var(--accent)">Tap here to open your server</a> first, then try again.`
             );
         }
         if (!res.ok) {
