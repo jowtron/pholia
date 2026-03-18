@@ -305,15 +305,19 @@ const App = {
     },
 
     // ── Series ──
+    _seriesCache: {},
+
     async showSeries() {
         document.getElementById('header-title').textContent = 'Series';
         this.showLoading();
         try {
             const data = await ABS.request(`/api/libraries/${this.currentLibraryId}/series?limit=200&sort=name`);
             const series = data.results || [];
+            this._seriesCache = {};
             let html = '<div class="list-view">';
             for (const s of series) {
                 const books = s.books || [];
+                this._seriesCache[s.id] = books;
                 const count = books.length || s.numBooks || 0;
                 const bookIds = books.slice(0, 4).map(b => (b.libraryItemId || b.id));
                 html += `<div class="list-item" data-series-id="${s.id}" data-series-name="${esc(s.name)}">`;
@@ -331,25 +335,10 @@ const App = {
         }
     },
 
-    async showSeriesDetail(seriesId, seriesName) {
+    showSeriesDetail(seriesId, seriesName) {
         this.pushNav(seriesName);
-        this.showLoading();
-        try {
-            // Get all items in this library filtered by series
-            const encoded = btoa(unescape(encodeURIComponent(seriesName)));
-            const data = await ABS.request(`/api/libraries/${this.currentLibraryId}/items?filter=series.${encodeURIComponent(encoded)}&sort=media.metadata.title&limit=100`);
-            const books = data.results || [];
-            if (books.length) {
-                this.renderGrid(books);
-            } else {
-                // Fallback: try series detail endpoint
-                const data2 = await ABS.request(`/api/libraries/${this.currentLibraryId}/series/${seriesId}`);
-                const raw = data2.books || data2.libraryItems || data2.results || [];
-                this.renderGrid(raw.map(b => b.libraryItem || b));
-            }
-        } catch (e) {
-            this.setContent(`<div class="loading">Error: ${esc(e.message)}</div>`);
-        }
+        const books = this._seriesCache[seriesId] || [];
+        this.renderGrid(books);
     },
 
     // ── Collections ──
