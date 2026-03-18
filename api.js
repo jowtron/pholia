@@ -19,7 +19,6 @@ const ABS = {
         const url = `${this.serverUrl}${path}`;
         const res = await fetch(url, {
             headers: this.headers(),
-            mode: 'cors',
             credentials: 'omit',
             ...options,
         });
@@ -36,7 +35,6 @@ const ABS = {
         try {
             res = await fetch(url, {
                 method: 'POST',
-                mode: 'cors',
                 credentials: 'omit',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ username, password }),
