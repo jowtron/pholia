@@ -1,5 +1,6 @@
 const App = {
     currentLibraryId: null,
+    currentMediaType: 'book',
     libraries: [],
     currentTab: 'home',
     navStack: [],
@@ -40,7 +41,8 @@ const App = {
         document.getElementById('library-select').addEventListener('change', e => {
             this.currentLibraryId = e.target.value;
             localStorage.setItem('cadence_library', this.currentLibraryId);
-            this.switchTab(this.currentTab);
+            this.updateMediaType();
+            this.switchTab('home');
         });
 
         // Mini player
@@ -220,6 +222,18 @@ const App = {
         } else if (this.libraries.length) {
             this.currentLibraryId = this.libraries[0].id;
         }
+        this.updateMediaType();
+    },
+
+    updateMediaType() {
+        const lib = this.libraries.find(l => l.id === this.currentLibraryId);
+        this.currentMediaType = lib?.mediaType || 'book';
+        const isPodcast = this.currentMediaType === 'podcast';
+        // Show/hide tabs based on media type
+        document.querySelectorAll('[data-tab="series"], [data-tab="collections"], [data-tab="authors"]').forEach(el => {
+            el.style.display = isPodcast ? 'none' : '';
+        });
+        document.querySelector('[data-tab="latest"]').style.display = isPodcast ? '' : 'none';
     },
 
     // ── Navigation ──
@@ -232,6 +246,7 @@ const App = {
         switch (tab) {
             case 'home': this.showHome(); break;
             case 'library': this.showLibrary(); break;
+            case 'latest': this.showLatest(); break;
             case 'series': this.showSeries(); break;
             case 'collections': this.showCollections(); break;
             case 'authors': this.showAuthors(); break;
@@ -268,15 +283,18 @@ const App = {
                 html += `<div class="section-title">${esc(section.label)}</div>`;
                 html += '<div class="h-scroll">';
                 for (const entity of section.entities) {
+                    const isEpisode = section.type === 'episode';
                     const itemId = entity.id || entity.libraryItemId;
+                    const ep = entity.recentEpisode;
                     const meta = entity.media?.metadata || entity.metadata || {};
-                    const title = meta.title || entity.title || 'Unknown';
-                    const author = meta.authorName || '';
+                    const title = isEpisode && ep ? ep.title : (meta.title || entity.title || 'Unknown');
+                    const subtitle = isEpisode ? (meta.title || '') : (meta.authorName || '');
                     const progress = entity.mediaProgress?.progress || entity.progress?.progress || 0;
-                    html += `<div class="card" data-id="${itemId}" data-type="${section.type}">`;
+                    const episodeId = isEpisode && ep ? ep.id : '';
+                    html += `<div class="card" data-id="${itemId}" data-type="${section.type}"${episodeId ? ` data-episode-id="${episodeId}"` : ''}>`;
                     html += `<img src="${ABS.coverUrl(itemId)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
                     html += `<div class="card-title">${esc(title)}</div>`;
-                    html += `<div class="card-sub">${esc(author)}</div>`;
+                    html += `<div class="card-sub">${esc(subtitle)}</div>`;
                     if (progress > 0) {
                         html += `<div class="card-progress"><div class="card-progress-fill" style="width:${progress*100}%"></div></div>`;
                     }
@@ -301,6 +319,78 @@ const App = {
             this.renderGrid(data.results);
         } catch (e) {
             this.setContent(`<div class="loading">Error: ${esc(e.message)}</div>`);
+        }
+    },
+
+    // ── Latest (podcasts) ──
+    async showLatest() {
+        document.getElementById('header-title').textContent = 'Latest';
+        this.showLoading();
+        try {
+            const data = await ABS.request(`/api/libraries/${this.currentLibraryId}/recent-episodes?limit=50`);
+            const episodes = data.episodes || [];
+            if (!episodes.length) { this.setContent('<div class="loading">No recent episodes</div>'); return; }
+            let html = '<ul class="tracklist">';
+            for (const ep of episodes) {
+                const title = ep.title || 'Unknown Episode';
+                const podcastTitle = ep.podcast?.metadata?.title || '';
+                const dur = ep.duration || 0;
+                const pubDate = ep.publishedAt ? new Date(ep.publishedAt).toLocaleDateString() : '';
+                html += `<li class="tracklist-item" data-item-id="${ep.libraryItemId}" data-episode-id="${ep.id}">`;
+                html += `<div class="tracklist-progress" style="width:0%"></div>`;
+                html += `<button class="tracklist-play">`;
+                html += `<img class="ep-cover" src="${ABS.coverUrl(ep.libraryItemId)}" alt="" onerror="this.style.visibility='hidden'">`;
+                html += `<span class="tracklist-title"><strong>${esc(title)}</strong><br><span class="text-muted">${esc(podcastTitle)} &bull; ${pubDate}</span></span>`;
+                html += `<span class="tracklist-duration">${formatTime(dur)}</span>`;
+                html += '</button></li>';
+            }
+            html += '</ul>';
+            this.setContent(html);
+            document.querySelectorAll('.tracklist-item[data-episode-id]').forEach(el => {
+                el.addEventListener('click', () => this.playEpisode(el.dataset.itemId, el.dataset.episodeId));
+            });
+        } catch (e) {
+            this.setContent(`<div class="loading">Error: ${esc(e.message)}</div>`);
+        }
+    },
+
+    async playEpisode(itemId, episodeId) {
+        try {
+            const item = await ABS.getItem(itemId);
+            const episode = item.media?.episodes?.find(e => e.id === episodeId);
+            if (!episode) { console.warn('Episode not found'); return; }
+            // Build a pseudo-item for the player with episode data
+            const pseudoItem = {
+                id: itemId,
+                episodeId: episodeId,
+                media: {
+                    metadata: {
+                        title: episode.title,
+                        authorName: item.media?.metadata?.title || '',
+                    },
+                    duration: episode.duration,
+                    chapters: episode.chapters || [],
+                    audioFiles: [],
+                },
+            };
+            if (Player.session) await Player.closeCurrentSession();
+            Player.item = pseudoItem;
+            Player.chapters = episode.chapters || [];
+            Player.tracks = [];
+            try {
+                Player.session = await ABS.startSession(itemId, episodeId);
+            } catch (e) {
+                console.warn('Could not start session', e);
+                Player.session = null;
+            }
+            const startTime = Player.session?.currentTime || 0;
+            Player.loadTime(startTime);
+            Player.startSync();
+            Player.updateMediaSession();
+            Player.updateUI();
+            document.getElementById('player-bar').classList.remove('hidden');
+        } catch (e) {
+            console.error('Play episode failed', e);
         }
     },
 
@@ -531,7 +621,15 @@ const App = {
 
     bindCardClicks() {
         document.querySelectorAll('.grid-item[data-id], .card[data-id]').forEach(el => {
-            el.addEventListener('click', () => this.showItem(el.dataset.id));
+            el.addEventListener('click', () => {
+                if (el.dataset.episodeId) {
+                    this.playEpisode(el.dataset.id, el.dataset.episodeId);
+                } else if (el.dataset.type === 'episode') {
+                    this.showItem(el.dataset.id);
+                } else {
+                    this.showItem(el.dataset.id);
+                }
+            });
         });
     },
 
@@ -541,69 +639,116 @@ const App = {
         this.showLoading();
         try {
             const item = await ABS.getItem(itemId);
-            const meta = item.media?.metadata || {};
-            const chapters = item.media?.chapters || [];
-            const duration = item.media?.duration || 0;
-            const progress = await ABS.getProgress(itemId);
-            const currentTime = progress?.currentTime || 0;
-
-            this.navStack[this.navStack.length - 1] = meta.title || 'Unknown';
-            document.getElementById('header-title').textContent = meta.title || 'Unknown';
-
-            let html = '<div class="detail-view">';
-            html += '<div class="detail-header">';
-            html += `<img class="detail-cover" src="${ABS.coverUrl(itemId)}" alt="" onerror="this.style.visibility='hidden'">`;
-            html += '<div class="detail-meta">';
-            html += `<h3>${esc(meta.title || 'Unknown')}</h3>`;
-            if (meta.authorName) html += `<div class="author">${esc(meta.authorName)}</div>`;
-            if (meta.narratorName) html += `<div class="narrator">Narrated by ${esc(meta.narratorName)}</div>`;
-            html += `<div class="duration">${formatTime(duration)}`;
-            if (progress) html += ` &bull; ${Math.round(progress.progress * 100)}% complete`;
-            html += '</div>';
-            if (meta.description) html += `<div class="description">${esc(meta.description)}</div>`;
-            html += '</div></div>';
-
-            const btnText = currentTime > 0 ? `Resume from ${formatTime(currentTime)}` : 'Play';
-            html += `<button class="play-btn-large" id="detail-play">${btnText}</button>`;
-
-            if (chapters.length) {
-                html += '<div class="section-title">Chapters</div><ul class="tracklist">';
-                for (let i = 0; i < chapters.length; i++) {
-                    const ch = chapters[i];
-                    const chDur = ch.end - ch.start;
-                    const isActive = currentTime >= ch.start && (i === chapters.length - 1 || currentTime < chapters[i+1]?.start);
-                    let chProgress = 0;
-                    if (isActive && chDur > 0) chProgress = ((currentTime - ch.start) / chDur) * 100;
-                    else if (currentTime > ch.end) chProgress = 100;
-                    html += `<li class="tracklist-item ${isActive ? 'is-active' : ''}" data-index="${i}">`;
-                    html += `<div class="tracklist-progress" style="width:${chProgress}%"></div>`;
-                    html += `<button class="tracklist-play">`;
-                    html += `<span class="tracklist-num">${i + 1}</span>`;
-                    html += `<span class="tracklist-title">${esc(ch.title)}</span>`;
-                    html += `<span class="tracklist-duration">${formatTime(chDur)}</span>`;
-                    html += '</button></li>';
-                }
-                html += '</ul>';
+            const isPodcast = item.mediaType === 'podcast';
+            if (isPodcast) {
+                this.showPodcastDetail(item);
+            } else {
+                this.showBookDetail(item);
             }
-            html += '</div>';
-            this.setContent(html);
-
-            document.getElementById('detail-play').addEventListener('click', () => {
-                Player.startItem(item, currentTime > 0 ? currentTime : null);
-                // Scroll to active chapter
-                setTimeout(() => {
-                    const active = document.querySelector('.tracklist-item.is-active');
-                    if (active) active.scrollIntoView({ block: 'center', behavior: 'smooth' });
-                }, 100);
-            });
-            document.querySelectorAll('.tracklist-item').forEach(el => {
-                el.querySelector('.tracklist-play').addEventListener('click', () => {
-                    Player.startItem(item, chapters[parseInt(el.dataset.index)].start);
-                });
-            });
         } catch (e) {
             this.setContent(`<div class="loading">Error: ${esc(e.message)}</div>`);
         }
+    },
+
+    async showBookDetail(item) {
+        const meta = item.media?.metadata || {};
+        const chapters = item.media?.chapters || [];
+        const duration = item.media?.duration || 0;
+        const progress = await ABS.getProgress(item.id);
+        const currentTime = progress?.currentTime || 0;
+
+        this.navStack[this.navStack.length - 1] = meta.title || 'Unknown';
+        document.getElementById('header-title').textContent = meta.title || 'Unknown';
+
+        let html = '<div class="detail-view">';
+        html += '<div class="detail-header">';
+        html += `<img class="detail-cover" src="${ABS.coverUrl(item.id)}" alt="" onerror="this.style.visibility='hidden'">`;
+        html += '<div class="detail-meta">';
+        html += `<h3>${esc(meta.title || 'Unknown')}</h3>`;
+        if (meta.authorName) html += `<div class="author">${esc(meta.authorName)}</div>`;
+        if (meta.narratorName) html += `<div class="narrator">Narrated by ${esc(meta.narratorName)}</div>`;
+        html += `<div class="duration">${formatTime(duration)}`;
+        if (progress) html += ` &bull; ${Math.round(progress.progress * 100)}% complete`;
+        html += '</div>';
+        if (meta.description) html += `<div class="description">${esc(meta.description)}</div>`;
+        html += '</div></div>';
+
+        const btnText = currentTime > 0 ? `Resume from ${formatTime(currentTime)}` : 'Play';
+        html += `<button class="play-btn-large" id="detail-play">${btnText}</button>`;
+
+        if (chapters.length) {
+            html += '<div class="section-title">Chapters</div><ul class="tracklist">';
+            for (let i = 0; i < chapters.length; i++) {
+                const ch = chapters[i];
+                const chDur = ch.end - ch.start;
+                const isActive = currentTime >= ch.start && (i === chapters.length - 1 || currentTime < chapters[i+1]?.start);
+                let chProgress = 0;
+                if (isActive && chDur > 0) chProgress = ((currentTime - ch.start) / chDur) * 100;
+                else if (currentTime > ch.end) chProgress = 100;
+                html += `<li class="tracklist-item ${isActive ? 'is-active' : ''}" data-index="${i}">`;
+                html += `<div class="tracklist-progress" style="width:${chProgress}%"></div>`;
+                html += `<button class="tracklist-play">`;
+                html += `<span class="tracklist-num">${i + 1}</span>`;
+                html += `<span class="tracklist-title">${esc(ch.title)}</span>`;
+                html += `<span class="tracklist-duration">${formatTime(chDur)}</span>`;
+                html += '</button></li>';
+            }
+            html += '</ul>';
+        }
+        html += '</div>';
+        this.setContent(html);
+
+        document.getElementById('detail-play').addEventListener('click', () => {
+            Player.startItem(item, currentTime > 0 ? currentTime : null);
+            setTimeout(() => {
+                const active = document.querySelector('.tracklist-item.is-active');
+                if (active) active.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            }, 100);
+        });
+        document.querySelectorAll('.tracklist-item').forEach(el => {
+            el.querySelector('.tracklist-play').addEventListener('click', () => {
+                Player.startItem(item, chapters[parseInt(el.dataset.index)].start);
+            });
+        });
+    },
+
+    showPodcastDetail(item) {
+        const meta = item.media?.metadata || {};
+        const episodes = (item.media?.episodes || []).sort((a, b) => (b.publishedAt || 0) - (a.publishedAt || 0));
+
+        this.navStack[this.navStack.length - 1] = meta.title || 'Unknown';
+        document.getElementById('header-title').textContent = meta.title || 'Unknown';
+
+        let html = '<div class="detail-view">';
+        html += '<div class="detail-header">';
+        html += `<img class="detail-cover" src="${ABS.coverUrl(item.id)}" alt="" onerror="this.style.visibility='hidden'">`;
+        html += '<div class="detail-meta">';
+        html += `<h3>${esc(meta.title || 'Unknown')}</h3>`;
+        if (meta.author) html += `<div class="author">${esc(meta.author)}</div>`;
+        html += `<div class="duration">${episodes.length} episode${episodes.length !== 1 ? 's' : ''}</div>`;
+        if (meta.description) html += `<div class="description">${esc(meta.description)}</div>`;
+        html += '</div></div>';
+
+        if (episodes.length) {
+            html += '<div class="section-title">Episodes</div><ul class="tracklist">';
+            for (const ep of episodes) {
+                const dur = ep.duration || 0;
+                const pubDate = ep.publishedAt ? new Date(ep.publishedAt).toLocaleDateString() : '';
+                html += `<li class="tracklist-item" data-item-id="${item.id}" data-episode-id="${ep.id}">`;
+                html += `<div class="tracklist-progress" style="width:0%"></div>`;
+                html += `<button class="tracklist-play">`;
+                html += `<span class="tracklist-title">${esc(ep.title || 'Unknown')}<br><span class="text-muted">${pubDate}</span></span>`;
+                html += `<span class="tracklist-duration">${formatTime(dur)}</span>`;
+                html += '</button></li>';
+            }
+            html += '</ul>';
+        }
+        html += '</div>';
+        this.setContent(html);
+
+        document.querySelectorAll('.tracklist-item[data-episode-id]').forEach(el => {
+            el.addEventListener('click', () => this.playEpisode(el.dataset.itemId, el.dataset.episodeId));
+        });
     },
 
     // ── Settings ──
