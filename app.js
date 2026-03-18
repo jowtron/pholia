@@ -336,7 +336,9 @@ const App = {
         this.showLoading();
         try {
             const data = await ABS.request(`/api/libraries/${this.currentLibraryId}/series/${seriesId}`);
-            const books = data.books || data.libraryItems || [];
+            const raw = data.books || data.libraryItems || [];
+            // Normalize — API may wrap items as { libraryItemId, libraryItem: {...} }
+            const books = raw.map(b => b.libraryItem || b);
             this.renderGrid(books);
         } catch (e) {
             this.setContent(`<div class="loading">Error: ${esc(e.message)}</div>`);
