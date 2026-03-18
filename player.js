@@ -95,7 +95,7 @@ const Player = {
     },
 
     loadTime(globalTime) {
-        let url, offset = 0, srcChanged = false;
+        let url, offset = 0;
         if (this.session && this.session.audioTracks?.length) {
             const tracks = this.session.audioTracks;
             let track = tracks[0];
@@ -121,15 +121,12 @@ const Player = {
             }
         }
         if (!url) return;
-        srcChanged = this.audio.src !== url;
-        if (srcChanged) this.audio.src = url;
+        if (this.audio.src !== url) this.audio.src = url;
         this.audio.currentTime = offset;
-        if (srcChanged) {
-            // Wait for audio to buffer before playing (fixes first-click failures on slow connections)
+        // Play immediately; if it fails (slow connection), retry when audio is ready
+        this.audio.play().catch(() => {
             this.audio.addEventListener('canplay', () => this.audio.play().catch(() => {}), { once: true });
-        } else {
-            this.audio.play().catch(() => {});
-        }
+        });
     },
 
     getGlobalTime() {
@@ -287,7 +284,9 @@ const Player = {
                 this.audio.src = ABS.trackUrl(this.item.id, this.tracks[this.currentTrackIndex].ino);
             }
             this.audio.currentTime = 0;
-            this.audio.addEventListener('canplay', () => this.audio.play().catch(() => {}), { once: true });
+            this.audio.play().catch(() => {
+                this.audio.addEventListener('canplay', () => this.audio.play().catch(() => {}), { once: true });
+            });
         } else {
             this.syncProgress(true);
         }
