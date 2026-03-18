@@ -1,4 +1,4 @@
-const CACHE_NAME = 'cadence-v1';
+const CACHE_NAME = 'cadence-v2';
 const APP_SHELL = [
     './',
     './index.html',
@@ -33,27 +33,21 @@ self.addEventListener('activate', e => {
     self.clients.claim();
 });
 
-// Fetch: network-first for API calls, cache-first for app shell
+// Fetch: network-first for app files, passthrough for API/external
 self.addEventListener('fetch', e => {
     const url = new URL(e.request.url);
 
-    // API requests: always go to network, never cache
-    if (url.pathname.startsWith('/api/') || url.search.includes('token=')) {
-        return;
-    }
+    // Only handle same-origin requests
+    if (url.origin !== self.location.origin) return;
 
-    // App shell: try cache first, then network (stale-while-revalidate)
+    // Network-first: try network, fall back to cache (offline support)
     e.respondWith(
-        caches.match(e.request).then(cached => {
-            const networkFetch = fetch(e.request).then(res => {
-                if (res.ok) {
-                    const clone = res.clone();
-                    caches.open(CACHE_NAME).then(cache => cache.put(e.request, clone));
-                }
-                return res;
-            }).catch(() => cached);
-
-            return cached || networkFetch;
-        })
+        fetch(e.request).then(res => {
+            if (res.ok) {
+                const clone = res.clone();
+                caches.open(CACHE_NAME).then(cache => cache.put(e.request, clone));
+            }
+            return res;
+        }).catch(() => caches.match(e.request))
     );
 });
