@@ -130,6 +130,18 @@ const App = {
             if (!el.classList.contains('hidden')) this.renderFsChapters();
         });
 
+        // Auto-reconnect when app resumes from background or regains network
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible' && this._offlineMode && ABS.token) {
+                this.retryConnect();
+            }
+        });
+        window.addEventListener('online', () => {
+            if (this._offlineMode && ABS.token) {
+                this.retryConnect();
+            }
+        });
+
         // Close sleep menu when clicking elsewhere
         document.addEventListener('click', e => {
             if (!e.target.closest('.pp-sleep-btn') && !e.target.closest('.pp-sleep-menu')) {
@@ -142,6 +154,8 @@ const App = {
     },
 
     // ── Auth ──
+    _offlineMode: false,
+
     async tryAutoLogin() {
         const savedServer = localStorage.getItem('cadence_server');
         const savedUser = localStorage.getItem('cadence_username');
@@ -152,12 +166,54 @@ const App = {
         if (creds) {
             try {
                 this.libraries = await ABS.getLibraries();
+                this._offlineMode = false;
                 this.setupLibrarySelector();
                 this.showMain();
                 this.switchTab('home');
-            } catch {
+            } catch (e) {
+                if (e.status === 401 || e.status === 403) {
+                    // Token is expired or invalid — clear credentials
+                    ABS.token = '';
+                    localStorage.removeItem('cadence_token');
+                } else {
+                    // Network error or server down — keep credentials, show main UI
+                    this._offlineMode = true;
+                    this.showMain();
+                    this.setContent(
+                        '<div class="loading">' +
+                        'Could not reach server. Your session is saved.' +
+                        '<br><button id="retry-connect" class="text-btn" style="margin-top:1rem;font-size:1rem">Retry</button>' +
+                        '</div>'
+                    );
+                    document.getElementById('retry-connect')?.addEventListener('click', () => this.retryConnect());
+                }
+            }
+        }
+    },
+
+    async retryConnect() {
+        this.setContent('<div class="loading">Connecting...</div>');
+        try {
+            this.libraries = await ABS.getLibraries();
+            this._offlineMode = false;
+            this.setupLibrarySelector();
+            this.switchTab('home');
+        } catch (e) {
+            if (e.status === 401 || e.status === 403) {
+                // Token expired while offline — need to re-login
                 ABS.token = '';
                 localStorage.removeItem('cadence_token');
+                document.getElementById('main-screen').classList.remove('active');
+                document.getElementById('login-screen').classList.add('active');
+                document.getElementById('login-error').textContent = 'Session expired. Please log in again.';
+            } else {
+                this.setContent(
+                    '<div class="loading">' +
+                    'Still unable to reach server.' +
+                    '<br><button id="retry-connect" class="text-btn" style="margin-top:1rem;font-size:1rem">Retry</button>' +
+                    '</div>'
+                );
+                document.getElementById('retry-connect')?.addEventListener('click', () => this.retryConnect());
             }
         }
     },

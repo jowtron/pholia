@@ -18,13 +18,24 @@ const ABS = {
         const url = this.apiUrl(path);
         const headers = {};
         if (options.body) headers['Content-Type'] = 'application/json';
-        const res = await fetch(url, {
-            credentials: 'omit',
-            ...options,
-            headers: { ...headers, ...options.headers },
-        });
+        let res;
+        try {
+            res = await fetch(url, {
+                credentials: 'omit',
+                ...options,
+                headers: { ...headers, ...options.headers },
+            });
+        } catch (e) {
+            // Network error (offline, DNS not ready, CORS block, etc.)
+            const err = new Error(`Network error: ${e.message}`);
+            err.isNetwork = true;
+            throw err;
+        }
         if (!res.ok) {
-            throw new Error(`API error ${res.status}: ${res.statusText}`);
+            const err = new Error(`API error ${res.status}: ${res.statusText}`);
+            err.status = res.status;
+            err.isNetwork = false;
+            throw err;
         }
         return res.json();
     },

@@ -152,8 +152,8 @@ main {
 .grid {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 1rem;
 }
-.grid-item { cursor: pointer; border-radius: var(--radius); overflow: hidden; background: var(--card-bg); }
-.grid-item:hover { opacity: 0.9; }
+.grid-item { cursor: pointer; border-radius: var(--radius); overflow: hidden; background: var(--card-bg); position: relative; }
+.h-scroll .card { position: relative; }
 .grid-item img {
     width: 100%; aspect-ratio: 1; object-fit: cover; background: var(--card-bg);
 }
@@ -167,6 +167,25 @@ main {
 .grid-item .item-subtitle {
     font-size: 0.7rem; color: var(--text-muted);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* ── Play overlay on hover (pointer devices only) ── */
+@media (hover: hover) {
+    .grid-item::after, .h-scroll .card::after {
+        content: "▶"; position: absolute; top: 0; left: 0;
+        width: 100%; aspect-ratio: 1; display: flex;
+        align-items: center; justify-content: center;
+        background: rgba(0, 0, 0, 0.45); color: #fff;
+        font-size: 2rem; opacity: 0;
+        transition: opacity 0.15s ease; pointer-events: none;
+        border-radius: var(--radius) var(--radius) 0 0;
+    }
+    .h-scroll .card::after {
+        border-radius: var(--radius);
+    }
+    .grid-item:hover::after, .h-scroll .card:hover::after {
+        opacity: 1;
+    }
 }
 
 /* ── List items ── */
