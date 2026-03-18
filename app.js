@@ -313,9 +313,11 @@ const App = {
             const series = data.results || [];
             let html = '<div class="list-view">';
             for (const s of series) {
-                const count = s.books?.length || s.numBooks || 0;
+                const books = s.books || [];
+                const count = books.length || s.numBooks || 0;
+                const bookIds = books.slice(0, 4).map(b => (b.libraryItemId || b.id));
                 html += `<div class="list-item" data-series-id="${s.id}" data-series-name="${esc(s.name)}">`;
-                html += `<div class="list-placeholder">S</div>`;
+                html += this.renderSeriesMosaic(bookIds);
                 html += `<div><div class="list-name">${esc(s.name)}</div><div class="list-count">${count} book${count !== 1 ? 's' : ''}</div></div>`;
                 html += '</div>';
             }
@@ -492,6 +494,18 @@ const App = {
     },
 
     // ── Grid renderer ──
+    renderSeriesMosaic(bookIds) {
+        if (!bookIds.length) return '<div class="list-placeholder">S</div>';
+        if (bookIds.length === 1) {
+            return `<img src="${ABS.coverUrl(bookIds[0])}" alt="" onerror="this.outerHTML='<div class=\\'list-placeholder\\'>S</div>'">`;
+        }
+        const imgs = bookIds.slice(0, 4).map(id =>
+            `<img src="${ABS.coverUrl(id)}" alt="" onerror="this.style.visibility='hidden'">`
+        ).join('');
+        const cls = bookIds.length <= 2 ? 'mosaic-2' : 'mosaic-4';
+        return `<div class="series-mosaic ${cls}">${imgs}</div>`;
+    },
+
     renderGrid(items) {
         let html = '<div class="grid">';
         for (const item of items) {
@@ -578,6 +592,11 @@ const App = {
 
             document.getElementById('detail-play').addEventListener('click', () => {
                 Player.startItem(item, currentTime > 0 ? currentTime : null);
+                // Scroll to active chapter
+                setTimeout(() => {
+                    const active = document.querySelector('.tracklist-item.is-active');
+                    if (active) active.scrollIntoView({ block: 'center', behavior: 'smooth' });
+                }, 100);
             });
             document.querySelectorAll('.tracklist-item').forEach(el => {
                 el.querySelector('.tracklist-play').addEventListener('click', () => {
