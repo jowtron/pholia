@@ -22,6 +22,9 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Inject build version
+        run: sed -i "s/>dev</>$(git rev-parse --short HEAD)</" index.html
+
       - name: Deploy to Cloudflare Pages (retry with backoff)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

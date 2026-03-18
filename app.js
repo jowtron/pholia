@@ -233,7 +233,8 @@ const App = {
         document.querySelectorAll('[data-tab="series"], [data-tab="collections"], [data-tab="authors"]').forEach(el => {
             el.style.display = isPodcast ? 'none' : '';
         });
-        document.querySelector('[data-tab="latest"]').style.display = isPodcast ? '' : 'none';
+        const latestTab = document.querySelector('[data-tab="latest"]');
+        if (latestTab) latestTab.style.display = isPodcast ? '' : 'none';
     },
 
     // ── Navigation ──

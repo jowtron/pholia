@@ -1,5 +1,5 @@
 /*
-  Cache-Control: public, max-age=3600, s-maxage=60
+  Cache-Control: public, max-age=60, s-maxage=30
 
 /*.js
   Cache-Control: public, max-age=86400, s-maxage=300
