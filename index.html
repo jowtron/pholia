@@ -226,7 +226,12 @@
     <script src="player.js"></script>
     <script src="app.js"></script>
     <script>
-        if ('serviceWorker' in navigator) {
+        // ?purge in URL: nuke all caches and service workers, then reload clean
+        if (location.search.includes('purge')) {
+            caches.keys().then(k => k.forEach(n => caches.delete(n)));
+            navigator.serviceWorker?.getRegistrations().then(r => r.forEach(sw => sw.unregister()));
+            location.replace(location.pathname);
+        } else if ('serviceWorker' in navigator) {
             navigator.serviceWorker.register('./sw.js').catch(() => {});
         }
     </script>
