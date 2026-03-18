@@ -161,7 +161,8 @@ const App = {
     },
 
     async handleLogin() {
-        const serverUrl = document.getElementById('server-url').value.trim();
+        let serverUrl = document.getElementById('server-url').value.trim();
+        if (serverUrl && !/^https?:\/\//i.test(serverUrl)) serverUrl = 'https://' + serverUrl;
         const username = document.getElementById('username').value.trim();
         const password = document.getElementById('password').value;
         const errorEl = document.getElementById('login-error');
