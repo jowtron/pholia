@@ -8,19 +8,20 @@ const ABS = {
         this.token = token;
     },
 
-    headers() {
-        return {
-            'Authorization': `Bearer ${this.token}`,
-            'Content-Type': 'application/json',
-        };
+    // Build URL with token as query param (avoids CORS preflight issues)
+    apiUrl(path) {
+        const sep = path.includes('?') ? '&' : '?';
+        return `${this.serverUrl}${path}${sep}token=${this.token}`;
     },
 
     async request(path, options = {}) {
-        const url = `${this.serverUrl}${path}`;
+        const url = this.apiUrl(path);
+        const headers = {};
+        if (options.body) headers['Content-Type'] = 'application/json';
         const res = await fetch(url, {
-            headers: this.headers(),
             credentials: 'omit',
             ...options,
+            headers: { ...headers, ...options.headers },
         });
         if (!res.ok) {
             throw new Error(`API error ${res.status}: ${res.statusText}`);
