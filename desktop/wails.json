@@ -1,0 +1,14 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "Cadence",
+  "outputfilename": "Cadence",
+  "assetdir": "../",
+  "reloaddirs": "../",
+  "frontend:dir": ".",
+  "frontend:build": "./build.sh",
+  "info": {
+    "productName": "Cadence",
+    "productVersion": "1.0.0",
+    "comments": "Audiobookshelf Client"
+  }
+}

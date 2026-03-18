@@ -91,36 +91,45 @@ const Player = {
         this.updateUI();
 
         document.getElementById('player-bar').classList.remove('hidden');
+        document.getElementById('main-screen').classList.add('player-active');
     },
 
     loadTime(globalTime) {
+        let url, offset = 0, srcChanged = false;
         if (this.session && this.session.audioTracks?.length) {
             const tracks = this.session.audioTracks;
             let track = tracks[0];
-            let trackOffset = globalTime;
+            offset = globalTime;
             for (let i = 0; i < tracks.length; i++) {
                 if (globalTime >= tracks[i].startOffset && globalTime < tracks[i].startOffset + tracks[i].duration) {
-                    track = tracks[i]; trackOffset = globalTime - tracks[i].startOffset;
+                    track = tracks[i]; offset = globalTime - tracks[i].startOffset;
                     this.currentTrackIndex = i; break;
                 }
             }
-            const url = track.contentUrl.startsWith('http')
+            url = track.contentUrl.startsWith('http')
                 ? track.contentUrl : `${ABS.serverUrl}${track.contentUrl}?token=${ABS.token}`;
-            if (this.audio.src !== url) this.audio.src = url;
-            this.audio.currentTime = trackOffset;
+            url = ABS._proxyUrl(url);
         } else if (this.tracks.length) {
             let elapsed = 0;
             for (let i = 0; i < this.tracks.length; i++) {
                 if (globalTime < elapsed + this.tracks[i].duration) {
                     this.currentTrackIndex = i;
-                    const url = ABS.trackUrl(this.item.id, this.tracks[i].ino);
-                    if (this.audio.src !== url) this.audio.src = url;
-                    this.audio.currentTime = globalTime - elapsed; break;
+                    url = ABS.trackUrl(this.item.id, this.tracks[i].ino);
+                    offset = globalTime - elapsed; break;
                 }
                 elapsed += this.tracks[i].duration;
             }
         }
-        this.audio.play().catch(() => {});
+        if (!url) return;
+        srcChanged = this.audio.src !== url;
+        if (srcChanged) this.audio.src = url;
+        this.audio.currentTime = offset;
+        if (srcChanged) {
+            // Wait for audio to buffer before playing (fixes first-click failures on slow connections)
+            this.audio.addEventListener('canplay', () => this.audio.play().catch(() => {}), { once: true });
+        } else {
+            this.audio.play().catch(() => {});
+        }
     },
 
     getGlobalTime() {
@@ -271,12 +280,14 @@ const Player = {
             this.currentTrackIndex++;
             if (this.session?.audioTracks) {
                 const t = this.session.audioTracks[this.currentTrackIndex];
-                this.audio.src = t.contentUrl.startsWith('http')
+                let url = t.contentUrl.startsWith('http')
                     ? t.contentUrl : `${ABS.serverUrl}${t.contentUrl}?token=${ABS.token}`;
+                this.audio.src = ABS._proxyUrl(url);
             } else {
                 this.audio.src = ABS.trackUrl(this.item.id, this.tracks[this.currentTrackIndex].ino);
             }
-            this.audio.currentTime = 0; this.audio.play().catch(() => {});
+            this.audio.currentTime = 0;
+            this.audio.addEventListener('canplay', () => this.audio.play().catch(() => {}), { once: true });
         } else {
             this.syncProgress(true);
         }

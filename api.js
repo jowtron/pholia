@@ -3,6 +3,21 @@ const ABS = {
     serverUrl: '',
     token: '',
 
+    // Desktop mode (Wails): route API calls through local Go proxy
+    _isDesktop: !location.protocol.startsWith('http'),
+
+    // Convert a full URL to a proxy path: /proxy/{scheme}/{host}/{path}?query
+    _proxyUrl(fullUrl) {
+        if (!this._isDesktop) return fullUrl;
+        try {
+            const u = new URL(fullUrl);
+            const p = `/proxy/${u.protocol.replace(':', '')}/${u.host}${u.pathname}`;
+            return u.search ? p + u.search : p;
+        } catch {
+            return fullUrl;
+        }
+    },
+
     init(serverUrl, token) {
         this.serverUrl = serverUrl.replace(/\/+$/, '');
         this.token = token;
@@ -11,7 +26,7 @@ const ABS = {
     // Build URL with token as query param (avoids CORS preflight issues)
     apiUrl(path) {
         const sep = path.includes('?') ? '&' : '?';
-        return `${this.serverUrl}${path}${sep}token=${this.token}`;
+        return this._proxyUrl(`${this.serverUrl}${path}${sep}token=${this.token}`);
     },
 
     async request(path, options = {}) {
@@ -42,7 +57,7 @@ const ABS = {
 
     // Auth
     async login(serverUrl, username, password) {
-        const url = `${serverUrl.replace(/\/+$/, '')}/login`;
+        const url = this._proxyUrl(`${serverUrl.replace(/\/+$/, '')}/login`);
         let res;
         try {
             res = await fetch(url, {
@@ -91,12 +106,12 @@ const ABS = {
 
     // Cover art URL
     coverUrl(itemId) {
-        return `${this.serverUrl}/api/items/${itemId}/cover?token=${this.token}`;
+        return this._proxyUrl(`${this.serverUrl}/api/items/${itemId}/cover?token=${this.token}`);
     },
 
     // Audio track URL
     trackUrl(itemId, ino) {
-        return `${this.serverUrl}/api/items/${itemId}/file/${ino}?token=${this.token}`;
+        return this._proxyUrl(`${this.serverUrl}/api/items/${itemId}/file/${ino}?token=${this.token}`);
     },
 
     // Start playback session

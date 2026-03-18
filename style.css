@@ -110,7 +110,11 @@ header h2 { font-size: 1.125rem; font-weight: 600; }
 /* ── Content ── */
 main {
     flex: 1; overflow-y: auto; padding: 1rem;
+    padding-bottom: calc(1rem + var(--tab-height) + var(--safe-bottom));
     background: var(--content-bg);
+}
+#main-screen.player-active main {
+    padding-bottom: calc(1rem + var(--tab-height) + var(--player-height) + var(--safe-bottom));
 }
 
 /* ── Section headings ── */
@@ -170,22 +174,19 @@ main {
 }
 
 /* ── Play overlay on hover (pointer devices only) ── */
+.play-overlay {
+    position: absolute; top: 0; left: 0;
+    width: 100%; aspect-ratio: 1; display: none;
+    align-items: center; justify-content: center;
+    background: rgba(0, 0, 0, 0.45); color: #fff;
+    font-size: 2rem; border: none; cursor: pointer;
+    border-radius: var(--radius) var(--radius) 0 0;
+    z-index: 2;
+}
+.h-scroll .card .play-overlay { border-radius: var(--radius); }
 @media (hover: hover) {
-    .grid-item::after, .h-scroll .card::after {
-        content: "▶"; position: absolute; top: 0; left: 0;
-        width: 100%; aspect-ratio: 1; display: flex;
-        align-items: center; justify-content: center;
-        background: rgba(0, 0, 0, 0.45); color: #fff;
-        font-size: 2rem; opacity: 0;
-        transition: opacity 0.15s ease; pointer-events: none;
-        border-radius: var(--radius) var(--radius) 0 0;
-    }
-    .h-scroll .card::after {
-        border-radius: var(--radius);
-    }
-    .grid-item:hover::after, .h-scroll .card:hover::after {
-        opacity: 1;
-    }
+    .grid-item:hover .play-overlay,
+    .h-scroll .card:hover .play-overlay { display: flex; }
 }
 
 /* ── List items ── */
@@ -194,7 +195,7 @@ main {
     display: flex; align-items: center; gap: 0.75rem;
     padding: 0.75rem; border-radius: var(--radius); cursor: pointer;
 }
-.list-item:hover { background: var(--card-bg); }
+@media (hover: hover) { .list-item:hover { background: var(--card-bg); } }
 .list-item img {
     width: 48px; height: 48px; border-radius: var(--radius); object-fit: cover;
     background: var(--card-bg); flex-shrink: 0;
@@ -253,7 +254,7 @@ main {
     cursor: pointer; font-size: 0.9rem; text-align: left;
     border-radius: 4px; position: relative; z-index: 1;
 }
-.tracklist-play:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+@media (hover: hover) { .tracklist-play:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); } }
 .tracklist-item.is-active .tracklist-play { color: var(--accent); }
 .tracklist-num { width: 24px; text-align: center; color: var(--text-muted); flex-shrink: 0; font-size: 0.8rem; }
 .tracklist-title { flex: 1; }

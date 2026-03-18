@@ -352,6 +352,7 @@ const App = {
                     const episodeId = isEpisode && ep ? ep.id : '';
                     html += `<div class="card" data-id="${itemId}" data-type="${section.type}"${episodeId ? ` data-episode-id="${episodeId}"` : ''}>`;
                     html += `<img src="${ABS.coverUrl(itemId)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
+                    html += `<button class="play-overlay" data-play-id="${itemId}"${episodeId ? ` data-play-episode="${episodeId}"` : ''}>\u25B6</button>`;
                     html += `<div class="card-title">${esc(title)}</div>`;
                     html += `<div class="card-sub">${esc(subtitle)}</div>`;
                     if (progress > 0) {
@@ -448,6 +449,7 @@ const App = {
             Player.updateMediaSession();
             Player.updateUI();
             document.getElementById('player-bar').classList.remove('hidden');
+            document.getElementById('main-screen').classList.add('player-active');
         } catch (e) {
             console.error('Play episode failed', e);
         }
@@ -632,6 +634,13 @@ const App = {
         container.querySelectorAll('.grid-item').forEach(el => {
             el.addEventListener('click', () => { this.hideSearch(); this.showItem(el.dataset.id); });
         });
+        container.querySelectorAll('.play-overlay').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.hideSearch();
+                this.quickPlay(btn.dataset.playId);
+            });
+        });
         container.querySelectorAll('.list-item[data-author-id]').forEach(el => {
             el.addEventListener('click', () => { this.hideSearch(); this.showAuthorDetail(el.dataset.authorId, el.dataset.authorName); });
         });
@@ -668,6 +677,7 @@ const App = {
     gridItemHtml(id, title, author, progress) {
         let html = `<div class="grid-item" data-id="${id}">`;
         html += `<img src="${ABS.coverUrl(id)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
+        html += `<button class="play-overlay" data-play-id="${id}">\u25B6</button>`;
         if (progress > 0) {
             html += `<div class="item-progress"><div class="item-progress-fill" style="width:${progress*100}%"></div></div>`;
         }
@@ -683,13 +693,32 @@ const App = {
             el.addEventListener('click', () => {
                 if (el.dataset.episodeId) {
                     this.playEpisode(el.dataset.id, el.dataset.episodeId);
-                } else if (el.dataset.type === 'episode') {
-                    this.showItem(el.dataset.id);
                 } else {
                     this.showItem(el.dataset.id);
                 }
             });
         });
+        document.querySelectorAll('.play-overlay').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const epId = btn.dataset.playEpisode;
+                if (epId) this.playEpisode(btn.dataset.playId, epId);
+                else this.quickPlay(btn.dataset.playId);
+            });
+        });
+    },
+
+    async quickPlay(itemId) {
+        try {
+            const item = await ABS.getItem(itemId);
+            if (item.mediaType === 'podcast') {
+                this.showItem(itemId);
+            } else {
+                Player.startItem(item);
+            }
+        } catch (e) {
+            console.error('Quick play failed', e);
+        }
     },
 
     // ── Item detail ──

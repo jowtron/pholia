@@ -1,3 +1,7 @@
 isub
 .DS_Store
 .wrangler/
+desktop/frontend/
+!desktop/frontend/.gitkeep
+desktop/build/bin/
+desktop/build/appicon.png
