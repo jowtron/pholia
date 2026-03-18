@@ -1,0 +1,371 @@
+// Audio player controller
+const Player = {
+    audio: new Audio(),
+    session: null,
+    item: null,
+    chapters: [],
+    currentChapterIndex: 0,
+    tracks: [],
+    currentTrackIndex: 0,
+    isPlaying: false,
+    sleepTimerId: null,
+    sleepEndTime: null,
+    sleepEndOfChapter: false,
+    savedVolume: 1,
+    syncInterval: null,
+    lastSyncTime: 0,
+    skipDuration: 30,
+
+    init() {
+        this.audio.addEventListener('timeupdate', () => this.onTimeUpdate());
+        this.audio.addEventListener('ended', () => this.onTrackEnded());
+        this.audio.addEventListener('play', () => this.setPlaying(true));
+        this.audio.addEventListener('pause', () => this.setPlaying(false));
+        this.audio.addEventListener('error', (e) => console.error('Audio error', e));
+
+        const speed = localStorage.getItem('cadence_speed');
+        if (speed) this.audio.playbackRate = parseFloat(speed);
+
+        const skip = localStorage.getItem('cadence_skip');
+        if (skip) this.skipDuration = parseInt(skip);
+        this.updateSkipLabels();
+
+        this.setupMediaSession();
+    },
+
+    setupMediaSession() {
+        if (!('mediaSession' in navigator)) return;
+        navigator.mediaSession.setActionHandler('play', () => this.play());
+        navigator.mediaSession.setActionHandler('pause', () => this.pause());
+        navigator.mediaSession.setActionHandler('previoustrack', () => this.prevChapter());
+        navigator.mediaSession.setActionHandler('nexttrack', () => this.nextChapter());
+        // Use seekbackward/seekforward with seekOffset to control displayed duration
+        navigator.mediaSession.setActionHandler('seekbackward', (details) => {
+            this.skip(-(details?.seekOffset || this.skipDuration));
+        });
+        navigator.mediaSession.setActionHandler('seekforward', (details) => {
+            this.skip(details?.seekOffset || this.skipDuration);
+        });
+    },
+
+    setSkipDuration(seconds) {
+        this.skipDuration = seconds;
+        localStorage.setItem('cadence_skip', seconds);
+        this.updateSkipLabels();
+    },
+
+    updateSkipLabels() {
+        const label = this.skipDuration >= 60 ? Math.round(this.skipDuration / 60) + 'm' : this.skipDuration + '';
+        const rwText = document.getElementById('fs-rewind-text');
+        const fwText = document.getElementById('fs-forward-text');
+        if (rwText) rwText.textContent = label;
+        if (fwText) fwText.textContent = label;
+    },
+
+    async startItem(item, startTime = null) {
+        if (this.session) await this.closeCurrentSession();
+
+        this.item = item;
+        this.chapters = item.media?.chapters || [];
+        this.tracks = item.media?.audioFiles || [];
+
+        try {
+            this.session = await ABS.startSession(item.id);
+        } catch (e) {
+            console.warn('Could not start session', e);
+            this.session = null;
+        }
+
+        if (startTime === null && this.session?.currentTime) {
+            startTime = this.session.currentTime;
+        }
+        if (startTime === null) {
+            const progress = await ABS.getProgress(item.id);
+            if (progress && !progress.isFinished) startTime = progress.currentTime || 0;
+        }
+        startTime = startTime || 0;
+
+        this.loadTime(startTime);
+        this.startSync();
+        this.updateMediaSession();
+        this.updateUI();
+
+        document.getElementById('player-bar').classList.remove('hidden');
+    },
+
+    loadTime(globalTime) {
+        if (this.session && this.session.audioTracks?.length) {
+            const tracks = this.session.audioTracks;
+            let track = tracks[0];
+            let trackOffset = globalTime;
+            for (let i = 0; i < tracks.length; i++) {
+                if (globalTime >= tracks[i].startOffset && globalTime < tracks[i].startOffset + tracks[i].duration) {
+                    track = tracks[i]; trackOffset = globalTime - tracks[i].startOffset;
+                    this.currentTrackIndex = i; break;
+                }
+            }
+            const url = track.contentUrl.startsWith('http')
+                ? track.contentUrl : `${ABS.serverUrl}${track.contentUrl}?token=${ABS.token}`;
+            if (this.audio.src !== url) this.audio.src = url;
+            this.audio.currentTime = trackOffset;
+        } else if (this.tracks.length) {
+            let elapsed = 0;
+            for (let i = 0; i < this.tracks.length; i++) {
+                if (globalTime < elapsed + this.tracks[i].duration) {
+                    this.currentTrackIndex = i;
+                    const url = ABS.trackUrl(this.item.id, this.tracks[i].ino);
+                    if (this.audio.src !== url) this.audio.src = url;
+                    this.audio.currentTime = globalTime - elapsed; break;
+                }
+                elapsed += this.tracks[i].duration;
+            }
+        }
+        this.audio.play().catch(() => {});
+    },
+
+    getGlobalTime() {
+        if (this.session?.audioTracks?.length) {
+            const track = this.session.audioTracks[this.currentTrackIndex];
+            return (track?.startOffset || 0) + this.audio.currentTime;
+        }
+        let elapsed = 0;
+        for (let i = 0; i < this.currentTrackIndex; i++) elapsed += this.tracks[i].duration;
+        return elapsed + this.audio.currentTime;
+    },
+
+    getTotalDuration() {
+        return this.session?.duration || this.item?.media?.duration || this.tracks.reduce((s, t) => s + t.duration, 0);
+    },
+
+    getCurrentChapter() {
+        const time = this.getGlobalTime();
+        for (let i = this.chapters.length - 1; i >= 0; i--) {
+            if (time >= this.chapters[i].start) { this.currentChapterIndex = i; return this.chapters[i]; }
+        }
+        return this.chapters[0] || null;
+    },
+
+    // Get current chapter progress (0-100) and time within chapter
+    getChapterProgress() {
+        const ch = this.getCurrentChapter();
+        if (!ch) return { progress: 0, elapsed: 0, remaining: 0, duration: 0 };
+        const gt = this.getGlobalTime();
+        const chDur = ch.end - ch.start;
+        const chElapsed = gt - ch.start;
+        return {
+            progress: chDur > 0 ? (chElapsed / chDur) * 100 : 0,
+            elapsed: chElapsed,
+            remaining: chDur - chElapsed,
+            duration: chDur,
+        };
+    },
+
+    play() { this.audio.play().catch(() => {}); },
+    pause() { this.audio.pause(); },
+    toggle() { this.audio.paused ? this.play() : this.pause(); },
+
+    skip(seconds) {
+        const t = Math.max(0, Math.min(this.getGlobalTime() + seconds, this.getTotalDuration()));
+        this.loadTime(t);
+    },
+
+    seekToChapterPercent(pct) {
+        const ch = this.getCurrentChapter();
+        if (!ch) return;
+        const chDur = ch.end - ch.start;
+        this.loadTime(ch.start + (pct / 100) * chDur);
+    },
+
+    seekToGlobalPercent(pct) {
+        this.loadTime((pct / 100) * this.getTotalDuration());
+    },
+
+    nextChapter() {
+        if (this.currentChapterIndex < this.chapters.length - 1)
+            this.loadTime(this.chapters[this.currentChapterIndex + 1].start);
+    },
+
+    prevChapter() {
+        const time = this.getGlobalTime();
+        const ch = this.getCurrentChapter();
+        if (ch && time - ch.start > 3) this.loadTime(ch.start);
+        else if (this.currentChapterIndex > 0) this.loadTime(this.chapters[this.currentChapterIndex - 1].start);
+    },
+
+    goToChapter(index) {
+        if (index >= 0 && index < this.chapters.length) this.loadTime(this.chapters[index].start);
+    },
+
+    setSpeed(rate) { this.audio.playbackRate = rate; localStorage.setItem('cadence_speed', rate); },
+
+    // ── Sleep timer with volume fade ──
+    startSleep(minutes) {
+        this.clearSleep();
+        if (minutes === 'chapter') { this.sleepEndOfChapter = true; this.setSleepActive(true); return; }
+        this.savedVolume = this.audio.volume;
+        this.sleepEndTime = Date.now() + minutes * 60000;
+        this.sleepTimerId = setInterval(() => {
+            const remaining = this.sleepEndTime - Date.now();
+            if (remaining <= 0) {
+                this.pause(); this.audio.volume = this.savedVolume; this.clearSleep(); return;
+            }
+            const m = Math.floor(remaining / 60000);
+            const s = Math.floor((remaining % 60000) / 1000);
+            this.setSleepDisplay(m + ':' + (s < 10 ? '0' : '') + s);
+            if (remaining < 30000) {
+                this.audio.volume = Math.max(0, (remaining / 30000) * this.savedVolume);
+            }
+        }, 1000);
+        this.setSleepActive(true);
+    },
+
+    clearSleep() {
+        if (this.sleepTimerId) { clearInterval(this.sleepTimerId); this.sleepTimerId = null; }
+        this.sleepEndTime = null; this.sleepEndOfChapter = false;
+        this.setSleepActive(false); this.setSleepDisplay('');
+    },
+
+    setSleepActive(active) {
+        document.getElementById('pp-sleep')?.classList.toggle('active', active);
+        document.getElementById('fs-sleep')?.classList.toggle('active', active);
+        const cancel1 = document.getElementById('pp-sleep-cancel');
+        const cancel2 = document.getElementById('fs-sleep-cancel');
+        if (cancel1) cancel1.style.display = active ? 'block' : 'none';
+        if (cancel2) cancel2.style.display = active ? 'block' : 'none';
+    },
+
+    setSleepDisplay(txt) {
+        const el1 = document.getElementById('pp-sleep-indicator');
+        const el2 = document.getElementById('fs-sleep-indicator');
+        if (el1) { el1.textContent = txt; el1.classList.toggle('active', !!txt); }
+        if (el2) el2.textContent = txt;
+    },
+
+    setPlaying(playing) {
+        this.isPlaying = playing;
+        const playSvg = '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+        const pauseSvg = '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>';
+        document.getElementById('pp-play').innerHTML = playing ? '\u275A\u275A' : '\u25B6';
+        document.getElementById('fs-play').innerHTML = playing ? pauseSvg : playSvg;
+    },
+
+    _lastChapterIndex: -1,
+    onTimeUpdate() {
+        this.updateUI();
+        // Update media session on chapter change
+        if (this.currentChapterIndex !== this._lastChapterIndex) {
+            this._lastChapterIndex = this.currentChapterIndex;
+            this.updateMediaSession();
+        }
+        if (this.sleepEndOfChapter) {
+            const next = this.chapters[this.currentChapterIndex + 1];
+            if (next && next.start - this.getGlobalTime() <= 0.5) {
+                this.pause(); this.sleepEndOfChapter = false; this.setSleepActive(false);
+            }
+        }
+    },
+
+    onTrackEnded() {
+        const tracks = this.session?.audioTracks || this.tracks;
+        if (this.currentTrackIndex < tracks.length - 1) {
+            this.currentTrackIndex++;
+            if (this.session?.audioTracks) {
+                const t = this.session.audioTracks[this.currentTrackIndex];
+                this.audio.src = t.contentUrl.startsWith('http')
+                    ? t.contentUrl : `${ABS.serverUrl}${t.contentUrl}?token=${ABS.token}`;
+            } else {
+                this.audio.src = ABS.trackUrl(this.item.id, this.tracks[this.currentTrackIndex].ino);
+            }
+            this.audio.currentTime = 0; this.audio.play().catch(() => {});
+        } else {
+            this.syncProgress(true);
+        }
+    },
+
+    updateUI() {
+        if (!this.item) return;
+        const gt = this.getGlobalTime();
+        const dur = this.getTotalDuration();
+        const ch = this.getCurrentChapter();
+        const chp = this.getChapterProgress();
+
+        // Mini player — shows CHAPTER progress, not book progress
+        document.getElementById('pp-track').textContent = this.item.media?.metadata?.title || 'Unknown';
+        document.getElementById('pp-narrator').textContent = ch?.title || '';
+        document.getElementById('pp-cover').src = ABS.coverUrl(this.item.id);
+        document.getElementById('pp-time').textContent = formatTime(chp.elapsed) + ' / ' + formatTime(chp.duration);
+        document.getElementById('pp-scrubber-bg').style.width = chp.progress + '%';
+        const ppSeek = document.getElementById('pp-seek');
+        if (!ppSeek.dataset.dragging) ppSeek.value = chp.progress;
+
+        // Fullscreen player — scrubber is CHAPTER progress, summary shows book progress
+        document.getElementById('fs-cover').src = ABS.coverUrl(this.item.id);
+        document.getElementById('fs-title').textContent = this.item.media?.metadata?.title || 'Unknown';
+        document.getElementById('fs-narrator').textContent = this.item.media?.metadata?.authorName || '';
+        const chLabel = ch ? `Ch. ${this.currentChapterIndex + 1}: ${ch.title}` : '';
+        document.getElementById('fs-chapter').textContent = chLabel;
+        document.getElementById('fs-elapsed').textContent = formatTime(chp.elapsed);
+        document.getElementById('fs-remaining').textContent = '-' + formatTime(chp.remaining);
+
+        // Book-level progress summary
+        const bookPct = dur > 0 ? Math.round((gt / dur) * 100) : 0;
+        document.getElementById('fs-progress-summary').textContent =
+            `${bookPct}% of book \u2022 ${formatTime(gt)} / ${formatTime(dur)}`;
+
+        const fsSeek = document.getElementById('fs-seek');
+        if (!fsSeek.dataset.dragging) fsSeek.value = chp.progress;
+    },
+
+    updateMediaSession() {
+        if (!('mediaSession' in navigator) || !this.item) return;
+        const ch = this.getCurrentChapter();
+        navigator.mediaSession.metadata = new MediaMetadata({
+            title: ch?.title || this.item.media?.metadata?.title || 'Unknown',
+            artist: this.item.media?.metadata?.authorName || '',
+            album: this.item.media?.metadata?.title || '',
+            artwork: [{ src: ABS.coverUrl(this.item.id), sizes: '512x512', type: 'image/jpeg' }],
+        });
+    },
+
+    startSync() {
+        this.stopSync();
+        this.lastSyncTime = Date.now();
+        this.syncInterval = setInterval(() => this.syncProgress(), 15000);
+    },
+
+    stopSync() {
+        if (this.syncInterval) { clearInterval(this.syncInterval); this.syncInterval = null; }
+    },
+
+    async syncProgress(finished = false) {
+        if (!this.item) return;
+        const gt = this.getGlobalTime(), dur = this.getTotalDuration();
+        const now = Date.now(); const listened = (now - this.lastSyncTime) / 1000;
+        this.lastSyncTime = now;
+        try {
+            if (this.session) await ABS.syncSession(this.session.id, gt, dur, listened);
+            else await ABS.updateProgress(this.item.id, {
+                currentTime: gt, duration: dur,
+                progress: dur > 0 ? gt / dur : 0, isFinished: finished,
+            });
+        } catch (e) { console.warn('Sync failed', e); }
+    },
+
+    async closeCurrentSession() {
+        if (!this.session) return;
+        this.stopSync();
+        try {
+            await ABS.closeSession(this.session.id, this.getGlobalTime(), this.getTotalDuration(), 0);
+        } catch (e) { console.warn('Close session failed', e); }
+        this.session = null;
+    },
+};
+
+function formatTime(seconds) {
+    if (!seconds || seconds < 0) return '0:00';
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    if (h > 0) return `${h}:${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}`;
+    return `${m}:${s.toString().padStart(2,'0')}`;
+}

@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Cadence</title>
+    <link rel="manifest" href="manifest.json">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Login screen -->
+        <div id="login-screen" class="screen active">
+            <div class="login-container">
+                <h1>Cadence</h1>
+                <p class="subtitle">Audiobookshelf Client</p>
+                <form id="login-form">
+                    <input type="url" id="server-url" placeholder="Server URL (e.g. https://abs.example.com)" required>
+                    <input type="text" id="username" placeholder="Username" required>
+                    <input type="password" id="password" placeholder="Password" required>
+                    <button type="submit">Connect</button>
+                    <p id="login-error" class="error"></p>
+                </form>
+            </div>
+        </div>
+
+        <!-- Main app -->
+        <div id="main-screen" class="screen">
+            <!-- Header -->
+            <header id="header">
+                <div class="header-left">
+                    <button id="back-btn" class="icon-btn hidden">&larr;</button>
+                    <h2 id="header-title">Home</h2>
+                </div>
+                <div class="header-right">
+                    <button id="search-btn" class="icon-btn">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+                    </button>
+                    <button id="settings-btn" class="icon-btn">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+                    </button>
+                </div>
+            </header>
+
+            <!-- Search overlay -->
+            <div id="search-overlay" class="hidden">
+                <div class="search-bar">
+                    <input type="text" id="search-input" placeholder="Search..." style="font-size:16px">
+                    <button id="search-cancel" class="text-btn">Cancel</button>
+                </div>
+                <div id="search-results"></div>
+            </div>
+
+            <!-- Library selector -->
+            <div id="library-selector" class="hidden">
+                <select id="library-select"></select>
+            </div>
+
+            <!-- Content area -->
+            <main id="content"></main>
+
+            <!-- Mini player -->
+            <div id="player-bar" class="hidden">
+                <div class="pp-scrubber-bg" id="pp-scrubber-bg"></div>
+                <img class="pp-cover" id="pp-cover" src="" alt="">
+                <div class="pp-info" id="pp-info-area">
+                    <div class="pp-track" id="pp-track"></div>
+                    <div class="pp-narrator" id="pp-narrator"></div>
+                </div>
+                <div class="pp-controls">
+                    <button class="pp-btn" id="pp-play">&#9654;</button>
+                </div>
+                <div class="pp-scrubber">
+                    <input type="range" id="pp-seek" value="0" min="0" max="100" step="0.1" style="font-size:16px">
+                </div>
+                <div class="pp-time" id="pp-time">0:00 / 0:00</div>
+                <button class="pp-btn pp-sleep-btn" id="pp-sleep" title="Sleep timer">
+                    <svg width="24" height="24" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M25 17.79A11 11 0 1 1 13.21 5 8.5 8.5 0 0 0 25 17.79z"/><text x="18" y="12" font-size="6" font-weight="bold" fill="currentColor" stroke="none" font-family="sans-serif">z</text><text x="22" y="8" font-size="7" font-weight="bold" fill="currentColor" stroke="none" font-family="sans-serif">z</text><text x="26" y="3.5" font-size="8" font-weight="bold" fill="currentColor" stroke="none" font-family="sans-serif">z</text></svg>
+                </button>
+                <div class="pp-sleep-menu" id="pp-sleep-menu">
+                    <button data-minutes="15">15 minutes</button>
+                    <button data-minutes="30">30 minutes</button>
+                    <button data-minutes="45">45 minutes</button>
+                    <button data-minutes="60">1 hour</button>
+                    <button data-minutes="90">1.5 hours</button>
+                    <button data-minutes="chapter">End of chapter</button>
+                    <button id="pp-sleep-cancel" style="display:none">Cancel timer</button>
+                </div>
+                <div class="pp-sleep-indicator" id="pp-sleep-indicator"></div>
+            </div>
+
+            <!-- Tab bar -->
+            <nav id="tab-bar">
+                <button class="tab active" data-tab="home">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+                    <span>Home</span>
+                </button>
+                <button class="tab" data-tab="library">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+                    <span>Library</span>
+                </button>
+                <button class="tab" data-tab="series">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="6" height="18" rx="1"/><rect x="9" y="3" width="6" height="18" rx="1"/><rect x="16" y="3" width="6" height="18" rx="1"/></svg>
+                    <span>Series</span>
+                </button>
+                <button class="tab" data-tab="collections">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+                    <span>Collections</span>
+                </button>
+                <button class="tab" data-tab="authors">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                    <span>Authors</span>
+                </button>
+            </nav>
+        </div>
+
+        <!-- Settings modal -->
+        <div id="settings-modal" class="modal hidden">
+            <div class="modal-content settings-content">
+                <div class="modal-header">
+                    <h2>Settings</h2>
+                    <button id="settings-close" class="icon-btn">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <label>
+                        Playback Speed
+                        <select id="setting-speed">
+                            <option value="0.5">0.5x</option>
+                            <option value="0.75">0.75x</option>
+                            <option value="1" selected>1x</option>
+                            <option value="1.25">1.25x</option>
+                            <option value="1.5">1.5x</option>
+                            <option value="1.75">1.75x</option>
+                            <option value="2">2x</option>
+                            <option value="2.5">2.5x</option>
+                            <option value="3">3x</option>
+                        </select>
+                    </label>
+                    <label>
+                        Skip Duration
+                        <select id="setting-skip">
+                            <option value="10">10 seconds</option>
+                            <option value="15">15 seconds</option>
+                            <option value="30" selected>30 seconds</option>
+                            <option value="45">45 seconds</option>
+                            <option value="60">60 seconds</option>
+                        </select>
+                    </label>
+                    <div class="server-info">
+                        <p>Server: <span id="setting-server"></span></p>
+                        <p>User: <span id="setting-user"></span></p>
+                    </div>
+                    <button id="logout-btn" class="danger-btn">Logout</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Fullscreen player -->
+        <div id="fs-player" class="fs-player hidden">
+            <div class="fs-scroll">
+                <img class="fs-cover" id="fs-cover" src="" alt="">
+            </div>
+            <div class="fs-bottom">
+                <button class="fs-close" id="fs-close">&times;</button>
+                <div class="fs-title" id="fs-title"></div>
+                <div class="fs-narrator" id="fs-narrator"></div>
+                <div class="fs-chapter" id="fs-chapter"></div>
+                <div class="fs-progress-summary" id="fs-progress-summary"></div>
+                <div class="fs-scrubber">
+                    <input type="range" id="fs-seek" value="0" min="0" max="100" step="0.1" style="font-size:16px">
+                </div>
+                <div class="fs-time-row">
+                    <span class="fs-time-elapsed" id="fs-elapsed">0:00</span>
+                    <span class="fs-time-remaining" id="fs-remaining">-0:00</span>
+                </div>
+                <div class="fs-controls">
+                    <button class="fs-btn skip-btn" id="fs-rewind" title="Back">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="36" height="36" stroke-width="3" stroke="currentColor" fill="none"><polyline points="9.57 15.41 12.17 24.05 20.81 21.44" stroke-linecap="round"/><path d="M12.14,23.94a21.91,21.91,0,1,1-.91,13.25" stroke-linecap="round"/><text x="23" y="40" font-size="14" font-weight="600" fill="currentColor" stroke="none" font-family="sans-serif" id="fs-rewind-text">30</text></svg>
+                    </button>
+                    <button class="fs-btn" id="fs-prev-ch" title="Previous chapter">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+                    </button>
+                    <button class="fs-btn fs-btn-play" id="fs-play">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                    </button>
+                    <button class="fs-btn" id="fs-next-ch" title="Next chapter">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm10-12v12h2V6z"/></svg>
+                    </button>
+                    <button class="fs-btn skip-btn" id="fs-forward" title="Forward">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="36" height="36" stroke-width="3" stroke="currentColor" fill="none"><polyline points="54.43 15.41 51.83 24.05 43.19 21.44" stroke-linecap="round"/><path d="M51.86,23.94a21.91,21.91,0,1,0,.91,13.25" stroke-linecap="round"/><text x="23" y="40" font-size="14" font-weight="600" fill="currentColor" stroke="none" font-family="sans-serif" id="fs-forward-text">30</text></svg>
+                    </button>
+                </div>
+                <div class="fs-sleep-wrap">
+                    <button class="fs-sleep-btn" id="fs-sleep">
+                        <svg width="28" height="28" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M25 17.79A11 11 0 1 1 13.21 5 8.5 8.5 0 0 0 25 17.79z"/><text x="18" y="12" font-size="6" font-weight="bold" fill="currentColor" stroke="none" font-family="sans-serif">z</text><text x="22" y="8" font-size="7" font-weight="bold" fill="currentColor" stroke="none" font-family="sans-serif">z</text><text x="26" y="3.5" font-size="8" font-weight="bold" fill="currentColor" stroke="none" font-family="sans-serif">z</text></svg>
+                    </button>
+                    <span class="fs-sleep-indicator" id="fs-sleep-indicator"></span>
+                    <div class="fs-sleep-menu" id="fs-sleep-menu">
+                        <button data-minutes="15">15 minutes</button>
+                        <button data-minutes="30">30 minutes</button>
+                        <button data-minutes="45">45 minutes</button>
+                        <button data-minutes="60">1 hour</button>
+                        <button data-minutes="90">1.5 hours</button>
+                        <button data-minutes="chapter">End of chapter</button>
+                        <button id="fs-sleep-cancel" style="display:none">Cancel timer</button>
+                    </div>
+                </div>
+                <button class="text-btn" id="fs-toggle-chapters">Chapters</button>
+                <div id="fs-chapter-list" class="fs-chapter-list hidden"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="api.js"></script>
+    <script src="player.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

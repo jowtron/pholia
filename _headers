@@ -1,0 +1,10 @@
+/*
+  Cache-Control: public, max-age=3600, s-maxage=60
+
+/*.js
+  Cache-Control: public, max-age=86400, s-maxage=300
+  Content-Type: application/javascript
+
+/*.css
+  Cache-Control: public, max-age=86400, s-maxage=300
+  Content-Type: text/css
