@@ -335,11 +335,18 @@ const App = {
         this.pushNav(seriesName);
         this.showLoading();
         try {
-            const data = await ABS.request(`/api/libraries/${this.currentLibraryId}/series/${seriesId}`);
-            const raw = data.books || data.libraryItems || [];
-            // Normalize — API may wrap items as { libraryItemId, libraryItem: {...} }
-            const books = raw.map(b => b.libraryItem || b);
-            this.renderGrid(books);
+            // Get all items in this library filtered by series
+            const encoded = btoa(unescape(encodeURIComponent(seriesName)));
+            const data = await ABS.request(`/api/libraries/${this.currentLibraryId}/items?filter=series.${encodeURIComponent(encoded)}&sort=media.metadata.title&limit=100`);
+            const books = data.results || [];
+            if (books.length) {
+                this.renderGrid(books);
+            } else {
+                // Fallback: try series detail endpoint
+                const data2 = await ABS.request(`/api/libraries/${this.currentLibraryId}/series/${seriesId}`);
+                const raw = data2.books || data2.libraryItems || data2.results || [];
+                this.renderGrid(raw.map(b => b.libraryItem || b));
+            }
         } catch (e) {
             this.setContent(`<div class="loading">Error: ${esc(e.message)}</div>`);
         }
