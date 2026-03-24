@@ -45,9 +45,9 @@ body.fs-open { overflow: hidden; }
 .login-container h1 { font-size: 2.5rem; margin-bottom: 0.25rem; color: var(--accent); }
 .subtitle { color: var(--text-muted); margin-bottom: 2rem; }
 #build-version {
-    position: fixed; bottom: 1px; left: 0; right: 0;
-    text-align: center; font-size: 0.5rem; color: var(--text-muted); opacity: 0.25;
-    pointer-events: none; z-index: 0;
+    position: fixed; bottom: 2px; left: 0; right: 0;
+    text-align: center; font-size: 0.5rem; color: var(--text-muted); opacity: 0.3;
+    pointer-events: none; z-index: 21;
 }
 #login-form { display: flex; flex-direction: column; gap: 0.75rem; }
 input[type="url"], input[type="text"], input[type="password"] {

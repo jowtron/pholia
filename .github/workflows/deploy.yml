@@ -32,9 +32,10 @@ jobs:
           WRANGLER_SEND_METRICS: "false"
           COMMIT_MSG: ${{ github.event.head_commit.message }}
         run: |
+          FIRST_LINE=$(echo "$COMMIT_MSG" | head -1)
           for attempt in 1 2 3; do
             echo "Deploy attempt $attempt..."
-            if npx wrangler pages deploy . --project-name=cadence --commit-dirty=true --commit-hash="${GITHUB_SHA}" --commit-message="${COMMIT_MSG}"; then
+            if npx wrangler pages deploy . --project-name=cadence --commit-dirty=true --commit-hash="${GITHUB_SHA}" --commit-message="${FIRST_LINE}"; then
               echo "Deploy succeeded on attempt $attempt"
               exit 0
             fi
