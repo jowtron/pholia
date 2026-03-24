@@ -271,6 +271,7 @@ main {
     backdrop-filter: blur(16px) saturate(1.8);
     -webkit-backdrop-filter: blur(16px) saturate(1.8);
     border-top: 1px solid var(--border);
+    padding-bottom: calc(env(safe-area-inset-bottom, 0px) / 2);
     display: flex; align-items: flex-start; z-index: 20;
 }
 .tab {
