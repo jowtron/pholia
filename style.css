@@ -12,9 +12,9 @@
     --card-bg: #22223a;
     --danger: #ff4757;
     --radius: 8px;
-    --tab-height: 32px;
+    --tab-height: 52px;
     --player-height: 62px;
-    --safe-bottom: 0px;
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 html {
@@ -45,7 +45,7 @@ body.fs-open { overflow: hidden; }
 .login-container h1 { font-size: 2.5rem; margin-bottom: 0.25rem; color: var(--accent); }
 .subtitle { color: var(--text-muted); margin-bottom: 2rem; }
 #build-version {
-    position: fixed; bottom: 0; left: 0; right: 0;
+    position: fixed; bottom: 1px; left: 0; right: 0;
     text-align: center; font-size: 0.5rem; color: var(--text-muted); opacity: 0.25;
     pointer-events: none; z-index: 0;
 }
@@ -267,17 +267,17 @@ main {
 #tab-bar {
     position: fixed; bottom: 0; left: 0; right: 0;
     height: calc(var(--tab-height) + var(--safe-bottom));
-    padding-bottom: var(--safe-bottom);
     background: color-mix(in srgb, var(--bg) 90%, transparent);
     backdrop-filter: blur(16px) saturate(1.8);
     -webkit-backdrop-filter: blur(16px) saturate(1.8);
     border-top: 1px solid var(--border);
-    display: flex; z-index: 20;
+    display: flex; align-items: flex-start; z-index: 20;
 }
 .tab {
     flex: 1; display: flex; flex-direction: column; align-items: center;
     justify-content: center; gap: 1px; background: none; border: none;
     color: var(--text-muted); font-size: 0.6rem; cursor: pointer; padding: 2px 0;
+    height: var(--tab-height);
 }
 .tab svg { stroke: var(--text-muted); }
 .tab.active { color: var(--accent); }
@@ -499,7 +499,7 @@ main {
         padding-bottom: calc(12px + var(--safe-bottom));
     }
 
-    .tab span { font-size: 0.6rem; }
+    .tab span { display: none; }
 }
 
 @media (min-width: 768px) {
