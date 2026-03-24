@@ -322,6 +322,25 @@ const Player = {
 
         const fsSeek = document.getElementById('fs-seek');
         if (!fsSeek.dataset.dragging) fsSeek.value = chp.progress;
+
+        // Update FS chapter list progress fills if visible
+        const chList = document.getElementById('fs-chapter-list');
+        if (chList && !chList.classList.contains('hidden')) {
+            chList.querySelectorAll('.tracklist-item').forEach(el => {
+                const idx = parseInt(el.dataset.ch);
+                if (isNaN(idx)) return;
+                const c = this.chapters[idx];
+                if (!c) return;
+                const cDur = c.end - c.start;
+                const isActive = idx === this.currentChapterIndex;
+                let prog = 0;
+                if (isActive && cDur > 0) prog = ((gt - c.start) / cDur) * 100;
+                else if (gt >= c.end) prog = 100;
+                el.classList.toggle('is-active', isActive);
+                const bar = el.querySelector('.tracklist-progress');
+                if (bar) bar.style.width = prog + '%';
+            });
+        }
     },
 
     updateMediaSession() {

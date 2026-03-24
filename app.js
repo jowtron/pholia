@@ -743,7 +743,10 @@ const App = {
         const chapters = item.media?.chapters || [];
         const duration = item.media?.duration || 0;
         const progress = await ABS.getProgress(item.id);
-        const currentTime = progress?.currentTime || 0;
+        // Use live player time if this item is currently playing
+        const currentTime = (Player.item?.id === item.id)
+            ? Player.getGlobalTime()
+            : (progress?.currentTime || 0);
 
         this.navStack[this.navStack.length - 1] = meta.title || 'Unknown';
         document.getElementById('header-title').textContent = meta.title || 'Unknown';
