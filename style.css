@@ -14,7 +14,7 @@
     --radius: 8px;
     --tab-height: 56px;
     --player-height: 62px;
-    --safe-bottom: env(safe-area-inset-bottom, 0px);
+    --safe-bottom: calc(env(safe-area-inset-bottom, 0px) / 2);
 }
 
 html {
@@ -45,8 +45,9 @@ body.fs-open { overflow: hidden; }
 .login-container h1 { font-size: 2.5rem; margin-bottom: 0.25rem; color: var(--accent); }
 .subtitle { color: var(--text-muted); margin-bottom: 2rem; }
 #build-version {
-    position: fixed; bottom: calc(8px + env(safe-area-inset-bottom, 0px)); left: 8px;
-    font-size: 0.65rem; color: var(--text-muted); opacity: 0.5;
+    position: fixed; bottom: calc(4px + env(safe-area-inset-bottom, 0px) / 2); left: 0; right: 0;
+    text-align: center; font-size: 0.6rem; color: var(--text-muted); opacity: 0.4;
+    pointer-events: none; z-index: 25;
 }
 #login-form { display: flex; flex-direction: column; gap: 0.75rem; }
 input[type="url"], input[type="text"], input[type="password"] {
