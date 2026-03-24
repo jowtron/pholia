@@ -14,7 +14,7 @@
     --radius: 8px;
     --tab-height: 52px;
     --player-height: 62px;
-    --safe-bottom: env(safe-area-inset-bottom, 0px);
+    --safe-bottom: calc(env(safe-area-inset-bottom, 0px) / 2);
 }
 
 html {
@@ -266,10 +266,10 @@ main {
 /* ── Tab bar ── */
 #tab-bar {
     position: fixed; bottom: 0; left: 0; right: 0;
-    height: calc(var(--tab-height) + var(--safe-bottom));
+    height: auto;
     background: var(--bg);
     border-top: 1px solid var(--border);
-    padding-bottom: calc(env(safe-area-inset-bottom, 0px) / 2);
+    padding-bottom: var(--safe-bottom);
     display: flex; align-items: flex-start; z-index: 20;
 }
 .tab {
