@@ -310,6 +310,7 @@ const Player = {
         document.getElementById('pp-narrator').textContent = ch?.title || '';
         document.getElementById('pp-cover').src = ABS.coverUrl(this.item.id);
         document.getElementById('pp-time').textContent = formatTime(chp.elapsed) + ' / ' + formatTime(chp.duration);
+        document.getElementById('pp-remaining').textContent = '-' + formatTime(chp.remaining);
         document.getElementById('pp-scrubber-bg').style.width = chp.progress + '%';
         const ppSeek = document.getElementById('pp-seek');
         if (!ppSeek.dataset.dragging) ppSeek.value = chp.progress;
