@@ -30,10 +30,11 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           WRANGLER_SEND_METRICS: "false"
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
         run: |
           for attempt in 1 2 3; do
             echo "Deploy attempt $attempt..."
-            if npx wrangler pages deploy . --project-name=cadence --commit-dirty=true; then
+            if npx wrangler pages deploy . --project-name=cadence --commit-dirty=true --commit-hash="${GITHUB_SHA}" --commit-message="${COMMIT_MSG}"; then
               echo "Deploy succeeded on attempt $attempt"
               exit 0
             fi
