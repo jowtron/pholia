@@ -797,8 +797,18 @@ const App = {
             }, 100);
         });
         document.querySelectorAll('.tracklist-item').forEach(el => {
-            el.querySelector('.tracklist-play').addEventListener('click', () => {
-                Player.startItem(item, chapters[parseInt(el.dataset.index)].start);
+            el.querySelector('.tracklist-play').addEventListener('click', (e) => {
+                const idx = parseInt(el.dataset.index);
+                const ch = chapters[idx];
+                if (!ch) return;
+                const rect = el.getBoundingClientRect();
+                const fraction = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+                const seekTo = ch.start + (fraction < 0.08 ? 0 : fraction) * (ch.end - ch.start);
+                if (Player.item?.id === item.id) {
+                    Player.seekChapterByTap(idx, fraction);
+                } else {
+                    Player.startItem(item, seekTo);
+                }
             });
         });
     },
@@ -885,8 +895,10 @@ const App = {
         html += '</ul>';
         list.innerHTML = html;
         list.querySelectorAll('.tracklist-item').forEach(el => {
-            el.querySelector('.tracklist-play').addEventListener('click', () => {
-                Player.goToChapter(parseInt(el.dataset.ch));
+            el.querySelector('.tracklist-play').addEventListener('click', (e) => {
+                const rect = el.getBoundingClientRect();
+                const fraction = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+                Player.seekChapterByTap(parseInt(el.dataset.ch), fraction);
             });
         });
         // Scroll to current chapter

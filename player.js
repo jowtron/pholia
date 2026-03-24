@@ -201,6 +201,14 @@ const Player = {
         if (index >= 0 && index < this.chapters.length) this.loadTime(this.chapters[index].start);
     },
 
+    seekChapterByTap(index, fraction) {
+        if (index < 0 || index >= this.chapters.length) return;
+        const ch = this.chapters[index];
+        // Dead zone: first 8% of the row snaps to chapter start
+        const pct = fraction < 0.08 ? 0 : fraction;
+        this.loadTime(ch.start + pct * (ch.end - ch.start));
+    },
+
     setSpeed(rate) { this.audio.playbackRate = rate; localStorage.setItem('cadence_speed', rate); },
 
     // ── Sleep timer with volume fade ──
@@ -323,11 +331,10 @@ const Player = {
         const fsSeek = document.getElementById('fs-seek');
         if (!fsSeek.dataset.dragging) fsSeek.value = chp.progress;
 
-        // Update FS chapter list progress fills if visible
-        const chList = document.getElementById('fs-chapter-list');
-        if (chList && !chList.classList.contains('hidden')) {
-            chList.querySelectorAll('.tracklist-item').forEach(el => {
-                const idx = parseInt(el.dataset.ch);
+        // Update any visible chapter list progress fills (FS player + detail view)
+        const updateChapterItems = (items, attrName) => {
+            items.forEach(el => {
+                const idx = parseInt(el.dataset[attrName]);
                 if (isNaN(idx)) return;
                 const c = this.chapters[idx];
                 if (!c) return;
@@ -340,7 +347,13 @@ const Player = {
                 const bar = el.querySelector('.tracklist-progress');
                 if (bar) bar.style.width = prog + '%';
             });
-        }
+        };
+        const fsCh = document.getElementById('fs-chapter-list');
+        if (fsCh && !fsCh.classList.contains('hidden'))
+            updateChapterItems(fsCh.querySelectorAll('.tracklist-item[data-ch]'), 'ch');
+        // Detail view chapter list (data-index items inside #content)
+        const detailItems = document.querySelectorAll('#content .tracklist-item[data-index]');
+        if (detailItems.length) updateChapterItems(detailItems, 'index');
     },
 
     updateMediaSession() {
