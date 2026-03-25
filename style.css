@@ -14,7 +14,7 @@
     --radius: 8px;
     --tab-height: 52px;
     --player-height: 62px;
-    --safe-bottom: calc(env(safe-area-inset-bottom, 0px) / 2);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 html {
