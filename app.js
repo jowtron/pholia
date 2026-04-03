@@ -36,6 +36,13 @@ const App = {
         document.getElementById('logout-btn').addEventListener('click', () => this.logout());
         document.getElementById('setting-speed').addEventListener('change', e => Player.setSpeed(parseFloat(e.target.value)));
         document.getElementById('setting-skip').addEventListener('change', e => Player.setSkipDuration(parseInt(e.target.value)));
+        document.getElementById('setting-theme').addEventListener('change', e => {
+            document.documentElement.setAttribute('data-theme', e.target.value);
+            localStorage.setItem('cadence_theme', e.target.value);
+        });
+        // Apply saved theme
+        const savedTheme = localStorage.getItem('cadence_theme') || 'dark';
+        document.documentElement.setAttribute('data-theme', savedTheme);
 
         // Library selector
         document.getElementById('library-select').addEventListener('change', e => {
@@ -858,6 +865,7 @@ const App = {
         document.getElementById('setting-user').textContent = localStorage.getItem('cadence_username') || '';
         document.getElementById('setting-speed').value = Player.audio.playbackRate;
         document.getElementById('setting-skip').value = Player.skipDuration;
+        document.getElementById('setting-theme').value = localStorage.getItem('cadence_theme') || 'dark';
         document.getElementById('settings-modal').classList.remove('hidden');
     },
     hideSettings() { document.getElementById('settings-modal').classList.add('hidden'); },

@@ -1,11 +1,11 @@
 {
-    "name": "Cadence",
-    "short_name": "Cadence",
+    "name": "Pholia",
+    "short_name": "Pholia",
     "description": "Audiobookshelf & Subsonic client",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0a0a0f",
-    "theme_color": "#0a0a0f",
+    "background_color": "#1a1a2e",
+    "theme_color": "#1a1a2e",
     "icons": [
         {
             "src": "icons/icon-192.png",

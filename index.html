@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <title>Cadence</title>
+    <title>Pholia</title>
     <link rel="manifest" href="manifest.json">
     <link rel="icon" href="favicon.ico" sizes="any">
     <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32x32.png">
@@ -18,7 +18,7 @@
         <!-- Login screen -->
         <div id="login-screen" class="screen active">
             <div class="login-container">
-                <h1>Cadence</h1>
+                <h1>Pholia</h1>
                 <p class="subtitle">Audiobookshelf Client</p>
                 <form id="login-form">
                     <input type="text" id="server-url" placeholder="Server URL (e.g. abs.example.com)" required>
@@ -155,6 +155,13 @@
                             <option value="30" selected>30 seconds</option>
                             <option value="45">45 seconds</option>
                             <option value="60">60 seconds</option>
+                        </select>
+                    </label>
+                    <label>
+                        Theme
+                        <select id="setting-theme">
+                            <option value="dark">Dark</option>
+                            <option value="light">Light</option>
                         </select>
                     </label>
                     <div class="server-info">

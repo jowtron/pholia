@@ -1,4 +1,4 @@
-const CACHE_NAME = 'cadence-v2';
+const CACHE_NAME = 'pholia-v1';
 const APP_SHELL = [
     './',
     './index.html',

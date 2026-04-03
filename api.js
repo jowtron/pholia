@@ -118,7 +118,7 @@ const ABS = {
     async startSession(itemId, episodeId = null) {
         const body = {
             deviceInfo: {
-                clientName: 'Cadence',
+                clientName: 'Pholia',
                 deviceId: this.getDeviceId(),
             },
             forceDirectPlay: true,
