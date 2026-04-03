@@ -9,6 +9,55 @@ const App = {
         Player.init();
         this.bindEvents();
         this.tryAutoLogin();
+        this.setupSwUpdate();
+    },
+
+    setupSwUpdate() {
+        if (!('serviceWorker' in navigator)) return;
+
+        const showBanner = (reg) => {
+            document.getElementById('update-banner').classList.remove('hidden');
+            // Auto-apply after 5 seconds
+            setTimeout(() => {
+                if (reg.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+            }, 5000);
+        };
+
+        document.getElementById('update-btn').addEventListener('click', () => {
+            navigator.serviceWorker.getRegistration().then(reg => {
+                if (reg?.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+            });
+        });
+
+        navigator.serviceWorker.getRegistration().then(reg => {
+            if (!reg) return;
+            reg.update();
+
+            if (reg.waiting) { showBanner(reg); return; }
+
+            reg.addEventListener('updatefound', () => {
+                const newSw = reg.installing;
+                if (!newSw) return;
+                newSw.addEventListener('statechange', () => {
+                    if (newSw.state === 'installed' && navigator.serviceWorker.controller) {
+                        showBanner(reg);
+                    }
+                });
+            });
+        });
+
+        // Reload when new SW takes control
+        let refreshing = false;
+        navigator.serviceWorker.addEventListener('controllerchange', () => {
+            if (!refreshing) { refreshing = true; window.location.reload(); }
+        });
+
+        // Check for updates when app resumes
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+                navigator.serviceWorker.getRegistration().then(reg => reg?.update());
+            }
+        });
     },
 
     bindEvents() {

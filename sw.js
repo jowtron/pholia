@@ -1,4 +1,4 @@
-const CACHE_NAME = 'pholia-v1';
+const CACHE_NAME = 'pholia-v2';
 const APP_SHELL = [
     './',
     './index.html',
@@ -15,12 +15,11 @@ const APP_SHELL = [
     './icons/icon-512.png',
 ];
 
-// Install: cache app shell
+// Install: cache app shell but DON'T skipWaiting — wait for the app to tell us
 self.addEventListener('install', e => {
     e.waitUntil(
         caches.open(CACHE_NAME).then(cache => cache.addAll(APP_SHELL))
     );
-    self.skipWaiting();
 });
 
 // Activate: clean old caches
@@ -31,6 +30,11 @@ self.addEventListener('activate', e => {
         )
     );
     self.clients.claim();
+});
+
+// When the app tells us to activate, do it immediately
+self.addEventListener('message', e => {
+    if (e.data?.type === 'SKIP_WAITING') self.skipWaiting();
 });
 
 // Fetch: network-first for app files, passthrough for API/external

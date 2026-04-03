@@ -1,6 +1,9 @@
 /*
   Cache-Control: public, max-age=60, s-maxage=30
 
+/sw.js
+  Cache-Control: no-cache
+
 /*.js
   Cache-Control: public, max-age=86400, s-maxage=300
   Content-Type: application/javascript
