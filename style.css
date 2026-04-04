@@ -14,7 +14,7 @@
     --radius: 8px;
     --tab-height: 52px;
     --player-height: 62px;
-    --safe-bottom: env(safe-area-inset-bottom, 0px);
+    --safe-bottom: 0px;
 }
 
 [data-theme="light"] {
@@ -295,14 +295,9 @@ main {
     height: auto;
     background: var(--bg);
     border-top: 1px solid var(--border);
-    padding-bottom: env(safe-area-inset-bottom, 0px);
-    display: flex; align-items: flex-start; z-index: 20;
+    display: flex; z-index: 20;
 }
 /* In standalone PWA mode, no browser chrome = no need for safe area */
-@media (display-mode: standalone) {
-    :root { --safe-bottom: 0px; }
-    #tab-bar { padding-bottom: 0; }
-}
 .tab {
     flex: 1; display: flex; flex-direction: column; align-items: center;
     justify-content: center; gap: 1px; background: none; border: none;
