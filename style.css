@@ -58,8 +58,8 @@ body.fs-open { overflow: hidden; }
 .login-container h1 { font-size: 2.5rem; margin-bottom: 0.25rem; color: var(--accent); }
 .subtitle { color: var(--text-muted); margin-bottom: 2rem; }
 #build-version {
-    position: absolute; bottom: 2px; left: 0; right: 0;
-    text-align: center; font-size: 0.5rem; color: var(--text-muted); opacity: 0.3;
+    position: absolute; bottom: 0; left: 0; right: 0;
+    text-align: center; font-size: 0.45rem; color: var(--text-muted); opacity: 0.25;
     pointer-events: none;
 }
 #login-form { display: flex; flex-direction: column; gap: 0.75rem; }
