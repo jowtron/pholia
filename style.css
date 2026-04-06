@@ -291,11 +291,12 @@ main {
 
 /* ── Tab bar ── */
 #tab-bar {
-    position: fixed; bottom: 4px; left: 0; right: 0;
+    position: fixed; bottom: 0; left: 0; right: 0;
     height: auto;
     background: var(--bg);
     border-top: 1px solid var(--border);
     display: flex; z-index: 20;
+    padding-bottom: 4px;
 }
 /* In standalone PWA mode, no browser chrome = no need for safe area */
 .tab {
