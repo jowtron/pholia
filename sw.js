@@ -1,4 +1,4 @@
-const CACHE_NAME = 'pholia-v2';
+const CACHE_NAME = 'pholia-v3';
 const APP_SHELL = [
     './',
     './index.html',

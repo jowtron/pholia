@@ -291,7 +291,7 @@ main {
 
 /* ── Tab bar ── */
 #tab-bar {
-    position: fixed; bottom: 0; left: 0; right: 0;
+    position: fixed; bottom: 4px; left: 0; right: 0;
     height: auto;
     background: var(--bg);
     border-top: 1px solid var(--border);
@@ -502,8 +502,8 @@ main {
     .pp-time { display: none; }
     .pp-info { flex: 1; }
     .pp-scrubber-bg { display: block; }
-    .pp-sleep-btn { display: none; }
-    .pp-sleep-indicator { display: none !important; }
+    .pp-sleep-btn { }
+    .pp-sleep-indicator { }
 
     .grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 0.75rem; }
     .h-scroll .card { width: 110px; }
