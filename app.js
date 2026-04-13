@@ -812,7 +812,16 @@ const App = {
         html += `<img class="detail-cover" src="${ABS.coverUrl(item.id)}" alt="" onerror="this.style.visibility='hidden'">`;
         html += '<div class="detail-meta">';
         html += `<h3>${esc(meta.title || 'Unknown')}</h3>`;
-        if (meta.authorName) html += `<div class="author">${esc(meta.authorName)}</div>`;
+        const authors = meta.authors || [];
+        if (authors.length) {
+            html += '<div class="author">';
+            html += authors.map(a =>
+                `<a href="#" class="author-link" data-author-id="${a.id}" data-author-name="${esc(a.name)}">${esc(a.name)}</a>`
+            ).join(', ');
+            html += '</div>';
+        } else if (meta.authorName) {
+            html += `<div class="author">${esc(meta.authorName)}</div>`;
+        }
         if (meta.narratorName) html += `<div class="narrator">Narrated by ${esc(meta.narratorName)}</div>`;
         html += `<div class="duration">${formatTime(duration)}`;
         if (progress) html += ` &bull; ${Math.round(progress.progress * 100)}% complete`;
@@ -845,6 +854,12 @@ const App = {
         html += '</div>';
         this.setContent(html);
 
+        document.querySelectorAll('.author-link').forEach(el => {
+            el.addEventListener('click', (e) => {
+                e.preventDefault();
+                this.showAuthorDetail(el.dataset.authorId, el.dataset.authorName);
+            });
+        });
         document.getElementById('detail-play').addEventListener('click', () => {
             Player.startItem(item, currentTime > 0 ? currentTime : null);
             setTimeout(() => {

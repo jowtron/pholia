@@ -239,6 +239,8 @@ main {
 }
 .detail-meta h3 { font-size: 1.25rem; margin-bottom: 0.25rem; }
 .detail-meta .author { color: var(--text-muted); margin-bottom: 0.25rem; font-size: 0.9rem; }
+.detail-meta .author-link { color: var(--accent); text-decoration: none; cursor: pointer; }
+.detail-meta .author-link:hover { color: var(--accent-hover); text-decoration: underline; }
 .detail-meta .narrator { color: var(--text-muted); font-size: 0.85rem; font-style: italic; }
 .detail-meta .duration { font-size: 0.8rem; color: var(--text-muted); margin-top: 0.5rem; }
 .detail-meta .description {
