@@ -820,7 +820,16 @@ const App = {
         return html;
     },
 
+    async markDownloadedCards() {
+        const ids = await Offline.downloadedIds();
+        if (!ids.size) return;
+        document.querySelectorAll('.grid-item[data-id], .card[data-id]').forEach(el => {
+            if (ids.has(el.dataset.id)) el.classList.add('is-downloaded');
+        });
+    },
+
     bindCardClicks() {
+        this.markDownloadedCards();
         document.querySelectorAll('.grid-item[data-id], .card[data-id]').forEach(el => {
             el.addEventListener('click', () => {
                 if (el.dataset.episodeId) {
@@ -1217,6 +1226,14 @@ const Offline = {
             }
             return total;
         } catch { return 0; }
+    },
+
+    async downloadedIds() {
+        try {
+            const cache = await caches.open(this.META_CACHE);
+            const keys = await cache.keys();
+            return new Set(keys.map(req => req.url.split('/').pop()));
+        } catch { return new Set(); }
     },
 
     async listDownloaded() {

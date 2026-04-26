@@ -171,6 +171,14 @@ main {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 1rem;
 }
 .grid-item { cursor: pointer; border-radius: var(--radius); overflow: hidden; background: var(--card-bg); position: relative; }
+
+/* Downloaded badge — small accent dot in the top-left corner of cards */
+.grid-item.is-downloaded::before, .h-scroll .card.is-downloaded::before {
+    content: ''; position: absolute; top: 6px; left: 6px;
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--accent); box-shadow: 0 0 0 2px var(--bg);
+    z-index: 2; pointer-events: none;
+}
 .h-scroll .card { position: relative; }
 .grid-item img {
     width: 100%; aspect-ratio: 1; object-fit: cover; background: var(--card-bg);

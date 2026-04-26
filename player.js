@@ -266,6 +266,9 @@ const Player = {
 
     onBufferingStart() {
         if (this.isBuffering) return;
+        // Don't show the spinner if the audio isn't actively trying to play.
+        // 'waiting'/'stalled' can fire after pause if the browser was mid-fetch.
+        if (this.audio.paused) return;
         this.isBuffering = true;
         this.setBufferingUI(true);
         this._scheduleRecovery();
