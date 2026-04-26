@@ -370,7 +370,18 @@ const App = {
     },
 
     // ── Navigation ──
+    _lastSwCheck: 0,
+    checkForSwUpdate() {
+        if (!('serviceWorker' in navigator)) return;
+        // Debounce: at most one update check per 10s.
+        const now = Date.now();
+        if (now - this._lastSwCheck < 10000) return;
+        this._lastSwCheck = now;
+        navigator.serviceWorker.getRegistration().then(reg => reg?.update());
+    },
+
     switchTab(tab) {
+        this.checkForSwUpdate();
         this.currentTab = tab;
         this.navStack = [];
         document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
@@ -387,6 +398,7 @@ const App = {
     },
 
     pushNav(title) {
+        this.checkForSwUpdate();
         this.navStack.push(title);
         document.getElementById('header-title').textContent = title;
         document.getElementById('back-btn').classList.toggle('hidden', this.navStack.length <= 1);
