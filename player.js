@@ -103,6 +103,39 @@ const Player = {
         this._startAutoCache();
     },
 
+    // Stream a fetch into the cache, dispatching cacheprogress events so the
+    // tracklist UI can fill in real time. Buffers chunks in memory then
+    // commits one Response — typical track is well under 100 MB.
+    async _streamToCache(cache, url, key, signal, itemId, trackIndex) {
+        const res = await fetch(url, { credentials: 'omit', signal });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const total = parseInt(res.headers.get('content-length') || '0', 10);
+        const reader = res.body.getReader();
+        const chunks = [];
+        let received = 0;
+        const headers = new Headers();
+        for (const [k, v] of res.headers.entries()) headers.set(k, v);
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                if (signal.aborted) { try { reader.cancel(); } catch {} return; }
+                chunks.push(value);
+                received += value.length;
+                document.dispatchEvent(new CustomEvent('cacheprogress', {
+                    detail: { itemId, trackIndex, received, total, done: false },
+                }));
+            }
+        } catch {
+            return;
+        }
+        const blob = new Blob(chunks, { type: res.headers.get('content-type') || 'audio/mpeg' });
+        await cache.put(key, new Response(blob, { status: 200, headers }));
+        document.dispatchEvent(new CustomEvent('cacheprogress', {
+            detail: { itemId, trackIndex, received, total: received, done: true },
+        }));
+    },
+
     // Opportunistically cache audio tracks ahead of the current position so a
     // network blip mid-listen doesn't kill playback. Bandwidth target: roughly
     // one hour ahead. Toggled by the 'cadence_auto_cache' setting.
@@ -126,22 +159,29 @@ const Player = {
         let elapsed = 0;
         for (let i = 0; i < tracks.length; i++) {
             const trackEnd = elapsed + (tracks[i].duration || 0);
+            const currentTime = this.getGlobalTime();
             const url = ABS.trackUrl(itemId, tracks[i].ino);
             const key = Offline.keyFor(url);
 
             if (signal.aborted) return;
             // Skip tracks that end before the current position
-            if (trackEnd < this.getGlobalTime()) { elapsed = trackEnd; continue; }
-            // Stop once we have enough cached ahead of the listener
-            if (elapsed - this.getGlobalTime() >= TARGET_AHEAD_SEC) break;
+            if (trackEnd <= currentTime) { elapsed = trackEnd; continue; }
+            // Skip the currently-playing track — caching it competes with the
+            // audio element for bandwidth and causes glitches.
+            if (currentTime >= elapsed && currentTime < trackEnd) { elapsed = trackEnd; continue; }
+            // Stop once we have ~1 hour cached ahead of the listener
+            if (elapsed - currentTime >= TARGET_AHEAD_SEC) break;
 
             if (!(await cache.match(key))) {
                 try {
-                    const res = await fetch(url, { credentials: 'omit', signal });
-                    if (res.ok) await cache.put(key, res);
+                    await this._streamToCache(cache, url, key, signal, itemId, i);
                 } catch {
                     return; // network/abort — bail out, will retry next play
                 }
+            } else {
+                document.dispatchEvent(new CustomEvent('cacheprogress', {
+                    detail: { itemId, trackIndex: i, received: 1, total: 1, done: true },
+                }));
             }
             elapsed = trackEnd;
         }

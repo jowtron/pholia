@@ -172,19 +172,20 @@ main {
 }
 .grid-item { cursor: pointer; border-radius: var(--radius); overflow: hidden; background: var(--card-bg); position: relative; }
 
-/* Downloaded badge — small accent dot in the top-left corner of cards */
+/* Downloaded badge — small green dot in the top-left corner of cards */
 .grid-item.is-downloaded::before, .h-scroll .card.is-downloaded::before {
     content: ''; position: absolute; top: 6px; left: 6px;
     width: 10px; height: 10px; border-radius: 50%;
-    background: var(--accent); box-shadow: 0 0 0 2px var(--bg);
+    background: #22c55e; box-shadow: 0 0 0 2px var(--bg);
     z-index: 2; pointer-events: none;
 }
 
-/* Cached-chapter indicator: small accent dot on the right of the row */
-.tracklist-item.is-cached .tracklist-play::after {
-    content: ''; display: inline-block; width: 6px; height: 6px;
-    border-radius: 50%; background: var(--accent); opacity: 0.75;
-    margin-left: 8px; flex-shrink: 0;
+/* Cached-chapter overlay: translucent green fill that grows as the underlying
+   audio file is cached. Sits behind tracklist-progress and the play button. */
+.tracklist-cache-fill {
+    position: absolute; top: 0; left: 0; bottom: 0; width: 0%;
+    background: rgba(34, 197, 94, 0.18);
+    pointer-events: none; z-index: 0; transition: width 0.3s ease;
 }
 .h-scroll .card { position: relative; }
 .grid-item img {

@@ -10,6 +10,7 @@ const App = {
         this.bindEvents();
         this.tryAutoLogin();
         this.setupSwUpdate();
+        document.addEventListener('cacheprogress', (e) => this.onCacheProgress(e.detail));
     },
 
     setupSwUpdate() {
@@ -888,6 +889,7 @@ const App = {
     },
 
     async showBookDetail(item) {
+        this._currentDetailItem = item;
         const meta = item.media?.metadata || {};
         const chapters = item.media?.chapters || [];
         const duration = item.media?.duration || 0;
@@ -936,6 +938,7 @@ const App = {
                 if (isActive && chDur > 0) chProgress = ((currentTime - ch.start) / chDur) * 100;
                 else if (currentTime > ch.end) chProgress = 100;
                 html += `<li class="tracklist-item ${isActive ? 'is-active' : ''}" data-index="${i}">`;
+                html += `<div class="tracklist-cache-fill"></div>`;
                 html += `<div class="tracklist-progress" style="width:${chProgress}%"></div>`;
                 html += `<button class="tracklist-play">`;
                 html += `<span class="tracklist-num">${i + 1}</span>`;
@@ -986,7 +989,6 @@ const App = {
         if (!audioFiles.length || !chapters.length) return;
         const mask = await Offline.cachedTracksMask(item);
         if (!mask.some(Boolean)) return;
-        // Build cumulative time ranges per audioFile
         const ranges = [];
         let elapsed = 0;
         for (let i = 0; i < audioFiles.length; i++) {
@@ -998,7 +1000,42 @@ const App = {
             const ch = chapters[idx];
             if (!ch) return;
             const r = ranges.find(r => ch.start >= r.start && ch.start < r.end);
-            if (r?.cached) el.classList.add('is-cached');
+            if (r?.cached) {
+                el.classList.add('is-cached');
+                const fill = el.querySelector('.tracklist-cache-fill');
+                if (fill) fill.style.width = '100%';
+            }
+        });
+    },
+
+    // Live update: stream a track's cache progress into the matching chapter rows.
+    onCacheProgress({ itemId, trackIndex, received, total, done }) {
+        const item = this._currentDetailItem;
+        if (!item || item.id !== itemId) return;
+        const audioFiles = item.media?.audioFiles || [];
+        const chapters = item.media?.chapters || [];
+        const track = audioFiles[trackIndex];
+        if (!track) return;
+
+        let trackStart = 0;
+        for (let i = 0; i < trackIndex; i++) trackStart += audioFiles[i].duration || 0;
+        const trackEnd = trackStart + (track.duration || 0);
+        const trackDur = trackEnd - trackStart;
+        if (trackDur <= 0) return;
+
+        const fileFrac = total > 0 ? Math.min(1, received / total) : (done ? 1 : 0);
+        const cachedTimeUpTo = trackStart + fileFrac * trackDur;
+
+        document.querySelectorAll('#content .tracklist-item[data-index]').forEach(el => {
+            const idx = parseInt(el.dataset.index);
+            const ch = chapters[idx];
+            if (!ch || ch.start < trackStart || ch.start >= trackEnd) return;
+            const chEnd = Math.min(ch.end, trackEnd);
+            const chDur = chEnd - ch.start;
+            const frac = chDur > 0 ? Math.max(0, Math.min(1, (cachedTimeUpTo - ch.start) / chDur)) : 0;
+            const fill = el.querySelector('.tracklist-cache-fill');
+            if (fill) fill.style.width = (frac * 100) + '%';
+            if (done && frac >= 0.999) el.classList.add('is-cached');
         });
     },
 
