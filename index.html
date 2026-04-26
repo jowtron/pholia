@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>Pholia</title>
@@ -171,6 +171,13 @@
                             <option value="light">Light</option>
                         </select>
                     </label>
+                    <div class="downloads-section">
+                        <div class="downloads-header">
+                            <h3>Downloaded</h3>
+                            <button id="downloads-clear" class="text-btn">Clear all</button>
+                        </div>
+                        <div id="downloads-list" class="downloads-list"></div>
+                    </div>
                     <div class="server-info">
                         <p>Server: <span id="setting-server"></span></p>
                         <p>User: <span id="setting-user"></span></p>
@@ -182,11 +189,11 @@
 
         <!-- Fullscreen player -->
         <div id="fs-player" class="fs-player hidden">
+            <button class="fs-close" id="fs-close" aria-label="Close">&times;</button>
             <div class="fs-scroll">
                 <img class="fs-cover" id="fs-cover" src="" alt="">
             </div>
             <div class="fs-bottom">
-                <button class="fs-close" id="fs-close">&times;</button>
                 <div class="fs-title" id="fs-title"></div>
                 <div class="fs-narrator" id="fs-narrator"></div>
                 <div class="fs-chapter" id="fs-chapter"></div>

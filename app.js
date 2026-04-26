@@ -1034,8 +1034,54 @@ const App = {
         document.getElementById('setting-skip').value = Player.skipDuration;
         document.getElementById('setting-theme').value = localStorage.getItem('cadence_theme') || 'dark';
         document.getElementById('settings-modal').classList.remove('hidden');
+        this.renderDownloadsList();
     },
     hideSettings() { document.getElementById('settings-modal').classList.add('hidden'); },
+
+    async renderDownloadsList() {
+        const list = document.getElementById('downloads-list');
+        const clearBtn = document.getElementById('downloads-clear');
+        if (!list) return;
+        list.innerHTML = '<div class="downloads-empty">Loading…</div>';
+        const items = await Offline.listDownloaded();
+        if (!items.length) {
+            list.innerHTML = '<div class="downloads-empty">No downloads yet</div>';
+            clearBtn.style.display = 'none';
+            return;
+        }
+        clearBtn.style.display = '';
+        const sizes = await Promise.all(items.map(i => Offline.bookSize(i)));
+        const totalBytes = sizes.reduce((a, b) => a + b, 0);
+        let html = `<div class="downloads-total">Total: ${formatBytes(totalBytes)}</div>`;
+        items.forEach((item, i) => {
+            const meta = item.media?.metadata || {};
+            const title = meta.title || 'Unknown';
+            const author = meta.authorName || '';
+            html += `<div class="downloads-row" data-id="${item.id}">`;
+            html += `<div class="downloads-info">`;
+            html += `<div class="downloads-title">${esc(title)}</div>`;
+            html += `<div class="downloads-sub">${esc(author)} • ${formatBytes(sizes[i])}</div>`;
+            html += `</div>`;
+            html += `<button class="text-btn downloads-remove" data-id="${item.id}">Remove</button>`;
+            html += `</div>`;
+        });
+        list.innerHTML = html;
+        list.querySelectorAll('.downloads-remove').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const item = items.find(i => i.id === btn.dataset.id);
+                if (!item) return;
+                btn.disabled = true; btn.textContent = 'Removing…';
+                await Offline.deleteBook(item);
+                this.renderDownloadsList();
+            });
+        });
+        clearBtn.onclick = async () => {
+            if (!confirm(`Remove all ${items.length} downloaded book${items.length === 1 ? '' : 's'}?`)) return;
+            list.innerHTML = '<div class="downloads-empty">Clearing…</div>';
+            for (const item of items) await Offline.deleteBook(item);
+            this.renderDownloadsList();
+        };
+    },
 
     // ── Fullscreen player ──
     openFullscreen() {
@@ -1144,6 +1190,23 @@ const Offline = {
         await metaCache.delete(this.metaKey(item.id));
     },
 
+    async bookSize(item) {
+        try {
+            const cache = await caches.open(this.AUDIO_CACHE);
+            const urls = [...this.trackUrls(item), ABS.coverUrl(item.id)];
+            let total = 0;
+            for (const url of urls) {
+                const res = await cache.match(this.keyFor(url));
+                if (!res) continue;
+                const len = res.headers.get('content-length');
+                if (len) { total += parseInt(len, 10); continue; }
+                const buf = await res.clone().arrayBuffer();
+                total += buf.byteLength;
+            }
+            return total;
+        } catch { return 0; }
+    },
+
     async listDownloaded() {
         try {
             const cache = await caches.open(this.META_CACHE);
@@ -1170,6 +1233,14 @@ function esc(str) {
 
 function debounce(fn, ms) {
     let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+}
+
+function formatBytes(bytes) {
+    if (!bytes) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let i = 0; let n = bytes;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return `${n < 10 && i > 0 ? n.toFixed(1) : Math.round(n)} ${units[i]}`;
 }
 
 document.addEventListener('DOMContentLoaded', () => App.init());

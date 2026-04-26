@@ -510,6 +510,24 @@ main {
 .server-info { padding-top: 1rem; border-top: 1px solid var(--border); font-size: 0.8rem; color: var(--text-muted); }
 .server-info p { margin-bottom: 0.25rem; }
 
+/* Downloads management in settings */
+.downloads-section { padding-top: 1rem; border-top: 1px solid var(--border); }
+.downloads-header {
+    display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;
+}
+.downloads-header h3 { font-size: 0.95rem; font-weight: 600; }
+.downloads-empty { font-size: 0.85rem; color: var(--text-muted); padding: 0.5rem 0; }
+.downloads-total { font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.5rem; }
+.downloads-list { display: flex; flex-direction: column; gap: 0.4rem; max-height: 220px; overflow-y: auto; }
+.downloads-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+    padding: 0.4rem 0.5rem; background: var(--card-bg); border-radius: 6px;
+}
+.downloads-info { min-width: 0; flex: 1; }
+.downloads-title { font-size: 0.85rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.downloads-sub { font-size: 0.7rem; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.downloads-remove { color: #e57373; font-size: 0.8rem; }
+
 /* ── Loading ── */
 .loading {
     display: flex; align-items: center; justify-content: center;
