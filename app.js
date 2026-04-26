@@ -107,6 +107,14 @@ const App = {
             document.documentElement.setAttribute('data-theme', e.target.value);
             localStorage.setItem('cadence_theme', e.target.value);
         });
+        document.getElementById('setting-auto-cache').addEventListener('change', e => {
+            localStorage.setItem('cadence_auto_cache', e.target.checked ? 'true' : 'false');
+            if (e.target.checked && Player.item) Player._startAutoCache();
+            else if (!e.target.checked && Player._autoCacheController) {
+                Player._autoCacheController.abort();
+                Player._autoCacheController = null;
+            }
+        });
         // Apply saved theme
         const savedTheme = localStorage.getItem('cadence_theme') || 'dark';
         document.documentElement.setAttribute('data-theme', savedTheme);
@@ -947,6 +955,7 @@ const App = {
             });
         });
         this.renderOfflineControls(item);
+        this.markCachedChapters(item);
         document.getElementById('detail-play').addEventListener('click', () => {
             Player.startItem(item, currentTime > 0 ? currentTime : null);
             setTimeout(() => {
@@ -968,6 +977,28 @@ const App = {
                     Player.startItem(item, seekTo);
                 }
             });
+        });
+    },
+
+    async markCachedChapters(item) {
+        const audioFiles = item.media?.audioFiles || [];
+        const chapters = item.media?.chapters || [];
+        if (!audioFiles.length || !chapters.length) return;
+        const mask = await Offline.cachedTracksMask(item);
+        if (!mask.some(Boolean)) return;
+        // Build cumulative time ranges per audioFile
+        const ranges = [];
+        let elapsed = 0;
+        for (let i = 0; i < audioFiles.length; i++) {
+            ranges.push({ start: elapsed, end: elapsed + (audioFiles[i].duration || 0), cached: mask[i] });
+            elapsed += audioFiles[i].duration || 0;
+        }
+        document.querySelectorAll('#content .tracklist-item[data-index]').forEach(el => {
+            const idx = parseInt(el.dataset.index);
+            const ch = chapters[idx];
+            if (!ch) return;
+            const r = ranges.find(r => ch.start >= r.start && ch.start < r.end);
+            if (r?.cached) el.classList.add('is-cached');
         });
     },
 
@@ -1054,6 +1085,7 @@ const App = {
         document.getElementById('setting-speed').value = Player.audio.playbackRate;
         document.getElementById('setting-skip').value = Player.skipDuration;
         document.getElementById('setting-theme').value = localStorage.getItem('cadence_theme') || 'dark';
+        document.getElementById('setting-auto-cache').checked = localStorage.getItem('cadence_auto_cache') !== 'false';
         document.getElementById('settings-modal').classList.remove('hidden');
         this.renderDownloadsList();
     },
@@ -1179,26 +1211,53 @@ const Offline = {
 
     async downloadBook(item, onProgress) {
         const audioCache = await caches.open(this.AUDIO_CACHE);
-        const metaCache = await caches.open(this.META_CACHE);
         const urls = this.trackUrls(item);
 
         try {
             const coverUrl = ABS.coverUrl(item.id);
-            const coverRes = await fetch(coverUrl, { credentials: 'omit' });
-            if (coverRes.ok) await audioCache.put(this.keyFor(coverUrl), coverRes);
+            const coverKey = this.keyFor(coverUrl);
+            if (!(await audioCache.match(coverKey))) {
+                const coverRes = await fetch(coverUrl, { credentials: 'omit' });
+                if (coverRes.ok) await audioCache.put(coverKey, coverRes);
+            }
         } catch {}
 
         for (let i = 0; i < urls.length; i++) {
-            const res = await fetch(urls[i], { credentials: 'omit' });
-            if (!res.ok) throw new Error(`Track ${i + 1} failed: ${res.status}`);
-            await audioCache.put(this.keyFor(urls[i]), res);
+            const key = this.keyFor(urls[i]);
+            if (!(await audioCache.match(key))) {
+                const res = await fetch(urls[i], { credentials: 'omit' });
+                if (!res.ok) throw new Error(`Track ${i + 1} failed: ${res.status}`);
+                await audioCache.put(key, res);
+            }
             onProgress?.(i + 1, urls.length);
         }
 
+        await this.saveMeta(item);
+    },
+
+    async saveMeta(item) {
+        const metaCache = await caches.open(this.META_CACHE);
         await metaCache.put(
             this.metaKey(item.id),
             new Response(JSON.stringify(item), { headers: { 'Content-Type': 'application/json' } })
         );
+    },
+
+    // Returns one boolean per audioFile: true if cached
+    async cachedTracksMask(item) {
+        const tracks = item.media?.audioFiles || [];
+        if (!tracks.length) return [];
+        try {
+            const cache = await caches.open(this.AUDIO_CACHE);
+            const out = [];
+            for (const t of tracks) {
+                const m = await cache.match(this.keyFor(ABS.trackUrl(item.id, t.ino)));
+                out.push(!!m);
+            }
+            return out;
+        } catch {
+            return tracks.map(() => false);
+        }
     },
 
     async deleteBook(item) {

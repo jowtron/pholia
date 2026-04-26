@@ -69,6 +69,7 @@ const Player = {
 
     async startItem(item, startTime = null) {
         if (this.session) await this.closeCurrentSession();
+        if (this._autoCacheController) { this._autoCacheController.abort(); this._autoCacheController = null; }
 
         this.item = item;
         this.chapters = item.media?.chapters || [];
@@ -98,6 +99,63 @@ const Player = {
 
         document.getElementById('player-bar').classList.remove('hidden');
         document.getElementById('main-screen').classList.add('player-active');
+
+        this._startAutoCache();
+    },
+
+    // Opportunistically cache audio tracks ahead of the current position so a
+    // network blip mid-listen doesn't kill playback. Bandwidth target: roughly
+    // one hour ahead. Toggled by the 'cadence_auto_cache' setting.
+    async _startAutoCache() {
+        if (localStorage.getItem('cadence_auto_cache') === 'false') return;
+        const tracks = this.item?.media?.audioFiles || [];
+        if (!tracks.length) return;
+
+        const controller = new AbortController();
+        this._autoCacheController = controller;
+        const signal = controller.signal;
+
+        // Yield 5s so the initial buffer for the playing track wins the bandwidth.
+        await new Promise(r => setTimeout(r, 5000));
+        if (signal.aborted) return;
+
+        const TARGET_AHEAD_SEC = 3600; // 1 hour
+        const cache = await caches.open(Offline.AUDIO_CACHE);
+        const itemId = this.item.id;
+
+        let elapsed = 0;
+        for (let i = 0; i < tracks.length; i++) {
+            const trackEnd = elapsed + (tracks[i].duration || 0);
+            const url = ABS.trackUrl(itemId, tracks[i].ino);
+            const key = Offline.keyFor(url);
+
+            if (signal.aborted) return;
+            // Skip tracks that end before the current position
+            if (trackEnd < this.getGlobalTime()) { elapsed = trackEnd; continue; }
+            // Stop once we have enough cached ahead of the listener
+            if (elapsed - this.getGlobalTime() >= TARGET_AHEAD_SEC) break;
+
+            if (!(await cache.match(key))) {
+                try {
+                    const res = await fetch(url, { credentials: 'omit', signal });
+                    if (res.ok) await cache.put(key, res);
+                } catch {
+                    return; // network/abort — bail out, will retry next play
+                }
+            }
+            elapsed = trackEnd;
+        }
+
+        // Save metadata + cover so the book appears in the offline list.
+        try {
+            const coverUrl = ABS.coverUrl(itemId);
+            const coverKey = Offline.keyFor(coverUrl);
+            if (!(await cache.match(coverKey))) {
+                const coverRes = await fetch(coverUrl, { credentials: 'omit', signal });
+                if (coverRes.ok) await cache.put(coverKey, coverRes);
+            }
+            await Offline.saveMeta(this.item);
+        } catch {}
     },
 
     loadTime(globalTime) {
