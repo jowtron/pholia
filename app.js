@@ -17,16 +17,31 @@ const App = {
 
         const showBanner = (reg) => {
             document.getElementById('update-banner').classList.remove('hidden');
-            // Auto-apply after 5 seconds
+            // Auto-apply after 5s
             setTimeout(() => {
                 if (reg.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' });
             }, 5000);
+            // Failsafe: if controllerchange never fires (broken activation),
+            // force a reload anyway so the user isn't stuck.
+            setTimeout(() => {
+                if (document.visibilityState === 'visible') window.location.reload();
+            }, 12000);
         };
 
-        document.getElementById('update-btn').addEventListener('click', () => {
-            navigator.serviceWorker.getRegistration().then(reg => {
-                if (reg?.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' });
-            });
+        document.getElementById('update-btn').addEventListener('click', async () => {
+            try {
+                const reg = await navigator.serviceWorker.getRegistration();
+                if (reg?.waiting) {
+                    reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+                    // Failsafe reload if controllerchange doesn't fire promptly
+                    setTimeout(() => window.location.reload(), 1500);
+                } else {
+                    // Stale banner — no waiting SW left. Recover by reloading.
+                    window.location.reload();
+                }
+            } catch {
+                window.location.reload();
+            }
         });
 
         navigator.serviceWorker.getRegistration().then(reg => {
@@ -46,13 +61,16 @@ const App = {
             });
         });
 
-        // Reload when new SW takes control
+        // Reload when new SW takes control. Skip the first-install case
+        // (no prior controller) so we don't blow away in-memory state on
+        // a fresh install.
+        const hadController = !!navigator.serviceWorker.controller;
         let refreshing = false;
         navigator.serviceWorker.addEventListener('controllerchange', () => {
-            if (!refreshing) { refreshing = true; window.location.reload(); }
+            if (hadController && !refreshing) { refreshing = true; window.location.reload(); }
         });
 
-        // Check for updates when app resumes
+        // Check for updates when app resumes (essential for iOS PWA)
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'visible') {
                 navigator.serviceWorker.getRegistration().then(reg => reg?.update());
