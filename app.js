@@ -390,9 +390,12 @@ const App = {
         this.showLoading();
         if (!this.currentLibraryId) return;
 
+        const downloaded = await Offline.listDownloaded();
+        const offlineHtml = this.renderOfflineSection(downloaded);
+
         try {
             const sections = await ABS.request(`/api/libraries/${this.currentLibraryId}/personalized`);
-            let html = '';
+            let html = offlineHtml;
             for (const section of sections) {
                 if (!section.entities?.length) continue;
                 html += `<div class="section-title">${esc(section.label)}</div>`;
@@ -421,9 +424,52 @@ const App = {
             if (!html) html = '<div class="loading">No items yet</div>';
             this.setContent(html);
             this.bindCardClicks();
+            this.bindOfflineCardClicks(downloaded);
         } catch (e) {
-            this.setContent(`<div class="loading">Error: ${esc(e.message)}</div>`);
+            // If we have downloaded books, still render those so the user can play offline.
+            if (offlineHtml) {
+                this.setContent(offlineHtml + `<div class="loading">Server unreachable — offline books only</div>`);
+                this.bindOfflineCardClicks(downloaded);
+            } else {
+                this.setContent(`<div class="loading">Error: ${esc(e.message)}</div>`);
+            }
         }
+    },
+
+    renderOfflineSection(items) {
+        if (!items.length) return '';
+        let html = `<div class="section-title">Downloaded</div><div class="h-scroll">`;
+        for (const item of items) {
+            const meta = item.media?.metadata || {};
+            const title = meta.title || 'Unknown';
+            const subtitle = meta.authorName || '';
+            html += `<div class="card offline-card" data-offline-id="${item.id}">`;
+            html += `<img src="${ABS.coverUrl(item.id)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
+            html += `<button class="play-overlay" data-offline-play="${item.id}">▶</button>`;
+            html += `<div class="card-title">${esc(title)}</div>`;
+            html += `<div class="card-sub">${esc(subtitle)}</div>`;
+            html += '</div>';
+        }
+        html += '</div>';
+        return html;
+    },
+
+    bindOfflineCardClicks(items) {
+        const byId = Object.fromEntries(items.map(i => [i.id, i]));
+        document.querySelectorAll('.offline-card[data-offline-id]').forEach(el => {
+            el.addEventListener('click', (e) => {
+                if (e.target.closest('.play-overlay')) return;
+                const item = byId[el.dataset.offlineId];
+                if (item) this.showBookDetail(item);
+            });
+        });
+        document.querySelectorAll('.play-overlay[data-offline-play]').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const item = byId[btn.dataset.offlinePlay];
+                if (item) Player.startItem(item);
+            });
+        });
     },
 
     // ── Library ──
@@ -754,7 +800,7 @@ const App = {
                 }
             });
         });
-        document.querySelectorAll('.play-overlay').forEach(btn => {
+        document.querySelectorAll('.play-overlay[data-play-id]').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 const epId = btn.dataset.playEpisode;
@@ -831,6 +877,7 @@ const App = {
 
         const btnText = currentTime > 0 ? `Resume from ${formatTime(currentTime)}` : 'Play';
         html += `<button class="play-btn-large" id="detail-play">${btnText}</button>`;
+        html += `<div id="offline-controls" class="offline-controls"></div>`;
 
         if (chapters.length) {
             html += '<div class="section-title">Chapters</div><ul class="tracklist">';
@@ -860,6 +907,7 @@ const App = {
                 this.showAuthorDetail(el.dataset.authorId, el.dataset.authorName);
             });
         });
+        this.renderOfflineControls(item);
         document.getElementById('detail-play').addEventListener('click', () => {
             Player.startItem(item, currentTime > 0 ? currentTime : null);
             setTimeout(() => {
@@ -882,6 +930,43 @@ const App = {
                 }
             });
         });
+    },
+
+    async renderOfflineControls(item) {
+        const el = document.getElementById('offline-controls');
+        if (!el) return;
+        const trackCount = item.media?.audioFiles?.length || 0;
+        if (!trackCount) { el.innerHTML = ''; return; }
+
+        const downloaded = await Offline.isDownloaded(item);
+        if (downloaded) {
+            el.innerHTML = `
+                <span class="offline-badge">Downloaded</span>
+                <button class="text-btn offline-delete">Remove download</button>
+            `;
+            el.querySelector('.offline-delete').addEventListener('click', async () => {
+                if (!confirm('Remove downloaded audio for this book?')) return;
+                el.innerHTML = '<span class="offline-status">Removing…</span>';
+                await Offline.deleteBook(item);
+                this.renderOfflineControls(item);
+            });
+        } else {
+            el.innerHTML = `<button class="text-btn offline-download">Download for offline</button>`;
+            el.querySelector('.offline-download').addEventListener('click', async () => {
+                el.innerHTML = `<span class="offline-status">Downloading 0/${trackCount}…</span>`;
+                try {
+                    await Offline.downloadBook(item, (done, total) => {
+                        const status = el.querySelector('.offline-status');
+                        if (status) status.textContent = `Downloading ${done}/${total}…`;
+                    });
+                    this.renderOfflineControls(item);
+                } catch (e) {
+                    el.innerHTML = `<span class="offline-status error">Failed: ${esc(e.message)}</span>
+                        <button class="text-btn offline-retry">Retry</button>`;
+                    el.querySelector('.offline-retry').addEventListener('click', () => this.renderOfflineControls(item));
+                }
+            });
+        }
     },
 
     showPodcastDetail(item) {
@@ -976,6 +1061,86 @@ const App = {
         // Scroll to current chapter
         const activeEl = document.getElementById(`fs-ch-${Player.currentChapterIndex}`);
         if (activeEl) activeEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    },
+};
+
+// Offline download manager — stores audio + cover in Cache Storage,
+// keyed with the auth token stripped so cache survives token rotation.
+const Offline = {
+    AUDIO_CACHE: 'pholia-offline-audio-v1',
+    META_CACHE: 'pholia-offline-meta-v1',
+
+    keyFor(url) {
+        const u = new URL(url);
+        u.searchParams.delete('token');
+        return u.toString();
+    },
+
+    metaKey(itemId) { return `https://pholia.local/meta/${itemId}`; },
+
+    trackUrls(item) {
+        return (item.media?.audioFiles || []).map(t => ABS.trackUrl(item.id, t.ino));
+    },
+
+    async isDownloaded(item) {
+        const urls = this.trackUrls(item);
+        if (!urls.length) return false;
+        const cache = await caches.open(this.AUDIO_CACHE);
+        for (const url of urls) {
+            if (!(await cache.match(this.keyFor(url)))) return false;
+        }
+        return true;
+    },
+
+    async downloadBook(item, onProgress) {
+        const audioCache = await caches.open(this.AUDIO_CACHE);
+        const metaCache = await caches.open(this.META_CACHE);
+        const urls = this.trackUrls(item);
+
+        try {
+            const coverUrl = ABS.coverUrl(item.id);
+            const coverRes = await fetch(coverUrl, { credentials: 'omit' });
+            if (coverRes.ok) await audioCache.put(this.keyFor(coverUrl), coverRes);
+        } catch {}
+
+        for (let i = 0; i < urls.length; i++) {
+            const res = await fetch(urls[i], { credentials: 'omit' });
+            if (!res.ok) throw new Error(`Track ${i + 1} failed: ${res.status}`);
+            await audioCache.put(this.keyFor(urls[i]), res);
+            onProgress?.(i + 1, urls.length);
+        }
+
+        await metaCache.put(
+            this.metaKey(item.id),
+            new Response(JSON.stringify(item), { headers: { 'Content-Type': 'application/json' } })
+        );
+    },
+
+    async deleteBook(item) {
+        const audioCache = await caches.open(this.AUDIO_CACHE);
+        const metaCache = await caches.open(this.META_CACHE);
+        for (const url of this.trackUrls(item)) {
+            await audioCache.delete(this.keyFor(url));
+        }
+        await audioCache.delete(this.keyFor(ABS.coverUrl(item.id)));
+        await metaCache.delete(this.metaKey(item.id));
+    },
+
+    async listDownloaded() {
+        try {
+            const cache = await caches.open(this.META_CACHE);
+            const keys = await cache.keys();
+            const items = [];
+            for (const req of keys) {
+                const res = await cache.match(req);
+                if (res) {
+                    try { items.push(await res.json()); } catch {}
+                }
+            }
+            return items;
+        } catch {
+            return [];
+        }
     },
 };
 

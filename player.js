@@ -17,11 +17,16 @@ const Player = {
     skipDuration: 30,
 
     init() {
+        this.audio.preload = 'auto';
         this.audio.addEventListener('timeupdate', () => this.onTimeUpdate());
         this.audio.addEventListener('ended', () => this.onTrackEnded());
         this.audio.addEventListener('play', () => this.setPlaying(true));
         this.audio.addEventListener('pause', () => this.setPlaying(false));
         this.audio.addEventListener('error', (e) => console.error('Audio error', e));
+        this.audio.addEventListener('waiting', () => this.onBufferingStart());
+        this.audio.addEventListener('stalled', () => this.onBufferingStart());
+        this.audio.addEventListener('playing', () => this.onBufferingEnd());
+        this.audio.addEventListener('canplay', () => this.onBufferingEnd());
 
         const speed = localStorage.getItem('cadence_speed');
         if (speed) this.audio.playbackRate = parseFloat(speed);
@@ -68,6 +73,7 @@ const Player = {
         this.item = item;
         this.chapters = item.media?.chapters || [];
         this.tracks = item.media?.audioFiles || [];
+        this._prewarmedFromTrackIndex = -1;
 
         try {
             this.session = await ABS.startSession(item.id);
@@ -254,6 +260,44 @@ const Player = {
         if (el2) el2.textContent = txt;
     },
 
+    isBuffering: false,
+    _bufferingTimer: null,
+    _recoveryAttempts: 0,
+
+    onBufferingStart() {
+        if (this.isBuffering) return;
+        this.isBuffering = true;
+        this.setBufferingUI(true);
+        this._scheduleRecovery();
+    },
+
+    onBufferingEnd() {
+        if (!this.isBuffering) return;
+        this.isBuffering = false;
+        this._recoveryAttempts = 0;
+        if (this._bufferingTimer) { clearTimeout(this._bufferingTimer); this._bufferingTimer = null; }
+        this.setBufferingUI(false);
+    },
+
+    // After ~8s of buffering, nudge currentTime to force a fresh Range request.
+    // Helps recover from a stalled fetch on flaky connections.
+    _scheduleRecovery() {
+        if (this._bufferingTimer) clearTimeout(this._bufferingTimer);
+        this._bufferingTimer = setTimeout(() => {
+            if (!this.isBuffering) return;
+            if (++this._recoveryAttempts > 3) return;
+            const t = this.audio.currentTime;
+            this.audio.currentTime = Math.max(0, t - 0.5);
+            this.audio.play().catch(() => {});
+            this._scheduleRecovery();
+        }, 8000);
+    },
+
+    setBufferingUI(active) {
+        document.getElementById('pp-play')?.classList.toggle('buffering', active);
+        document.getElementById('fs-play')?.classList.toggle('buffering', active);
+    },
+
     setPlaying(playing) {
         this.isPlaying = playing;
         const playSvg = '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
@@ -263,6 +307,7 @@ const Player = {
     },
 
     _lastChapterIndex: -1,
+    _prewarmedFromTrackIndex: -1,
     onTimeUpdate() {
         this.updateUI();
         // Update media session on chapter change
@@ -276,6 +321,30 @@ const Player = {
                 this.pause(); this.sleepEndOfChapter = false; this.setSleepActive(false);
             }
         }
+        this.maybePrewarmNextTrack();
+    },
+
+    // Fetch the head of the next track when within 30s of current track end.
+    // Primes DNS/TLS/HTTP cache so onTrackEnded swap is near-instant.
+    maybePrewarmNextTrack() {
+        const tracks = this.session?.audioTracks || this.tracks;
+        if (!tracks || tracks.length < 2) return;
+        if (this.currentTrackIndex >= tracks.length - 1) return;
+        if (this._prewarmedFromTrackIndex === this.currentTrackIndex) return;
+        const cur = tracks[this.currentTrackIndex];
+        if (!cur?.duration) return;
+        if (this.audio.currentTime < cur.duration - 30) return;
+
+        const next = tracks[this.currentTrackIndex + 1];
+        let url;
+        if (this.session?.audioTracks) {
+            url = next.contentUrl.startsWith('http')
+                ? next.contentUrl : `${ABS.serverUrl}${next.contentUrl}?token=${ABS.token}`;
+        } else {
+            url = ABS.trackUrl(this.item.id, next.ino);
+        }
+        this._prewarmedFromTrackIndex = this.currentTrackIndex;
+        fetch(url, { credentials: 'omit', headers: { Range: 'bytes=0-262143' } }).catch(() => {});
     },
 
     onTrackEnded() {
