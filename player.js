@@ -21,7 +21,7 @@ const Player = {
         this.audio.addEventListener('timeupdate', () => this.onTimeUpdate());
         this.audio.addEventListener('ended', () => this.onTrackEnded());
         this.audio.addEventListener('play', () => this.setPlaying(true));
-        this.audio.addEventListener('pause', () => this.setPlaying(false));
+        this.audio.addEventListener('pause', () => { this.setPlaying(false); this.onBufferingEnd(); });
         this.audio.addEventListener('error', (e) => console.error('Audio error', e));
         this.audio.addEventListener('waiting', () => this.onBufferingStart());
         this.audio.addEventListener('stalled', () => this.onBufferingStart());
@@ -284,7 +284,7 @@ const Player = {
     _scheduleRecovery() {
         if (this._bufferingTimer) clearTimeout(this._bufferingTimer);
         this._bufferingTimer = setTimeout(() => {
-            if (!this.isBuffering) return;
+            if (!this.isBuffering || this.audio.paused) return;
             if (++this._recoveryAttempts > 3) return;
             const t = this.audio.currentTime;
             this.audio.currentTime = Math.max(0, t - 0.5);
