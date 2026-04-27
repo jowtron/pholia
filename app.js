@@ -429,7 +429,7 @@ const App = {
         this.showLoading();
         if (!this.currentLibraryId) return;
 
-        const downloaded = await Offline.listDownloaded();
+        const downloaded = await Offline.fullyDownloaded();
         const offlineHtml = this.renderOfflineSection(downloaded);
 
         try {
@@ -830,7 +830,7 @@ const App = {
     },
 
     async markDownloadedCards() {
-        const ids = await Offline.downloadedIds();
+        const ids = await Offline.fullyDownloadedIds();
         if (!ids.size) return;
         document.querySelectorAll('.grid-item[data-id], .card[data-id]').forEach(el => {
             if (ids.has(el.dataset.id)) el.classList.add('is-downloaded');
@@ -1330,6 +1330,37 @@ const Offline = {
             const keys = await cache.keys();
             return new Set(keys.map(req => req.url.split('/').pop()));
         } catch { return new Set(); }
+    },
+
+    // IDs of books where every audio file is in the cache.
+    async fullyDownloadedIds() {
+        try {
+            const metaCache = await caches.open(this.META_CACHE);
+            const audioCache = await caches.open(this.AUDIO_CACHE);
+            const keys = await metaCache.keys();
+            const ids = new Set();
+            for (const req of keys) {
+                const res = await metaCache.match(req);
+                if (!res) continue;
+                let item;
+                try { item = await res.json(); } catch { continue; }
+                const tracks = item.media?.audioFiles || [];
+                if (!tracks.length) continue;
+                let all = true;
+                for (const t of tracks) {
+                    const m = await audioCache.match(this.keyFor(ABS.trackUrl(item.id, t.ino)));
+                    if (!m) { all = false; break; }
+                }
+                if (all) ids.add(item.id);
+            }
+            return ids;
+        } catch { return new Set(); }
+    },
+
+    async fullyDownloaded() {
+        const all = await this.listDownloaded();
+        const ids = await this.fullyDownloadedIds();
+        return all.filter(i => ids.has(i.id));
     },
 
     async listDownloaded() {
