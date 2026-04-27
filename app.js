@@ -1329,25 +1329,62 @@ const Offline = {
         await this.saveMeta(item);
     },
 
-    // Pipes a fetch response straight into the cache via TransformStream so
-    // the browser handles the body without buffering it all in JS memory.
-    // Reports progress without buying a second copy of the bytes.
-    async _streamFetchToCache(cache, url, key, onChunk) {
-        const res = await fetch(url, { credentials: 'omit' });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const total = parseInt(res.headers.get('content-length') || '0', 10);
+    CHUNK_SIZE: 10 * 1024 * 1024, // 10 MB
+
+    // Fetch a track in 10 MB pieces using HTTP Range, storing each piece as
+    // its own cache entry. Avoids putting a multi-hundred-MB Response into
+    // cache.put in one go (which OOMs iOS PWA). The SW reassembles chunks
+    // when the audio element makes Range requests during playback.
+    async _streamFetchToCache(cache, url, key, onChunk, opts = {}) {
+        const head = await fetch(url, { method: 'HEAD', credentials: 'omit' });
+        if (!head.ok) throw new Error(`HEAD ${head.status}`);
+        const total = parseInt(head.headers.get('content-length') || '0', 10);
+        const contentType = head.headers.get('content-type') || 'audio/mpeg';
+
+        if (!total) {
+            // Server didn't give us a size — fall back to one-shot streaming.
+            const res = await fetch(url, { credentials: 'omit' });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const headers = new Headers();
+            for (const [k, v] of res.headers.entries()) headers.set(k, v);
+            await cache.put(key, new Response(res.body, { status: 200, headers }));
+            return;
+        }
+
+        const numChunks = Math.ceil(total / this.CHUNK_SIZE);
         let received = 0;
-        const counter = new TransformStream({
-            transform(chunk, controller) {
-                received += chunk.byteLength || chunk.length || 0;
+
+        for (let i = 0; i < numChunks; i++) {
+            const chunkKey = key + '#chunk=' + i;
+            const existing = await cache.match(chunkKey);
+            if (existing) {
+                const buf = await existing.arrayBuffer();
+                received += buf.byteLength;
                 try { onChunk?.(received, total); } catch {}
-                controller.enqueue(chunk);
-            },
-        });
-        const piped = res.body.pipeThrough(counter);
-        const headers = new Headers();
-        for (const [k, v] of res.headers.entries()) headers.set(k, v);
-        await cache.put(key, new Response(piped, { status: 200, headers }));
+                continue;
+            }
+            if (opts.beforeChunk) await opts.beforeChunk();
+            const start = i * this.CHUNK_SIZE;
+            const end = Math.min(start + this.CHUNK_SIZE - 1, total - 1);
+            const res = await fetch(url, {
+                credentials: 'omit',
+                headers: { Range: `bytes=${start}-${end}` },
+            });
+            if (res.status !== 206 && res.status !== 200) {
+                throw new Error(`Range fetch ${i} failed: ${res.status}`);
+            }
+            const blob = await res.blob();
+            await cache.put(chunkKey, new Response(blob, {
+                status: 200,
+                headers: { 'Content-Type': contentType, 'Content-Length': String(blob.size) },
+            }));
+            received += blob.size;
+            try { onChunk?.(received, total); } catch {}
+        }
+
+        await cache.put(key + '#meta', new Response(JSON.stringify({
+            contentType, totalSize: total, chunkSize: this.CHUNK_SIZE, numChunks,
+        }), { headers: { 'Content-Type': 'application/json' } }));
     },
 
     async saveMeta(item) {
@@ -1358,7 +1395,7 @@ const Offline = {
         );
     },
 
-    // Returns one boolean per audioFile: true if cached
+    // Returns one boolean per audioFile: true if fully cached (chunked or whole)
     async cachedTracksMask(item) {
         const tracks = item.media?.audioFiles || [];
         if (!tracks.length) return [];
@@ -1366,8 +1403,10 @@ const Offline = {
             const cache = await caches.open(this.AUDIO_CACHE);
             const out = [];
             for (const t of tracks) {
-                const m = await cache.match(this.keyFor(ABS.trackUrl(item.id, t.ino)));
-                out.push(!!m);
+                const key = this.keyFor(ABS.trackUrl(item.id, t.ino));
+                if (await cache.match(key + '#meta')) { out.push(true); continue; }
+                if (await cache.match(key)) { out.push(true); continue; }
+                out.push(false);
             }
             return out;
         } catch {
@@ -1379,7 +1418,20 @@ const Offline = {
         const audioCache = await caches.open(this.AUDIO_CACHE);
         const metaCache = await caches.open(this.META_CACHE);
         for (const url of this.trackUrls(item)) {
-            await audioCache.delete(this.keyFor(url));
+            const key = this.keyFor(url);
+            // Legacy whole-file entry
+            await audioCache.delete(key);
+            // Chunked entries: read meta to know how many, delete each
+            const metaRes = await audioCache.match(key + '#meta');
+            if (metaRes) {
+                try {
+                    const m = await metaRes.json();
+                    for (let i = 0; i < (m.numChunks || 0); i++) {
+                        await audioCache.delete(key + '#chunk=' + i);
+                    }
+                } catch {}
+                await audioCache.delete(key + '#meta');
+            }
         }
         await audioCache.delete(this.keyFor(ABS.coverUrl(item.id)));
         await metaCache.delete(this.metaKey(item.id));
@@ -1391,7 +1443,14 @@ const Offline = {
             const urls = [...this.trackUrls(item), ABS.coverUrl(item.id)];
             let total = 0;
             for (const url of urls) {
-                const res = await cache.match(this.keyFor(url));
+                const key = this.keyFor(url);
+                // Chunked: prefer meta totalSize
+                const metaRes = await cache.match(key + '#meta');
+                if (metaRes) {
+                    try { const m = await metaRes.json(); total += m.totalSize || 0; continue; } catch {}
+                }
+                // Whole-file fallback
+                const res = await cache.match(key);
                 if (!res) continue;
                 const len = res.headers.get('content-length');
                 if (len) { total += parseInt(len, 10); continue; }
@@ -1426,8 +1485,9 @@ const Offline = {
                 if (!tracks.length) continue;
                 let all = true;
                 for (const t of tracks) {
-                    const m = await audioCache.match(this.keyFor(ABS.trackUrl(item.id, t.ino)));
-                    if (!m) { all = false; break; }
+                    const key = this.keyFor(ABS.trackUrl(item.id, t.ino));
+                    const ok = (await audioCache.match(key + '#meta')) || (await audioCache.match(key));
+                    if (!ok) { all = false; break; }
                 }
                 if (all) ids.add(item.id);
             }

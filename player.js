@@ -116,43 +116,27 @@ const Player = {
         } catch { return false; }
     },
 
-    // Pipe a fetch response straight into the cache via TransformStream so
-    // the browser handles persistence without buffering it all in JS memory.
-    // The transform yields to audio when its buffer is shallow and adds a
-    // small breather between chunks so the cache doesn't starve playback.
+    // Cache a track in 10 MB chunks (via Offline._streamFetchToCache).
+    // Between chunks, yield to the audio element when its buffer is shallow
+    // so the cache doesn't compete with playback. Aborts cleanly on item change.
     async _streamToCache(cache, url, key, signal, itemId, trackIndex) {
-        const res = await fetch(url, { credentials: 'omit', signal });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const total = parseInt(res.headers.get('content-length') || '0', 10);
-        let received = 0;
-        const self = this;
-
-        const throttle = new TransformStream({
-            async transform(chunk, controller) {
-                if (signal.aborted) { controller.error(new Error('aborted')); return; }
-                received += chunk.byteLength || chunk.length || 0;
+        await Offline._streamFetchToCache(cache, url, key,
+            (received, total) => {
                 document.dispatchEvent(new CustomEvent('cacheprogress', {
                     detail: { itemId, trackIndex, received, total, done: false },
                 }));
-                while (self._audioBufferShallow()) {
-                    await new Promise(r => setTimeout(r, 400));
-                    if (signal.aborted) { controller.error(new Error('aborted')); return; }
-                }
-                await new Promise(r => setTimeout(r, 60));
-                controller.enqueue(chunk);
             },
-        });
-
-        const piped = res.body.pipeThrough(throttle);
-        const headers = new Headers();
-        for (const [k, v] of res.headers.entries()) headers.set(k, v);
-        try {
-            await cache.put(key, new Response(piped, { status: 200, headers }));
-        } catch {
-            return;
-        }
+            {
+                beforeChunk: async () => {
+                    if (signal.aborted) throw new Error('aborted');
+                    while (this._audioBufferShallow()) {
+                        await new Promise(r => setTimeout(r, 400));
+                        if (signal.aborted) throw new Error('aborted');
+                    }
+                },
+            });
         document.dispatchEvent(new CustomEvent('cacheprogress', {
-            detail: { itemId, trackIndex, received, total: received || total, done: true },
+            detail: { itemId, trackIndex, received: 1, total: 1, done: true },
         }));
     },
 

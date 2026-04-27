@@ -67,8 +67,23 @@ function offlineKey(url) {
 
 async function handleCrossOrigin(request) {
     const cache = await caches.open(OFFLINE_AUDIO_CACHE);
-    const cached = await cache.match(offlineKey(request.url));
+    const baseKey = offlineKey(request.url);
+
+    // Chunked format (large files): meta entry tells us how to assemble.
+    const metaRes = await cache.match(baseKey + '#meta');
+    if (metaRes) {
+        try {
+            const meta = await metaRes.json();
+            return await serveChunked(request, cache, baseKey, meta);
+        } catch {
+            // Fall through to other strategies if meta is corrupt
+        }
+    }
+
+    // Legacy whole-file format (covers, small files).
+    const cached = await cache.match(baseKey);
     if (cached) return serveCached(request, cached);
+
     return fetch(request);
 }
 
@@ -90,6 +105,67 @@ async function serveCached(request, cachedResponse) {
             'Content-Type': cachedResponse.headers.get('content-type') || 'audio/mpeg',
             'Content-Length': String(chunk.byteLength),
             'Content-Range': `bytes ${start}-${end}/${total}`,
+            'Accept-Ranges': 'bytes',
+        },
+    });
+}
+
+// Serve a chunked file: each #chunk=N entry is a CHUNK_SIZE-bytes slab. For
+// Range requests we look up just the chunks that overlap the requested range
+// and stitch them together. For non-Range we stream all chunks in order.
+async function serveChunked(request, cache, baseKey, meta) {
+    const { contentType, totalSize, chunkSize, numChunks } = meta;
+    const range = request.headers.get('range');
+
+    if (!range) {
+        const stream = new ReadableStream({
+            async start(controller) {
+                try {
+                    for (let i = 0; i < numChunks; i++) {
+                        const c = await cache.match(baseKey + '#chunk=' + i);
+                        if (!c) { controller.error(new Error('missing chunk ' + i)); return; }
+                        controller.enqueue(new Uint8Array(await c.arrayBuffer()));
+                    }
+                    controller.close();
+                } catch (err) { controller.error(err); }
+            },
+        });
+        return new Response(stream, {
+            status: 200,
+            headers: {
+                'Content-Type': contentType || 'audio/mpeg',
+                'Content-Length': String(totalSize),
+                'Accept-Ranges': 'bytes',
+            },
+        });
+    }
+
+    const m = /bytes=(\d+)-(\d*)/.exec(range);
+    if (!m) return new Response(null, { status: 416 });
+    const start = parseInt(m[1], 10);
+    const end = m[2] ? Math.min(parseInt(m[2], 10), totalSize - 1) : totalSize - 1;
+    if (start > end || start >= totalSize) return new Response(null, { status: 416 });
+
+    const startChunk = Math.floor(start / chunkSize);
+    const endChunk = Math.floor(end / chunkSize);
+    const parts = [];
+    for (let i = startChunk; i <= endChunk; i++) {
+        const c = await cache.match(baseKey + '#chunk=' + i);
+        if (!c) return new Response(null, { status: 500 });
+        const buf = await c.arrayBuffer();
+        const chunkStart = i * chunkSize;
+        const localStart = Math.max(0, start - chunkStart);
+        const localEnd = Math.min(buf.byteLength, end - chunkStart + 1);
+        parts.push(buf.slice(localStart, localEnd));
+    }
+    const blob = new Blob(parts, { type: contentType || 'audio/mpeg' });
+    return new Response(blob, {
+        status: 206,
+        statusText: 'Partial Content',
+        headers: {
+            'Content-Type': contentType || 'audio/mpeg',
+            'Content-Length': String(end - start + 1),
+            'Content-Range': `bytes ${start}-${end}/${totalSize}`,
             'Accept-Ranges': 'bytes',
         },
     });
