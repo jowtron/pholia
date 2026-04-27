@@ -28,15 +28,42 @@ const App = {
         }, 12000);
     },
 
-    // Awaits update() then polls reg.waiting. updatefound/statechange events
-    // aren't fired reliably for in-session update() calls on iOS PWA, so we
-    // also check the registration directly.
+    // After update(), reg.waiting may not be populated for several seconds
+    // (especially on iOS PWA where update() can resolve before install
+    // completes). Poll repeatedly and also re-fetch the registration in
+    // case the live object isn't reflecting state changes.
+    _pollInFlight: false,
     async _pollForUpdate() {
         if (!('serviceWorker' in navigator)) return;
-        const reg = await navigator.serviceWorker.getRegistration();
-        if (!reg) return;
-        try { await reg.update(); } catch {}
-        if (reg.waiting) this._showUpdateBanner(reg);
+        if (this._pollInFlight) return;
+        this._pollInFlight = true;
+        try {
+            const reg = await navigator.serviceWorker.getRegistration();
+            if (!reg) return;
+            try { await reg.update(); } catch {}
+            // If a new SW is installing, await its statechange.
+            if (reg.installing) {
+                const installer = reg.installing;
+                await new Promise(resolve => {
+                    const done = () => {
+                        if (installer.state === 'installed' || installer.state === 'activated' || installer.state === 'redundant') {
+                            installer.removeEventListener('statechange', done);
+                            resolve();
+                        }
+                    };
+                    installer.addEventListener('statechange', done);
+                    setTimeout(() => { installer.removeEventListener('statechange', done); resolve(); }, 8000);
+                });
+            }
+            // Poll reg.waiting for up to 10s.
+            for (let i = 0; i < 20; i++) {
+                const fresh = await navigator.serviceWorker.getRegistration();
+                if (fresh?.waiting) { this._showUpdateBanner(fresh); return; }
+                await new Promise(r => setTimeout(r, 500));
+            }
+        } finally {
+            this._pollInFlight = false;
+        }
     },
 
     setupSwUpdate() {
@@ -113,6 +140,17 @@ const App = {
         // Click outside the modal content closes the modal.
         document.getElementById('settings-modal').addEventListener('click', (e) => {
             if (e.target.id === 'settings-modal') this.hideSettings();
+        });
+        document.getElementById('check-updates-btn').addEventListener('click', async (e) => {
+            const btn = e.currentTarget;
+            const orig = btn.textContent;
+            btn.textContent = 'Checking…';
+            btn.disabled = true;
+            this._lastSwCheck = 0; // bypass debounce
+            await this._pollForUpdate();
+            btn.disabled = false;
+            btn.textContent = this._updateBannerShown ? 'Update found — see banner' : 'No updates available';
+            setTimeout(() => { btn.textContent = orig; }, 4000);
         });
         document.getElementById('logout-btn').addEventListener('click', () => this.logout());
         document.getElementById('setting-speed').addEventListener('change', e => Player.setSpeed(parseFloat(e.target.value)));
@@ -1137,6 +1175,7 @@ const App = {
     showSettings() {
         document.getElementById('setting-server').textContent = ABS.serverUrl;
         document.getElementById('setting-user').textContent = localStorage.getItem('cadence_username') || '';
+        document.getElementById('setting-build').textContent = document.getElementById('build-version')?.textContent || '?';
         document.getElementById('setting-speed').value = Player.audio.playbackRate;
         document.getElementById('setting-skip').value = Player.skipDuration;
         document.getElementById('setting-theme').value = localStorage.getItem('cadence_theme') || 'dark';
