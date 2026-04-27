@@ -26,12 +26,11 @@ self.addEventListener('install', e => {
 });
 
 self.addEventListener('activate', e => {
-    e.waitUntil(
-        caches.keys().then(keys =>
-            Promise.all(keys.filter(k => !KEEP_CACHES.has(k)).map(k => caches.delete(k)))
-        )
-    );
-    self.clients.claim();
+    e.waitUntil((async () => {
+        const keys = await caches.keys();
+        await Promise.all(keys.filter(k => !KEEP_CACHES.has(k)).map(k => caches.delete(k)));
+        await self.clients.claim();
+    })());
 });
 
 self.addEventListener('message', e => {

@@ -13,31 +13,42 @@ const App = {
         document.addEventListener('cacheprogress', (e) => this.onCacheProgress(e.detail));
     },
 
+    _updateBannerShown: false,
+    _showUpdateBanner(reg) {
+        if (this._updateBannerShown) return;
+        this._updateBannerShown = true;
+        document.getElementById('update-banner').classList.remove('hidden');
+        // Auto-apply after 5s
+        setTimeout(() => {
+            if (reg.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+        }, 5000);
+        // Failsafe: if controllerchange never fires, force a reload.
+        setTimeout(() => {
+            if (document.visibilityState === 'visible') window.location.reload();
+        }, 12000);
+    },
+
+    // Awaits update() then polls reg.waiting. updatefound/statechange events
+    // aren't fired reliably for in-session update() calls on iOS PWA, so we
+    // also check the registration directly.
+    async _pollForUpdate() {
+        if (!('serviceWorker' in navigator)) return;
+        const reg = await navigator.serviceWorker.getRegistration();
+        if (!reg) return;
+        try { await reg.update(); } catch {}
+        if (reg.waiting) this._showUpdateBanner(reg);
+    },
+
     setupSwUpdate() {
         if (!('serviceWorker' in navigator)) return;
-
-        const showBanner = (reg) => {
-            document.getElementById('update-banner').classList.remove('hidden');
-            // Auto-apply after 5s
-            setTimeout(() => {
-                if (reg.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' });
-            }, 5000);
-            // Failsafe: if controllerchange never fires (broken activation),
-            // force a reload anyway so the user isn't stuck.
-            setTimeout(() => {
-                if (document.visibilityState === 'visible') window.location.reload();
-            }, 12000);
-        };
 
         document.getElementById('update-btn').addEventListener('click', async () => {
             try {
                 const reg = await navigator.serviceWorker.getRegistration();
                 if (reg?.waiting) {
                     reg.waiting.postMessage({ type: 'SKIP_WAITING' });
-                    // Failsafe reload if controllerchange doesn't fire promptly
                     setTimeout(() => window.location.reload(), 1500);
                 } else {
-                    // Stale banner — no waiting SW left. Recover by reloading.
                     window.location.reload();
                 }
             } catch {
@@ -47,35 +58,33 @@ const App = {
 
         navigator.serviceWorker.getRegistration().then(reg => {
             if (!reg) return;
-            reg.update();
-
-            if (reg.waiting) { showBanner(reg); return; }
-
+            // updatefound listener catches updates that happen while the page
+            // is open (most browsers). The poll in _pollForUpdate is the
+            // belt-and-suspenders for iOS.
             reg.addEventListener('updatefound', () => {
                 const newSw = reg.installing;
                 if (!newSw) return;
                 newSw.addEventListener('statechange', () => {
                     if (newSw.state === 'installed' && navigator.serviceWorker.controller) {
-                        showBanner(reg);
+                        this._showUpdateBanner(reg);
                     }
                 });
             });
         });
 
-        // Reload when new SW takes control. Skip the first-install case
-        // (no prior controller) so we don't blow away in-memory state on
-        // a fresh install.
+        // Initial poll (covers updates already installed at page load).
+        this._pollForUpdate();
+
+        // Reload when new SW takes control. Skip the first-install case so we
+        // don't blow away in-memory state.
         const hadController = !!navigator.serviceWorker.controller;
         let refreshing = false;
         navigator.serviceWorker.addEventListener('controllerchange', () => {
             if (hadController && !refreshing) { refreshing = true; window.location.reload(); }
         });
 
-        // Check for updates when app resumes (essential for iOS PWA)
         document.addEventListener('visibilitychange', () => {
-            if (document.visibilityState === 'visible') {
-                navigator.serviceWorker.getRegistration().then(reg => reg?.update());
-            }
+            if (document.visibilityState === 'visible') this._pollForUpdate();
         });
     },
 
@@ -386,7 +395,7 @@ const App = {
         const now = Date.now();
         if (now - this._lastSwCheck < 10000) return;
         this._lastSwCheck = now;
-        navigator.serviceWorker.getRegistration().then(reg => reg?.update());
+        this._pollForUpdate();
     },
 
     switchTab(tab) {
