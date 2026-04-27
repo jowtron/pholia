@@ -116,45 +116,43 @@ const Player = {
         } catch { return false; }
     },
 
-    // Stream a fetch into the cache, dispatching cacheprogress events so the
-    // tracklist UI can fill in real time. Yields bandwidth to the audio
-    // element when its buffer runs shallow so playback isn't interrupted.
+    // Pipe a fetch response straight into the cache via TransformStream so
+    // the browser handles persistence without buffering it all in JS memory.
+    // The transform yields to audio when its buffer is shallow and adds a
+    // small breather between chunks so the cache doesn't starve playback.
     async _streamToCache(cache, url, key, signal, itemId, trackIndex) {
         const res = await fetch(url, { credentials: 'omit', signal });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const total = parseInt(res.headers.get('content-length') || '0', 10);
-        const reader = res.body.getReader();
-        const chunks = [];
         let received = 0;
-        const headers = new Headers();
-        for (const [k, v] of res.headers.entries()) headers.set(k, v);
-        try {
-            while (true) {
-                if (signal.aborted) { try { reader.cancel(); } catch {} return; }
-                // Yield while the audio element is starved for data. Sleeping
-                // here lets TCP/HTTP2 backpressure throttle the cache fetch.
-                while (this._audioBufferShallow()) {
-                    await new Promise(r => setTimeout(r, 400));
-                    if (signal.aborted) { try { reader.cancel(); } catch {} return; }
-                }
-                const { done, value } = await reader.read();
-                if (done) break;
-                chunks.push(value);
-                received += value.length;
+        const self = this;
+
+        const throttle = new TransformStream({
+            async transform(chunk, controller) {
+                if (signal.aborted) { controller.error(new Error('aborted')); return; }
+                received += chunk.byteLength || chunk.length || 0;
                 document.dispatchEvent(new CustomEvent('cacheprogress', {
                     detail: { itemId, trackIndex, received, total, done: false },
                 }));
-                // Polite throttle: a short pause after each chunk caps the
-                // cache's bandwidth share even when the audio is well-buffered.
+                while (self._audioBufferShallow()) {
+                    await new Promise(r => setTimeout(r, 400));
+                    if (signal.aborted) { controller.error(new Error('aborted')); return; }
+                }
                 await new Promise(r => setTimeout(r, 60));
-            }
+                controller.enqueue(chunk);
+            },
+        });
+
+        const piped = res.body.pipeThrough(throttle);
+        const headers = new Headers();
+        for (const [k, v] of res.headers.entries()) headers.set(k, v);
+        try {
+            await cache.put(key, new Response(piped, { status: 200, headers }));
         } catch {
             return;
         }
-        const blob = new Blob(chunks, { type: res.headers.get('content-type') || 'audio/mpeg' });
-        await cache.put(key, new Response(blob, { status: 200, headers }));
         document.dispatchEvent(new CustomEvent('cacheprogress', {
-            detail: { itemId, trackIndex, received, total: received, done: true },
+            detail: { itemId, trackIndex, received, total: received || total, done: true },
         }));
     },
 

@@ -110,6 +110,10 @@ const App = {
 
         // Settings
         document.getElementById('settings-close').addEventListener('click', () => this.hideSettings());
+        // Click outside the modal content closes the modal.
+        document.getElementById('settings-modal').addEventListener('click', (e) => {
+            if (e.target.id === 'settings-modal') this.hideSettings();
+        });
         document.getElementById('logout-btn').addEventListener('click', () => this.logout());
         document.getElementById('setting-speed').addEventListener('change', e => Player.setSpeed(parseFloat(e.target.value)));
         document.getElementById('setting-skip').addEventListener('change', e => Player.setSkipDuration(parseInt(e.target.value)));
@@ -1069,11 +1073,16 @@ const App = {
         } else {
             el.innerHTML = `<button class="text-btn offline-download">Download for offline</button>`;
             el.querySelector('.offline-download').addEventListener('click', async () => {
-                el.innerHTML = `<span class="offline-status">Downloading 0/${trackCount}…</span>`;
+                el.innerHTML = `<span class="offline-status">Starting…</span>`;
                 try {
-                    await Offline.downloadBook(item, (done, total) => {
+                    await Offline.downloadBook(item, (done, total, received, totalBytes) => {
                         const status = el.querySelector('.offline-status');
-                        if (status) status.textContent = `Downloading ${done}/${total}…`;
+                        if (!status) return;
+                        if (received != null && totalBytes) {
+                            status.textContent = `Track ${done + 1}/${total} • ${formatBytes(received)} / ${formatBytes(totalBytes)}`;
+                        } else {
+                            status.textContent = `Downloading ${done}/${total}…`;
+                        }
                     });
                     this.renderOfflineControls(item);
                 } catch (e) {
@@ -1271,14 +1280,35 @@ const Offline = {
         for (let i = 0; i < urls.length; i++) {
             const key = this.keyFor(urls[i]);
             if (!(await audioCache.match(key))) {
-                const res = await fetch(urls[i], { credentials: 'omit' });
-                if (!res.ok) throw new Error(`Track ${i + 1} failed: ${res.status}`);
-                await audioCache.put(key, res);
+                await this._streamFetchToCache(audioCache, urls[i], key, (received, total) => {
+                    onProgress?.(i, urls.length, received, total);
+                });
             }
             onProgress?.(i + 1, urls.length);
         }
 
         await this.saveMeta(item);
+    },
+
+    // Pipes a fetch response straight into the cache via TransformStream so
+    // the browser handles the body without buffering it all in JS memory.
+    // Reports progress without buying a second copy of the bytes.
+    async _streamFetchToCache(cache, url, key, onChunk) {
+        const res = await fetch(url, { credentials: 'omit' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const total = parseInt(res.headers.get('content-length') || '0', 10);
+        let received = 0;
+        const counter = new TransformStream({
+            transform(chunk, controller) {
+                received += chunk.byteLength || chunk.length || 0;
+                try { onChunk?.(received, total); } catch {}
+                controller.enqueue(chunk);
+            },
+        });
+        const piped = res.body.pipeThrough(counter);
+        const headers = new Headers();
+        for (const [k, v] of res.headers.entries()) headers.set(k, v);
+        await cache.put(key, new Response(piped, { status: 200, headers }));
     },
 
     async saveMeta(item) {
