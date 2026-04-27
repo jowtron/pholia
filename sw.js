@@ -29,6 +29,19 @@ self.addEventListener('activate', e => {
     e.waitUntil((async () => {
         const keys = await caches.keys();
         await Promise.all(keys.filter(k => !KEEP_CACHES.has(k)).map(k => caches.delete(k)));
+        // Purge legacy whole-file entries larger than 50 MB. They OOM the tab
+        // when the SW tries to slice them in serveCached.
+        try {
+            const audio = await caches.open(OFFLINE_AUDIO_CACHE);
+            const audioKeys = await audio.keys();
+            for (const req of audioKeys) {
+                if (req.url.includes('#chunk=') || req.url.includes('#meta')) continue;
+                const r = await audio.match(req);
+                if (!r) continue;
+                const len = parseInt(r.headers.get('content-length') || '0', 10);
+                if (len > 50 * 1024 * 1024) await audio.delete(req);
+            }
+        } catch {}
         await self.clients.claim();
     })());
 });
@@ -87,10 +100,19 @@ async function handleCrossOrigin(request) {
     return fetch(request);
 }
 
-// Serve a cached full-body response, slicing into a 206 if the request has Range.
+const SAFE_SLICE_LIMIT = 50 * 1024 * 1024;
+
+// Serve a cached full-body response, slicing into a 206 if the request has
+// Range. For files larger than SAFE_SLICE_LIMIT we refuse to load the body
+// into memory (would OOM iOS PWA on legacy whole-file caches). In that case
+// we return the response as-is and let the audio element handle it.
 async function serveCached(request, cachedResponse) {
     const range = request.headers.get('range');
     if (!range) return cachedResponse;
+    const lenHeader = parseInt(cachedResponse.headers.get('content-length') || '0', 10);
+    if (lenHeader === 0 || lenHeader > SAFE_SLICE_LIMIT) {
+        return cachedResponse;
+    }
     const buf = await cachedResponse.arrayBuffer();
     const total = buf.byteLength;
     const m = /bytes=(\d+)-(\d*)/.exec(range);

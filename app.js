@@ -1444,18 +1444,18 @@ const Offline = {
             let total = 0;
             for (const url of urls) {
                 const key = this.keyFor(url);
-                // Chunked: prefer meta totalSize
+                // Chunked: read totalSize from the meta entry
                 const metaRes = await cache.match(key + '#meta');
                 if (metaRes) {
                     try { const m = await metaRes.json(); total += m.totalSize || 0; continue; } catch {}
                 }
-                // Whole-file fallback
+                // Whole-file (legacy): trust content-length only. NEVER load
+                // the body to measure — a multi-hundred-MB arrayBuffer call
+                // OOMs iOS PWA. If no length header, skip (better to undercount).
                 const res = await cache.match(key);
                 if (!res) continue;
                 const len = res.headers.get('content-length');
-                if (len) { total += parseInt(len, 10); continue; }
-                const buf = await res.clone().arrayBuffer();
-                total += buf.byteLength;
+                if (len) total += parseInt(len, 10);
             }
             return total;
         } catch { return 0; }
