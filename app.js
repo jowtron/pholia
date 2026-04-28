@@ -151,9 +151,17 @@ const App = {
             btn.disabled = true;
             this._lastSwCheck = 0; // bypass debounce
             await this._pollForUpdate();
-            btn.disabled = false;
-            btn.textContent = this._updateBannerShown ? 'Update found — see banner' : 'No updates available';
-            setTimeout(() => { btn.textContent = orig; }, 4000);
+            if (this._updateBannerShown) {
+                btn.textContent = 'Update found — see banner';
+                btn.disabled = false;
+                setTimeout(() => { btn.textContent = orig; }, 4000);
+                return;
+            }
+            // Fallback: SW polling found nothing. iOS PWA can stubbornly cache
+            // sw.js — bypass everything by hard-reloading the page so the
+            // browser fetches the latest assets from the server.
+            btn.textContent = 'Reloading…';
+            window.location.reload();
         });
         document.getElementById('logout-btn').addEventListener('click', () => this.logout());
         document.getElementById('setting-speed').addEventListener('change', e => Player.setSpeed(parseFloat(e.target.value)));
@@ -1182,7 +1190,7 @@ const App = {
         document.getElementById('setting-speed').value = Player.audio.playbackRate;
         document.getElementById('setting-skip').value = Player.skipDuration;
         document.getElementById('setting-theme').value = localStorage.getItem('cadence_theme') || 'dark';
-        document.getElementById('setting-auto-cache').checked = localStorage.getItem('cadence_auto_cache') !== 'false';
+        document.getElementById('setting-auto-cache').checked = localStorage.getItem('cadence_auto_cache') === 'true';
         document.getElementById('settings-modal').classList.remove('hidden');
         this.renderDownloadsList();
     },

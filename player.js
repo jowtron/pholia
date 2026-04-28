@@ -144,7 +144,7 @@ const Player = {
     // network blip mid-listen doesn't kill playback. Bandwidth target: roughly
     // one hour ahead. Toggled by the 'cadence_auto_cache' setting.
     async _startAutoCache() {
-        if (localStorage.getItem('cadence_auto_cache') === 'false') return;
+        if (localStorage.getItem('cadence_auto_cache') !== 'true') return;
         const tracks = this.item?.media?.audioFiles || [];
         if (!tracks.length) return;
 

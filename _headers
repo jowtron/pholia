@@ -1,13 +1,27 @@
-/*
-  Cache-Control: public, max-age=60, s-maxage=30
-
 /sw.js
-  Cache-Control: no-cache
+  Cache-Control: no-cache, no-store, must-revalidate
+  Pragma: no-cache
+  Expires: 0
+  Content-Type: application/javascript
 
-/*.js
+/api.js
   Cache-Control: public, max-age=86400, s-maxage=300
   Content-Type: application/javascript
 
-/*.css
+/app.js
+  Cache-Control: public, max-age=86400, s-maxage=300
+  Content-Type: application/javascript
+
+/player.js
+  Cache-Control: public, max-age=86400, s-maxage=300
+  Content-Type: application/javascript
+
+/style.css
   Cache-Control: public, max-age=86400, s-maxage=300
   Content-Type: text/css
+
+/index.html
+  Cache-Control: public, max-age=60, s-maxage=30
+
+/
+  Cache-Control: public, max-age=60, s-maxage=30
