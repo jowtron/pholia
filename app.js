@@ -11,6 +11,9 @@ const App = {
         this.tryAutoLogin();
         this.setupSwUpdate();
         document.addEventListener('cacheprogress', (e) => this.onCacheProgress(e.detail));
+        // Clear phantom downloads (meta entries with no audio) left behind
+        // by SW cleanups of legacy oversized cache entries.
+        Offline.cleanupPhantoms();
     },
 
     _updateBannerShown: false,
@@ -1190,6 +1193,7 @@ const App = {
         const clearBtn = document.getElementById('downloads-clear');
         if (!list) return;
         list.innerHTML = '<div class="downloads-empty">Loading…</div>';
+        await Offline.cleanupPhantoms();
         const items = await Offline.listDownloaded();
         if (!items.length) {
             list.innerHTML = '<div class="downloads-empty">No downloads yet</div>';
@@ -1318,11 +1322,11 @@ const Offline = {
 
         for (let i = 0; i < urls.length; i++) {
             const key = this.keyFor(urls[i]);
-            if (!(await audioCache.match(key))) {
-                await this._streamFetchToCache(audioCache, urls[i], key, (received, total) => {
-                    onProgress?.(i, urls.length, received, total);
-                });
-            }
+            // Always run — _streamFetchToCache validates and skips chunks
+            // that are already correctly cached.
+            await this._streamFetchToCache(audioCache, urls[i], key, (received, total) => {
+                onProgress?.(i, urls.length, received, total);
+            });
             onProgress?.(i + 1, urls.length);
         }
 
@@ -1336,13 +1340,26 @@ const Offline = {
     // cache.put in one go (which OOMs iOS PWA). The SW reassembles chunks
     // when the audio element makes Range requests during playback.
     async _streamFetchToCache(cache, url, key, onChunk, opts = {}) {
-        const head = await fetch(url, { method: 'HEAD', credentials: 'omit' });
-        if (!head.ok) throw new Error(`HEAD ${head.status}`);
-        const total = parseInt(head.headers.get('content-length') || '0', 10);
-        const contentType = head.headers.get('content-type') || 'audio/mpeg';
+        // Probe with a 1-byte Range request to discover total size via the
+        // Content-Range header. More reliable than HEAD across CORS/server
+        // setups — and we have to make a Range request anyway.
+        const probe = await fetch(url, {
+            credentials: 'omit',
+            headers: { Range: 'bytes=0-0' },
+        });
+        if (probe.status !== 206 && !probe.ok) throw new Error(`probe ${probe.status}`);
+        let total = 0;
+        const cr = probe.headers.get('content-range');
+        if (cr) {
+            const m = /\/(\d+)$/.exec(cr);
+            if (m) total = parseInt(m[1], 10);
+        }
+        if (!total) total = parseInt(probe.headers.get('content-length') || '0', 10);
+        const contentType = probe.headers.get('content-type') || 'audio/mpeg';
+        try { await probe.arrayBuffer(); } catch {}
 
         if (!total) {
-            // Server didn't give us a size — fall back to one-shot streaming.
+            // Last-resort fallback: one-shot streaming.
             const res = await fetch(url, { credentials: 'omit' });
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const headers = new Headers();
@@ -1351,18 +1368,38 @@ const Offline = {
             return;
         }
 
+        // If a stale meta points to a different size, drop it so we re-write.
+        const existingMeta = await cache.match(key + '#meta');
+        if (existingMeta) {
+            try {
+                const m = await existingMeta.json();
+                if (m.totalSize !== total || m.chunkSize !== this.CHUNK_SIZE) {
+                    await cache.delete(key + '#meta');
+                }
+            } catch { await cache.delete(key + '#meta'); }
+        }
+
         const numChunks = Math.ceil(total / this.CHUNK_SIZE);
         let received = 0;
 
         for (let i = 0; i < numChunks; i++) {
             const chunkKey = key + '#chunk=' + i;
+            const expected = (i === numChunks - 1) ? (total - i * this.CHUNK_SIZE) : this.CHUNK_SIZE;
+
+            // Trust an existing chunk only if its byte length matches what
+            // this position should hold. Catches stale/partial chunks left
+            // behind by previous failed downloads.
             const existing = await cache.match(chunkKey);
             if (existing) {
-                const buf = await existing.arrayBuffer();
-                received += buf.byteLength;
-                try { onChunk?.(received, total); } catch {}
-                continue;
+                const len = parseInt(existing.headers.get('content-length') || '0', 10);
+                if (len === expected) {
+                    received += expected;
+                    try { onChunk?.(received, total); } catch {}
+                    continue;
+                }
+                await cache.delete(chunkKey);
             }
+
             if (opts.beforeChunk) await opts.beforeChunk();
             const start = i * this.CHUNK_SIZE;
             const end = Math.min(start + this.CHUNK_SIZE - 1, total - 1);
@@ -1374,6 +1411,9 @@ const Offline = {
                 throw new Error(`Range fetch ${i} failed: ${res.status}`);
             }
             const blob = await res.blob();
+            if (blob.size !== expected) {
+                throw new Error(`Chunk ${i} size mismatch: expected ${expected}, got ${blob.size}`);
+            }
             await cache.put(chunkKey, new Response(blob, {
                 status: 200,
                 headers: { 'Content-Type': contentType, 'Content-Length': String(blob.size) },
@@ -1499,6 +1539,36 @@ const Offline = {
         const all = await this.listDownloaded();
         const ids = await this.fullyDownloadedIds();
         return all.filter(i => ids.has(i.id));
+    },
+
+    // Drops meta entries (and the cover) for books where no audio is cached.
+    // Cleans up after SW activate purges of legacy oversized entries — those
+    // leave the metadata behind, which then shows up as a 0-byte phantom in
+    // the settings list.
+    async cleanupPhantoms() {
+        try {
+            const metaCache = await caches.open(this.META_CACHE);
+            const audioCache = await caches.open(this.AUDIO_CACHE);
+            const keys = await metaCache.keys();
+            for (const req of keys) {
+                const res = await metaCache.match(req);
+                if (!res) continue;
+                let item;
+                try { item = await res.json(); } catch { await metaCache.delete(req); continue; }
+                const tracks = item.media?.audioFiles || [];
+                if (!tracks.length) { await metaCache.delete(req); continue; }
+                let hasAny = false;
+                for (const t of tracks) {
+                    const k = this.keyFor(ABS.trackUrl(item.id, t.ino));
+                    if (await audioCache.match(k + '#meta')) { hasAny = true; break; }
+                    if (await audioCache.match(k)) { hasAny = true; break; }
+                }
+                if (!hasAny) {
+                    await metaCache.delete(req);
+                    await audioCache.delete(this.keyFor(ABS.coverUrl(item.id)));
+                }
+            }
+        } catch {}
     },
 
     async listDownloaded() {
