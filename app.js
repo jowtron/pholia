@@ -1441,9 +1441,9 @@ const Offline = {
                 await cache.delete(chunkK);
             }
 
-            if (opts.beforeChunk) await opts.beforeChunk();
             const start = i * this.CHUNK_SIZE;
             const end = Math.min(start + this.CHUNK_SIZE - 1, total - 1);
+            if (opts.beforeChunk) await opts.beforeChunk(start, total);
             const fetchOpts = {
                 credentials: 'omit',
                 headers: { Range: `bytes=${start}-${end}` },

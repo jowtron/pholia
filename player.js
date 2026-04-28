@@ -116,6 +116,16 @@ const Player = {
     // Between chunks, yield to the audio element when its buffer is shallow
     // so the cache doesn't compete with playback. Aborts cleanly on item change.
     async _streamToCache(cache, url, key, signal, itemId, trackIndex) {
+        // Compute the playback time at which this track starts in the global
+        // book timeline. Used below to translate a chunk's byte offset into
+        // an approximate playback time so the sliding 1-hour cache window
+        // works inside a single (long) track too.
+        const tracks = this.item?.media?.audioFiles || [];
+        let trackStart = 0;
+        for (let j = 0; j < trackIndex; j++) trackStart += tracks[j]?.duration || 0;
+        const trackDuration = tracks[trackIndex]?.duration || 0;
+        const TARGET_AHEAD = 3600;
+
         await Offline._streamFetchToCache(cache, url, key,
             (received, total) => {
                 document.dispatchEvent(new CustomEvent('cacheprogress', {
@@ -124,12 +134,25 @@ const Player = {
             },
             {
                 priority: 'low',
-                beforeChunk: async () => {
+                beforeChunk: async (byteOffset, totalSize) => {
                     if (signal.aborted) throw new Error('aborted');
                     // Re-check the setting between chunks so toggling Cache
                     // while playing OFF takes effect immediately.
                     if (localStorage.getItem('cadence_auto_cache') !== 'true') {
                         throw new Error('disabled');
+                    }
+                    // Sliding window: estimate the playback time of this
+                    // chunk's start. If it's more than 1 hour past the
+                    // current playhead, sleep until playback catches up.
+                    if (totalSize > 0 && trackDuration > 0) {
+                        const chunkTime = trackStart + (byteOffset / totalSize) * trackDuration;
+                        while (chunkTime > this.getGlobalTime() + TARGET_AHEAD) {
+                            await new Promise(r => setTimeout(r, 5000));
+                            if (signal.aborted) throw new Error('aborted');
+                            if (localStorage.getItem('cadence_auto_cache') !== 'true') {
+                                throw new Error('disabled');
+                            }
+                        }
                     }
                     while (this._audioBufferShallow()) {
                         await new Promise(r => setTimeout(r, 400));
