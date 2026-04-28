@@ -1340,23 +1340,39 @@ const Offline = {
     // cache.put in one go (which OOMs iOS PWA). The SW reassembles chunks
     // when the audio element makes Range requests during playback.
     async _streamFetchToCache(cache, url, key, onChunk, opts = {}) {
-        // Probe with a 1-byte Range request to discover total size via the
-        // Content-Range header. More reliable than HEAD across CORS/server
-        // setups — and we have to make a Range request anyway.
-        const probe = await fetch(url, {
-            credentials: 'omit',
-            headers: { Range: 'bytes=0-0' },
-        });
-        if (probe.status !== 206 && !probe.ok) throw new Error(`probe ${probe.status}`);
+        // Discover the full file size. Try HEAD first — Content-Length is
+        // CORS-safelisted, so it works across browsers. Fall back to a Range
+        // probe + Content-Range parsing only if HEAD fails or doesn't return
+        // a size. (Content-Range is NOT safelisted, so requires the server to
+        // opt in via Access-Control-Expose-Headers, which ABS doesn't do —
+        // this is why the probe-only approach reported 1 byte.)
         let total = 0;
-        const cr = probe.headers.get('content-range');
-        if (cr) {
-            const m = /\/(\d+)$/.exec(cr);
-            if (m) total = parseInt(m[1], 10);
+        let contentType = 'audio/mpeg';
+        try {
+            const head = await fetch(url, { method: 'HEAD', credentials: 'omit' });
+            if (head.ok) {
+                const len = parseInt(head.headers.get('content-length') || '0', 10);
+                if (len > 0) total = len;
+                contentType = head.headers.get('content-type') || contentType;
+            }
+        } catch {}
+        if (!total) {
+            try {
+                const probe = await fetch(url, {
+                    credentials: 'omit',
+                    headers: { Range: 'bytes=0-0' },
+                });
+                if (probe.status === 206) {
+                    const cr = probe.headers.get('content-range');
+                    if (cr) {
+                        const m = /\/(\d+)$/.exec(cr);
+                        if (m) total = parseInt(m[1], 10);
+                    }
+                    contentType = probe.headers.get('content-type') || contentType;
+                }
+                try { await probe.arrayBuffer(); } catch {}
+            } catch {}
         }
-        if (!total) total = parseInt(probe.headers.get('content-length') || '0', 10);
-        const contentType = probe.headers.get('content-type') || 'audio/mpeg';
-        try { await probe.arrayBuffer(); } catch {}
 
         if (!total) {
             // Last-resort fallback: one-shot streaming.
@@ -1557,12 +1573,40 @@ const Offline = {
                 try { item = await res.json(); } catch { await metaCache.delete(req); continue; }
                 const tracks = item.media?.audioFiles || [];
                 if (!tracks.length) { await metaCache.delete(req); continue; }
+
                 let hasAny = false;
                 for (const t of tracks) {
                     const k = this.keyFor(ABS.trackUrl(item.id, t.ino));
-                    if (await audioCache.match(k + '#meta')) { hasAny = true; break; }
-                    if (await audioCache.match(k)) { hasAny = true; break; }
+
+                    // Validate chunked entry: every chunk must exist with the
+                    // expected size. If it's broken (e.g. the 1-byte phantom
+                    // from the probe-only bug), purge chunks + meta entirely.
+                    const chunkMeta = await audioCache.match(k + '#meta');
+                    if (chunkMeta) {
+                        let m = null;
+                        try { m = await chunkMeta.json(); } catch {}
+                        let ok = !!m;
+                        if (m) {
+                            for (let i = 0; i < (m.numChunks || 0); i++) {
+                                const exp = (i === m.numChunks - 1)
+                                    ? (m.totalSize - i * m.chunkSize)
+                                    : m.chunkSize;
+                                const c = await audioCache.match(k + '#chunk=' + i);
+                                const len = c ? parseInt(c.headers.get('content-length') || '0', 10) : 0;
+                                if (len !== exp) { ok = false; break; }
+                            }
+                        }
+                        if (ok) { hasAny = true; continue; }
+                        for (let i = 0; i < (m?.numChunks || 0); i++) {
+                            await audioCache.delete(k + '#chunk=' + i);
+                        }
+                        await audioCache.delete(k + '#meta');
+                    }
+
+                    // Legacy whole-file entry counts if present.
+                    if (await audioCache.match(k)) { hasAny = true; }
                 }
+
                 if (!hasAny) {
                     await metaCache.delete(req);
                     await audioCache.delete(this.keyFor(ABS.coverUrl(item.id)));
