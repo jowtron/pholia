@@ -127,8 +127,14 @@ const Player = {
                 }));
             },
             {
+                priority: 'low',
                 beforeChunk: async () => {
                     if (signal.aborted) throw new Error('aborted');
+                    // Re-check the setting between chunks so toggling Cache
+                    // while playing OFF takes effect immediately.
+                    if (localStorage.getItem('cadence_auto_cache') !== 'true') {
+                        throw new Error('disabled');
+                    }
                     while (this._audioBufferShallow()) {
                         await new Promise(r => setTimeout(r, 400));
                         if (signal.aborted) throw new Error('aborted');

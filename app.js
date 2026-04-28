@@ -1427,10 +1427,12 @@ const Offline = {
             if (opts.beforeChunk) await opts.beforeChunk();
             const start = i * this.CHUNK_SIZE;
             const end = Math.min(start + this.CHUNK_SIZE - 1, total - 1);
-            const res = await fetch(url, {
+            const fetchOpts = {
                 credentials: 'omit',
                 headers: { Range: `bytes=${start}-${end}` },
-            });
+            };
+            if (opts.priority) fetchOpts.priority = opts.priority;
+            const res = await fetch(url, fetchOpts);
             if (res.status !== 206 && res.status !== 200) {
                 throw new Error(`Range fetch ${i} failed: ${res.status}`);
             }
