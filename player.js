@@ -369,39 +369,18 @@ const Player = {
     },
 
     isBuffering: false,
-    _bufferingTimer: null,
-    _recoveryAttempts: 0,
 
     onBufferingStart() {
         if (this.isBuffering) return;
-        // Don't show the spinner if the audio isn't actively trying to play.
-        // 'waiting'/'stalled' can fire after pause if the browser was mid-fetch.
         if (this.audio.paused) return;
         this.isBuffering = true;
         this.setBufferingUI(true);
-        this._scheduleRecovery();
     },
 
     onBufferingEnd() {
         if (!this.isBuffering) return;
         this.isBuffering = false;
-        this._recoveryAttempts = 0;
-        if (this._bufferingTimer) { clearTimeout(this._bufferingTimer); this._bufferingTimer = null; }
         this.setBufferingUI(false);
-    },
-
-    // After ~8s of buffering, nudge currentTime to force a fresh Range request.
-    // Helps recover from a stalled fetch on flaky connections.
-    _scheduleRecovery() {
-        if (this._bufferingTimer) clearTimeout(this._bufferingTimer);
-        this._bufferingTimer = setTimeout(() => {
-            if (!this.isBuffering || this.audio.paused) return;
-            if (++this._recoveryAttempts > 3) return;
-            const t = this.audio.currentTime;
-            this.audio.currentTime = Math.max(0, t - 0.5);
-            this.audio.play().catch(() => {});
-            this._scheduleRecovery();
-        }, 8000);
     },
 
     setBufferingUI(active) {
