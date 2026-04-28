@@ -172,22 +172,15 @@ const Player = {
             if (signal.aborted) return;
             // Skip tracks that end before the current position
             if (trackEnd <= currentTime) { elapsed = trackEnd; continue; }
-            // Skip the currently-playing track — caching it competes with the
-            // audio element for bandwidth and causes glitches.
-            if (currentTime >= elapsed && currentTime < trackEnd) { elapsed = trackEnd; continue; }
-            // Stop once we have ~1 hour cached ahead of the listener
+            // Stop once we have ~1 hour cached ahead of the listener. For
+            // single-file books this still lets the whole file cache (since
+            // 1 hour of book is well past the start).
             if (elapsed - currentTime >= TARGET_AHEAD_SEC) break;
 
-            if (!(await cache.match(key))) {
-                try {
-                    await this._streamToCache(cache, url, key, signal, itemId, i);
-                } catch {
-                    return; // network/abort — bail out, will retry next play
-                }
-            } else {
-                document.dispatchEvent(new CustomEvent('cacheprogress', {
-                    detail: { itemId, trackIndex: i, received: 1, total: 1, done: true },
-                }));
+            try {
+                await this._streamToCache(cache, url, key, signal, itemId, i);
+            } catch {
+                return; // network/abort — bail out, will retry next play
             }
             elapsed = trackEnd;
         }
