@@ -1299,6 +1299,10 @@ const Offline = {
         return u.toString();
     },
 
+    notifySwCacheChanged() {
+        try { navigator.serviceWorker?.controller?.postMessage({ type: 'CACHE_CHANGED' }); } catch {}
+    },
+
     metaKey(itemId) { return `https://pholia.local/meta/${itemId}`; },
 
     trackUrls(item) {
@@ -1339,6 +1343,7 @@ const Offline = {
         }
 
         await this.saveMeta(item);
+        this.notifySwCacheChanged();
     },
 
     CHUNK_SIZE: 10 * 1024 * 1024, // 10 MB
@@ -1501,6 +1506,7 @@ const Offline = {
         }
         await audioCache.delete(this.keyFor(ABS.coverUrl(item.id)));
         await metaCache.delete(this.metaKey(item.id));
+        this.notifySwCacheChanged();
     },
 
     async bookSize(item) {

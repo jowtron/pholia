@@ -48,7 +48,24 @@ self.addEventListener('activate', e => {
 
 self.addEventListener('message', e => {
     if (e.data?.type === 'SKIP_WAITING') self.skipWaiting();
+    // Page tells us when it changed the cache — invalidate the in-memory set.
+    if (e.data?.type === 'CACHE_CHANGED') cachedKeys = null;
 });
+
+// In-memory set of URLs known to be in OFFLINE_AUDIO_CACHE. Avoids two
+// async disk lookups per audio Range request when nothing is cached, which
+// noticeably affects streaming over slow networks (Tailscale relay etc.).
+let cachedKeys = null;
+async function ensureCachedKeys() {
+    if (cachedKeys) return;
+    const set = new Set();
+    try {
+        const cache = await caches.open(OFFLINE_AUDIO_CACHE);
+        const keys = await cache.keys();
+        for (const req of keys) set.add(req.url);
+    } catch {}
+    cachedKeys = set;
+}
 
 self.addEventListener('fetch', e => {
     const url = new URL(e.request.url);
@@ -79,8 +96,17 @@ function offlineKey(url) {
 }
 
 async function handleCrossOrigin(request) {
-    const cache = await caches.open(OFFLINE_AUDIO_CACHE);
     const baseKey = offlineKey(request.url);
+
+    // Fast path: if the in-memory set knows we have nothing cached for this
+    // URL, skip the two cache.match disk lookups entirely. Removes ~30-100ms
+    // per audio Range request when streaming uncached content.
+    await ensureCachedKeys();
+    if (!cachedKeys.has(baseKey + '#meta') && !cachedKeys.has(baseKey)) {
+        return fetch(request);
+    }
+
+    const cache = await caches.open(OFFLINE_AUDIO_CACHE);
 
     // Chunked format (large files): meta entry tells us how to assemble.
     const metaRes = await cache.match(baseKey + '#meta');
