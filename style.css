@@ -454,17 +454,6 @@ main {
 .fs-btn-play:hover { background: var(--accent-hover); color: #fff; }
 .skip-btn svg { width: 36px; height: 36px; }
 
-/* Buffering spinner overlay on play buttons */
-.fs-btn-play.buffering, .pp-btn.buffering { position: relative; }
-.fs-btn-play.buffering::after, .pp-btn.buffering::after {
-    content: ''; position: absolute; inset: -4px;
-    border: 2px solid transparent; border-top-color: var(--accent);
-    border-radius: 50%; animation: pholia-spin 0.8s linear infinite;
-    pointer-events: none;
-}
-.pp-btn.buffering::after { inset: -2px; border-width: 1.5px; }
-@keyframes pholia-spin { to { transform: rotate(360deg); } }
-
 /* FS sleep */
 .fs-sleep-wrap { position: relative; display: flex; align-items: center; gap: 4px; }
 .fs-sleep-btn {

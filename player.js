@@ -21,12 +21,8 @@ const Player = {
         this.audio.addEventListener('timeupdate', () => this.onTimeUpdate());
         this.audio.addEventListener('ended', () => this.onTrackEnded());
         this.audio.addEventListener('play', () => this.setPlaying(true));
-        this.audio.addEventListener('pause', () => { this.setPlaying(false); this.onBufferingEnd(); });
+        this.audio.addEventListener('pause', () => this.setPlaying(false));
         this.audio.addEventListener('error', (e) => console.error('Audio error', e));
-        this.audio.addEventListener('waiting', () => this.onBufferingStart());
-        this.audio.addEventListener('stalled', () => this.onBufferingStart());
-        this.audio.addEventListener('playing', () => this.onBufferingEnd());
-        this.audio.addEventListener('canplay', () => this.onBufferingEnd());
 
         const speed = localStorage.getItem('cadence_speed');
         if (speed) this.audio.playbackRate = parseFloat(speed);
@@ -366,26 +362,6 @@ const Player = {
         const el2 = document.getElementById('fs-sleep-indicator');
         if (el1) { el1.textContent = txt; el1.classList.toggle('active', !!txt); }
         if (el2) el2.textContent = txt;
-    },
-
-    isBuffering: false,
-
-    onBufferingStart() {
-        if (this.isBuffering) return;
-        if (this.audio.paused) return;
-        this.isBuffering = true;
-        this.setBufferingUI(true);
-    },
-
-    onBufferingEnd() {
-        if (!this.isBuffering) return;
-        this.isBuffering = false;
-        this.setBufferingUI(false);
-    },
-
-    setBufferingUI(active) {
-        document.getElementById('pp-play')?.classList.toggle('buffering', active);
-        document.getElementById('fs-play')?.classList.toggle('buffering', active);
     },
 
     setPlaying(playing) {
