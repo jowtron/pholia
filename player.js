@@ -126,11 +126,31 @@ const Player = {
         const trackDuration = tracks[trackIndex]?.duration || 0;
         const TARGET_AHEAD = 3600;
 
+        const KEEP_BEHIND = 1800; // 30 min
         await Offline._streamFetchToCache(cache, url, key,
-            (received, total) => {
+            async (received, total) => {
                 document.dispatchEvent(new CustomEvent('cacheprogress', {
                     detail: { itemId, trackIndex, received, total, done: false },
                 }));
+                // Sliding-window eviction: drop chunks of this track whose
+                // playback time is more than KEEP_BEHIND seconds behind the
+                // current playhead. Skip if the entry was explicitly downloaded.
+                try {
+                    const metaK = Offline.chunkMetaKey(key);
+                    const metaRes = await cache.match(metaK);
+                    if (!metaRes) return;
+                    const m = await metaRes.json();
+                    if (m.sticky) return;
+                    const cutoff = this.getGlobalTime() - KEEP_BEHIND;
+                    if (cutoff <= trackStart) return;
+                    for (let ci = 0; ci < m.numChunks; ci++) {
+                        const chunkEndByte = Math.min((ci + 1) * m.chunkSize - 1, m.totalSize - 1);
+                        const chunkEndTime = trackStart + (chunkEndByte / m.totalSize) * trackDuration;
+                        if (chunkEndTime < cutoff) {
+                            await cache.delete(Offline.chunkKey(key, ci));
+                        }
+                    }
+                } catch {}
             },
             {
                 priority: 'low',

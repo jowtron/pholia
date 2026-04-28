@@ -184,6 +184,11 @@ async function serveChunked(request, cache, baseKey, meta) {
     const range = request.headers.get('range');
 
     if (!range) {
+        // If any chunk is missing, the partial assembly would break — better
+        // to let the network serve the whole thing.
+        for (let i = 0; i < numChunks; i++) {
+            if (!(await cache.match(chunkKey(baseKey, i)))) return fetch(request);
+        }
         const stream = new ReadableStream({
             async start(controller) {
                 try {
@@ -217,7 +222,9 @@ async function serveChunked(request, cache, baseKey, meta) {
     const parts = [];
     for (let i = startChunk; i <= endChunk; i++) {
         const c = await cache.match(chunkKey(baseKey, i));
-        if (!c) return new Response(null, { status: 500 });
+        // Missing chunk (likely evicted): fall through to network for the
+        // whole Range request rather than returning a partial/error response.
+        if (!c) return fetch(request);
         const buf = await c.arrayBuffer();
         const chunkStart = i * chunkSize;
         const localStart = Math.max(0, start - chunkStart);

@@ -1345,10 +1345,11 @@ const Offline = {
         for (let i = 0; i < urls.length; i++) {
             const key = this.keyFor(urls[i]);
             // Always run — _streamFetchToCache validates and skips chunks
-            // that are already correctly cached.
+            // that are already correctly cached. sticky: true marks this
+            // book as user-pinned so auto-cache eviction won't touch it.
             await this._streamFetchToCache(audioCache, urls[i], key, (received, total) => {
                 onProgress?.(i, urls.length, received, total);
-            });
+            }, { sticky: true });
             onProgress?.(i + 1, urls.length);
         }
 
@@ -1435,7 +1436,7 @@ const Offline = {
                 const len = parseInt(existing.headers.get('content-length') || '0', 10);
                 if (len === expected) {
                     received += expected;
-                    try { onChunk?.(received, total); } catch {}
+                    try { await onChunk?.(received, total); } catch {}
                     continue;
                 }
                 await cache.delete(chunkK);
@@ -1465,8 +1466,20 @@ const Offline = {
             try { onChunk?.(received, total); } catch {}
         }
 
+        // Preserve sticky=true if the meta was previously sticky (a prior
+        // explicit Download). Auto-cache callers pass sticky=false, but we
+        // never downgrade — Download wins.
+        let sticky = !!opts.sticky;
+        try {
+            const prevMeta = await cache.match(metaK);
+            if (prevMeta) {
+                const m = await prevMeta.json();
+                if (m.sticky === true) sticky = true;
+            }
+        } catch {}
+
         await cache.put(metaK, new Response(JSON.stringify({
-            contentType, totalSize: total, chunkSize: this.CHUNK_SIZE, numChunks,
+            contentType, totalSize: total, chunkSize: this.CHUNK_SIZE, numChunks, sticky,
         }), { headers: { 'Content-Type': 'application/json' } }));
     },
 
