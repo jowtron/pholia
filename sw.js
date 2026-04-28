@@ -42,22 +42,27 @@ self.addEventListener('activate', e => {
                 if (len > 50 * 1024 * 1024) await audio.delete(req);
             }
         } catch {}
+        // Eagerly populate cachedKeys so the fetch handler can decide
+        // synchronously whether to intercept cross-origin requests.
+        await loadCachedKeys();
         await self.clients.claim();
     })());
 });
 
 self.addEventListener('message', e => {
     if (e.data?.type === 'SKIP_WAITING') self.skipWaiting();
-    // Page tells us when it changed the cache — invalidate the in-memory set.
-    if (e.data?.type === 'CACHE_CHANGED') cachedKeys = null;
+    // Page tells us when it changed the cache — refresh the in-memory set.
+    if (e.data?.type === 'CACHE_CHANGED') loadCachedKeys();
 });
 
-// In-memory set of URLs known to be in OFFLINE_AUDIO_CACHE. Avoids two
-// async disk lookups per audio Range request when nothing is cached, which
-// noticeably affects streaming over slow networks (Tailscale relay etc.).
+// Synchronously available set of URLs known to be in OFFLINE_AUDIO_CACHE.
+// Critical for the fetch handler to decide whether to intercept at all: if
+// we don't intercept (don't call respondWith), the browser handles the
+// request natively with no SW overhead. iOS WebKit has measurable per-request
+// latency for SW-intercepted media fetches, so passthrough must be skipped
+// for uncached URLs to keep streaming smooth.
 let cachedKeys = null;
-async function ensureCachedKeys() {
-    if (cachedKeys) return;
+async function loadCachedKeys() {
     const set = new Set();
     try {
         const cache = await caches.open(OFFLINE_AUDIO_CACHE);
@@ -84,7 +89,20 @@ self.addEventListener('fetch', e => {
         return;
     }
 
-    // Cross-origin (e.g. ABS audio/cover): try offline cache, else passthrough.
+    // Cross-origin: only intercept if we know something is cached for this
+    // URL. Otherwise return without calling respondWith so the browser
+    // handles the request natively (no SW round-trip overhead).
+    if (cachedKeys === null) {
+        // Keys not yet loaded — kick off load and bail. The browser will
+        // handle this request natively. Subsequent requests will use the
+        // populated set.
+        loadCachedKeys();
+        return;
+    }
+    const baseKey = offlineKey(url.toString());
+    if (!cachedKeys.has(baseKey + '#meta') && !cachedKeys.has(baseKey)) {
+        return; // not cached — let browser fetch natively
+    }
     e.respondWith(handleCrossOrigin(e.request));
 });
 
@@ -97,15 +115,6 @@ function offlineKey(url) {
 
 async function handleCrossOrigin(request) {
     const baseKey = offlineKey(request.url);
-
-    // Fast path: if the in-memory set knows we have nothing cached for this
-    // URL, skip the two cache.match disk lookups entirely. Removes ~30-100ms
-    // per audio Range request when streaming uncached content.
-    await ensureCachedKeys();
-    if (!cachedKeys.has(baseKey + '#meta') && !cachedKeys.has(baseKey)) {
-        return fetch(request);
-    }
-
     const cache = await caches.open(OFFLINE_AUDIO_CACHE);
 
     // Chunked format (large files): meta entry tells us how to assemble.
