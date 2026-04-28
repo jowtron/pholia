@@ -1290,13 +1290,23 @@ const App = {
 // Offline download manager — stores audio + cover in Cache Storage,
 // keyed with the auth token stripped so cache survives token rotation.
 const Offline = {
-    AUDIO_CACHE: 'pholia-offline-audio-v1',
+    AUDIO_CACHE: 'pholia-offline-audio-v2',
     META_CACHE: 'pholia-offline-meta-v1',
 
     keyFor(url) {
         const u = new URL(url);
         u.searchParams.delete('token');
         return u.toString();
+    },
+
+    // Cache keys for chunked entries. Use query params not fragments — the
+    // Cache API strips fragments before storing/matching, so #chunk=0 and
+    // #chunk=1 collapse to the same key. Query params are preserved.
+    chunkKey(baseKey, i) {
+        return baseKey + (baseKey.includes('?') ? '&' : '?') + '__chunk=' + i;
+    },
+    chunkMetaKey(baseKey) {
+        return baseKey + (baseKey.includes('?') ? '&' : '?') + '__meta=1';
     },
 
     notifySwCacheChanged() {
@@ -1397,28 +1407,30 @@ const Offline = {
             return;
         }
 
+        const metaK = this.chunkMetaKey(key);
+
         // If a stale meta points to a different size, drop it so we re-write.
-        const existingMeta = await cache.match(key + '#meta');
+        const existingMeta = await cache.match(metaK);
         if (existingMeta) {
             try {
                 const m = await existingMeta.json();
                 if (m.totalSize !== total || m.chunkSize !== this.CHUNK_SIZE) {
-                    await cache.delete(key + '#meta');
+                    await cache.delete(metaK);
                 }
-            } catch { await cache.delete(key + '#meta'); }
+            } catch { await cache.delete(metaK); }
         }
 
         const numChunks = Math.ceil(total / this.CHUNK_SIZE);
         let received = 0;
 
         for (let i = 0; i < numChunks; i++) {
-            const chunkKey = key + '#chunk=' + i;
+            const chunkK = this.chunkKey(key, i);
             const expected = (i === numChunks - 1) ? (total - i * this.CHUNK_SIZE) : this.CHUNK_SIZE;
 
             // Trust an existing chunk only if its byte length matches what
             // this position should hold. Catches stale/partial chunks left
             // behind by previous failed downloads.
-            const existing = await cache.match(chunkKey);
+            const existing = await cache.match(chunkK);
             if (existing) {
                 const len = parseInt(existing.headers.get('content-length') || '0', 10);
                 if (len === expected) {
@@ -1426,7 +1438,7 @@ const Offline = {
                     try { onChunk?.(received, total); } catch {}
                     continue;
                 }
-                await cache.delete(chunkKey);
+                await cache.delete(chunkK);
             }
 
             if (opts.beforeChunk) await opts.beforeChunk();
@@ -1445,7 +1457,7 @@ const Offline = {
             if (blob.size !== expected) {
                 throw new Error(`Chunk ${i} size mismatch: expected ${expected}, got ${blob.size}`);
             }
-            await cache.put(chunkKey, new Response(blob, {
+            await cache.put(chunkK, new Response(blob, {
                 status: 200,
                 headers: { 'Content-Type': contentType, 'Content-Length': String(blob.size) },
             }));
@@ -1453,7 +1465,7 @@ const Offline = {
             try { onChunk?.(received, total); } catch {}
         }
 
-        await cache.put(key + '#meta', new Response(JSON.stringify({
+        await cache.put(metaK, new Response(JSON.stringify({
             contentType, totalSize: total, chunkSize: this.CHUNK_SIZE, numChunks,
         }), { headers: { 'Content-Type': 'application/json' } }));
     },
@@ -1475,7 +1487,7 @@ const Offline = {
             const out = [];
             for (const t of tracks) {
                 const key = this.keyFor(ABS.trackUrl(item.id, t.ino));
-                if (await cache.match(key + '#meta')) { out.push(true); continue; }
+                if (await cache.match(this.chunkMetaKey(key))) { out.push(true); continue; }
                 if (await cache.match(key)) { out.push(true); continue; }
                 out.push(false);
             }
@@ -1493,15 +1505,15 @@ const Offline = {
             // Legacy whole-file entry
             await audioCache.delete(key);
             // Chunked entries: read meta to know how many, delete each
-            const metaRes = await audioCache.match(key + '#meta');
+            const metaRes = await audioCache.match(this.chunkMetaKey(key));
             if (metaRes) {
                 try {
                     const m = await metaRes.json();
                     for (let i = 0; i < (m.numChunks || 0); i++) {
-                        await audioCache.delete(key + '#chunk=' + i);
+                        await audioCache.delete(this.chunkKey(key, i));
                     }
                 } catch {}
-                await audioCache.delete(key + '#meta');
+                await audioCache.delete(this.chunkMetaKey(key));
             }
         }
         await audioCache.delete(this.keyFor(ABS.coverUrl(item.id)));
@@ -1517,7 +1529,7 @@ const Offline = {
             for (const url of urls) {
                 const key = this.keyFor(url);
                 // Chunked: read totalSize from the meta entry
-                const metaRes = await cache.match(key + '#meta');
+                const metaRes = await cache.match(this.chunkMetaKey(key));
                 if (metaRes) {
                     try { const m = await metaRes.json(); total += m.totalSize || 0; continue; } catch {}
                 }
@@ -1558,7 +1570,7 @@ const Offline = {
                 let all = true;
                 for (const t of tracks) {
                     const key = this.keyFor(ABS.trackUrl(item.id, t.ino));
-                    const ok = (await audioCache.match(key + '#meta')) || (await audioCache.match(key));
+                    const ok = (await audioCache.match(this.chunkMetaKey(key))) || (await audioCache.match(key));
                     if (!ok) { all = false; break; }
                 }
                 if (all) ids.add(item.id);
@@ -1595,9 +1607,8 @@ const Offline = {
                     const k = this.keyFor(ABS.trackUrl(item.id, t.ino));
 
                     // Validate chunked entry: every chunk must exist with the
-                    // expected size. If it's broken (e.g. the 1-byte phantom
-                    // from the probe-only bug), purge chunks + meta entirely.
-                    const chunkMeta = await audioCache.match(k + '#meta');
+                    // expected size. If it's broken, purge chunks + meta entirely.
+                    const chunkMeta = await audioCache.match(this.chunkMetaKey(k));
                     if (chunkMeta) {
                         let m = null;
                         try { m = await chunkMeta.json(); } catch {}
@@ -1607,16 +1618,16 @@ const Offline = {
                                 const exp = (i === m.numChunks - 1)
                                     ? (m.totalSize - i * m.chunkSize)
                                     : m.chunkSize;
-                                const c = await audioCache.match(k + '#chunk=' + i);
+                                const c = await audioCache.match(this.chunkKey(k, i));
                                 const len = c ? parseInt(c.headers.get('content-length') || '0', 10) : 0;
                                 if (len !== exp) { ok = false; break; }
                             }
                         }
                         if (ok) { hasAny = true; continue; }
                         for (let i = 0; i < (m?.numChunks || 0); i++) {
-                            await audioCache.delete(k + '#chunk=' + i);
+                            await audioCache.delete(this.chunkKey(k, i));
                         }
-                        await audioCache.delete(k + '#meta');
+                        await audioCache.delete(this.chunkMetaKey(k));
                     }
 
                     // Legacy whole-file entry counts if present.

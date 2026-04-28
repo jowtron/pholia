@@ -1,5 +1,5 @@
 const CACHE_NAME = 'pholia-v4';
-const OFFLINE_AUDIO_CACHE = 'pholia-offline-audio-v1';
+const OFFLINE_AUDIO_CACHE = 'pholia-offline-audio-v2';
 const OFFLINE_META_CACHE = 'pholia-offline-meta-v1';
 const APP_SHELL = [
     './',
@@ -35,7 +35,7 @@ self.addEventListener('activate', e => {
             const audio = await caches.open(OFFLINE_AUDIO_CACHE);
             const audioKeys = await audio.keys();
             for (const req of audioKeys) {
-                if (req.url.includes('#chunk=') || req.url.includes('#meta')) continue;
+                if (req.url.includes('__chunk=') || req.url.includes('__meta=')) continue;
                 const r = await audio.match(req);
                 if (!r) continue;
                 const len = parseInt(r.headers.get('content-length') || '0', 10);
@@ -100,7 +100,7 @@ self.addEventListener('fetch', e => {
         return;
     }
     const baseKey = offlineKey(url.toString());
-    if (!cachedKeys.has(baseKey + '#meta') && !cachedKeys.has(baseKey)) {
+    if (!cachedKeys.has(metaKeyOf(baseKey)) && !cachedKeys.has(baseKey)) {
         return; // not cached — let browser fetch natively
     }
     e.respondWith(handleCrossOrigin(e.request));
@@ -113,12 +113,21 @@ function offlineKey(url) {
     return u.toString();
 }
 
+// Cache keys for chunked entries. Fragments (#) are stripped by the Cache
+// API, so we use query params, which are preserved.
+function chunkKey(baseKey, i) {
+    return baseKey + (baseKey.includes('?') ? '&' : '?') + '__chunk=' + i;
+}
+function metaKeyOf(baseKey) {
+    return baseKey + (baseKey.includes('?') ? '&' : '?') + '__meta=1';
+}
+
 async function handleCrossOrigin(request) {
     const baseKey = offlineKey(request.url);
     const cache = await caches.open(OFFLINE_AUDIO_CACHE);
 
     // Chunked format (large files): meta entry tells us how to assemble.
-    const metaRes = await cache.match(baseKey + '#meta');
+    const metaRes = await cache.match(metaKeyOf(baseKey));
     if (metaRes) {
         try {
             const meta = await metaRes.json();
@@ -179,7 +188,7 @@ async function serveChunked(request, cache, baseKey, meta) {
             async start(controller) {
                 try {
                     for (let i = 0; i < numChunks; i++) {
-                        const c = await cache.match(baseKey + '#chunk=' + i);
+                        const c = await cache.match(chunkKey(baseKey, i));
                         if (!c) { controller.error(new Error('missing chunk ' + i)); return; }
                         controller.enqueue(new Uint8Array(await c.arrayBuffer()));
                     }
@@ -207,7 +216,7 @@ async function serveChunked(request, cache, baseKey, meta) {
     const endChunk = Math.floor(end / chunkSize);
     const parts = [];
     for (let i = startChunk; i <= endChunk; i++) {
-        const c = await cache.match(baseKey + '#chunk=' + i);
+        const c = await cache.match(chunkKey(baseKey, i));
         if (!c) return new Response(null, { status: 500 });
         const buf = await c.arrayBuffer();
         const chunkStart = i * chunkSize;
