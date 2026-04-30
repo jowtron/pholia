@@ -1,21 +1,22 @@
-# Project: Cadence
+# Project: Pholia
 
-Static HTML/CSS/JS web app — an Audiobookshelf client with future Navidrome/Subsonic API support planned.
+Static HTML/CSS/JS web app — an Audiobookshelf client with full offline playback and a sliding-window cache-while-playing feature.
 
-- Deployed to **Cloudflare Pages** (project: `cadence`, URL: `cadence-6re.pages.dev`)
-- GitHub repo: `jowtron/cadence` (private)
+- Deployed to **Cloudflare Pages** (project: `pholia`, URL: `pholia.pages.dev` — older URL `cadence-6re.pages.dev` still resolves)
+- GitHub repo: `jowtron/pholia` (private)
 - Go proxy (`main.go`) kept as fallback but not currently used
+- LocalStorage keys still use the legacy `cadence_*` prefix for backward-compat with installed PWAs
 
 ## Architecture
 
 - `index.html` — Main shell with login, app views, player
 - `style.css` — Dark theme, CSS variables, glassmorphic player
 - `api.js` — ABS API client (token auth via query param, not Authorization header)
-- `player.js` — Audio player with chapter tracking, sleep timer, media session
-- `app.js` — Tab navigation, views (home, library, series, collections, authors; podcasts: home, latest, library)
-- `sw.js` — Service worker for offline app shell caching (network-first strategy)
+- `player.js` — Audio player with chapter tracking, sleep timer, media session, auto-cache loop
+- `app.js` — Tab navigation, views, the `Offline` cache module, settings, SW update flow
+- `sw.js` — Service worker: app-shell cache + chunked offline audio cache with Range support
 - `manifest.json` — PWA manifest
-- `_headers` — Cloudflare Pages cache control
+- `_headers` — Cloudflare Pages cache control (per-file, NOT wildcard — see "Headers" below)
 - `.github/workflows/deploy.yml` — CI deploy to Cloudflare Pages
 
 ## CORS / Auth — Critical Knowledge
@@ -24,77 +25,133 @@ This is the single most important section. These learnings were hard-won through
 
 ### The CORS saga
 
-1. **ABS CORS setup:** `ALLOW_CORS=1` env var on the Docker container on NAS host. This was the initial fix to get cross-origin requests working from Cadence to ABS.
+1. **ABS CORS setup:** `ALLOW_CORS=1` env var on the Docker container on NAS host.
 
-2. **ABS OIDC update broke CORS:** An ABS update added OIDC (OpenID Connect) authentication support. This added `access-control-allow-credentials: true` to ALL responses. Combined with `access-control-allow-headers: *`, this violates the CORS spec — wildcards are invalid when credentials are indicated. Safari enforces this strictly and blocks all API requests. Chrome may be more lenient.
+2. **ABS OIDC update broke CORS:** An ABS update added OIDC support, which adds `access-control-allow-credentials: true` to all responses. Combined with `access-control-allow-headers: *`, this violates the CORS spec (wildcards are invalid when credentials are indicated). Safari enforces strictly and blocks all requests.
 
-3. **Fix — use `?token=` query parameter auth** instead of the Authorization header. ABS natively supports `?token=<jwt>` on all API endpoints (already used for cover images and audio streams). This avoids custom headers entirely. GET requests need no CORS preflight at all. POST requests only need `Content-Type` in allowed headers. This is faster too (one round trip instead of two for GETs).
+3. **Fix — use `?token=` query parameter auth** instead of the Authorization header. ABS supports `?token=<jwt>` on all API endpoints. GET requests need no CORS preflight; POST only needs `Content-Type` allowed. Faster too.
 
-4. **All fetch calls must use `credentials: 'omit'`** to prevent Safari's cross-site tracking prevention from blocking requests. ABS sets `Set-Cookie` headers on responses, and Safari will block the entire cross-origin request if it thinks cookies are involved.
+4. **All fetch calls must use `credentials: 'omit'`** to prevent Safari's tracking prevention from blocking responses with `Set-Cookie`.
 
-5. **ABS caches CORS origin incorrectly:** ABS's CORS implementation appears to cache/reflect only one origin at a time. If the Go proxy (`localhost:8090`) or ABS's own web UI makes a request, ABS may start reflecting that origin instead of `cadence-6re.pages.dev`. Fix: restart the ABS Docker container (`docker restart audiobookshelf`). Avoid using the Go proxy to prevent this.
+5. **ABS caches CORS origin incorrectly:** ABS reflects only one origin at a time. If a different client (Go proxy, ABS web UI) makes a request, ABS may start reflecting that origin instead of `pholia.pages.dev`. Fix: restart ABS Docker container. Avoid mixing clients.
 
-6. The `access-control-allow-credentials: true` + wildcard headers issue is an ABS bug that may be fixed upstream eventually, but the token query param approach is more robust regardless.
+6. **`Content-Range` is NOT CORS-safelisted.** ABS doesn't add `Access-Control-Expose-Headers: Content-Range`, so JS can't read it from a Range response. Use HEAD's `Content-Length` for size discovery — that header IS safelisted.
 
 ### iOS Safari / Tailscale connectivity
 
-iOS Safari requires visiting a Tailscale `.ts.net` domain directly in the browser before cross-origin `fetch()` calls to that domain will work. This is because Tailscale uses a VPN tunnel that iOS needs to "activate" for DNS resolution and TLS handshake. The connection resets after force-quitting Safari or extended device sleep.
+iOS Safari requires visiting a Tailscale `.ts.net` domain directly in the browser before cross-origin `fetch()` calls to that domain will work. Connection resets after force-quit or extended sleep.
 
-**How Cadence handles this:**
-- Login failure shows a tappable link: "Tap here to open your server" which opens the ABS URL directly
-- Saved session failure shows "Open server to wake connection" link with a Retry button
-- Auto-retry on `visibilitychange` and `online` events (e.g., switching back to the app)
+**How Pholia handles this:**
+- Login failure shows a tappable link to open the ABS URL directly
+- Saved-session failure shows "Open server to wake connection" + Retry
+- Auto-retry on `visibilitychange` and `online` events
 
-## Service Worker & Caching
+## Service Worker — Critical Architecture
 
-- **Network-first strategy** for all same-origin requests — always fetches latest code from server, falls back to cache only when offline
-- **Cache-first was a disaster** — the initial stale-while-revalidate approach served old JS files (with the broken Authorization header code) and caused login failures. Never use cache-first for JS/CSS in an actively-developed app.
-- **`?purge` URL param** — loading `cadence-6re.pages.dev/?purge` nukes all service worker caches and unregisters SWs. Escape hatch for stuck iOS clients.
-- **iOS clings to old service workers** aggressively. Clearing Safari history/data may be needed. The `?purge` param helps but isn't always sufficient.
-- **Cache version must be bumped** when making breaking changes to cached files (e.g., `cadence-v1` → `cadence-v2`)
+These behaviors are *load-bearing*; understand them before editing `sw.js`.
+
+### Selective interception
+
+The SW intercepts cross-origin requests *only when something is cached for that URL*. For uncached URLs the fetch event handler returns without calling `respondWith`, so the browser handles the request natively as if no SW existed.
+
+Why: iOS WebKit adds measurable latency to *every* SW-intercepted media fetch, even for pure passthrough. Streaming over slow networks (Tailscale) couldn't keep up — buffer underruns and audible glitches. Native passthrough avoids the round-trip entirely. This was a regression introduced by the offline-downloads commit (85caf8b) and fixed in 1bb9705.
+
+The SW maintains an in-memory `cachedKeys` Set, populated lazily from `cache.keys()` and refreshed when the page sends `CACHE_CHANGED` messages after `downloadBook`/`deleteBook`. The fetch handler consults this synchronously.
+
+### Chunked offline audio cache
+
+Audio files are cached in **10 MB chunks** (NOT as whole-file Responses). One `cache.put` of a multi-hundred-MB Response OOMs iOS PWA (~50 MB working budget per tab). Chunked downloading keeps memory peak at ~10 MB regardless of file size.
+
+Per track: N chunk entries plus one meta entry (`totalSize`, `chunkSize`, `numChunks`, `contentType`, `sticky`).
+
+**Cache keys MUST use query params, NOT URL fragments.** The Cache API spec strips fragments before storing or matching, so `url#chunk=0`, `url#chunk=1`, `url#meta` all collapse to the same key — every write overwrites the previous one. Use `url?__chunk=0`, `url?__meta=1` instead. (This bug caused weeks of mysterious "downloads complete instantly", "1 byte cached", "all chapters falsely green" symptoms.)
+
+The SW reassembles chunks on the fly when the audio element makes Range requests. Falls through to network if any required chunk is missing (handles partial caches and post-eviction requests gracefully).
+
+### Cache versions
+
+- `pholia-v4` — app shell
+- `pholia-offline-audio-v2` — chunked audio + covers (v1 used the broken fragment keys; v2 is auto-cleaned by activate)
+- `pholia-offline-meta-v1` — per-book metadata JSON
+
+`KEEP_CACHES` filters which survive activate cleanup. Bump the audio cache version when changing the chunk format.
+
+## Offline mode — Two flavors
+
+### Explicit Download (sticky)
+- "Download for offline" button on book detail
+- Fetches every track end-to-end in chunks
+- Writes meta with `sticky: true`
+- Survives auto-cache eviction
+- Shows in Settings → Downloaded
+
+### Cache while playing (sliding window)
+- Settings toggle, **default off**
+- Active during playback (5 s after `startItem`)
+- Chunk-level filter: only caches chunks whose playback time is between `(playhead - 30 min)` and `(playhead + 1 hr)`
+- `shouldCache` filter skips behind-cutoff chunks; `beforeChunk` sleeps for ahead-of-window chunks
+- After each chunk caches, evicts chunks of the current track more than 30 min behind playhead — but only on `sticky: false` entries
+- Cache footprint stays bounded (~1.5 hr of audio at any time)
+- Sticky preservation: meta writes never downgrade a previously-sticky entry
+
+## SW Update Flow
+
+- `_headers` has explicit per-file rules. **Do NOT add wildcard rules** — Cloudflare Pages headers are *additive*, so multiple matching rules concatenate. A wildcard `Cache-Control` plus the `/sw.js` `no-cache` resulted in `max-age=86400, ..., no-cache, ..., max-age=86400` — Safari picked one of the long values and cached `sw.js` for 24 hours, breaking all updates. Fixed in f79d8b3.
+- `App._pollForUpdate()` awaits `reg.update()`, then awaits the installing SW's `statechange`, then polls `reg.waiting` for up to 10 s (re-fetching the registration each iteration — iOS PWA can be slow to reflect state).
+- Polled from: initial setup, `visibilitychange`, every `switchTab`/`pushNav` (debounced to 10 s).
+- Banner has 12 s reload failsafe; manual "Check for updates" button has a `window.location.reload()` fallback for truly stuck installs.
 
 ## Persistent Login (PWA)
 
-- Credentials stored in localStorage: `cadence_server`, `cadence_username`, `cadence_token`
-- `tryAutoLogin()` attempts to restore the session on page load
-- **Only clears token on 401/403** (expired/invalid). Network errors preserve the token and show a retry UI.
-- The service worker caches the app shell so the PWA loads instantly even when offline
-- Auto-reconnect when the app returns to foreground or the device regains network
+- Credentials in localStorage: `cadence_server`, `cadence_username`, `cadence_token`
+- `tryAutoLogin()` restores session on page load
+- Only clears token on 401/403 — network errors preserve token + show retry UI
 
 ## Deployment
 
-- **CI:** GitHub Actions workflow deploys to Cloudflare Pages on push to `main`
-- **Secrets needed:** `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` (set via `gh secret set`)
-- **Build version:** Git commit hash injected at deploy time via `sed` into `#build-version` element
-- **Cache:** HTML 60s, JS/CSS 24hr. HTML was originally 1hr which caused stale-code bugs after deploys.
-- **Manual deploy:** `workflow_dispatch` trigger in Actions tab
-- **Optimizations applied:** Shallow clone, concurrency control (cancel-in-progress), retry with 30s backoff, paths-ignore for non-app files
-- **`_headers` file:** Cloudflare Pages cache control headers
+- **CI:** GitHub Actions deploys to Cloudflare Pages on push to `main`
+- **Secrets:** `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`
+- **Build version:** Git short hash injected via `sed` into `#build-version`
+- **Cache headers:** explicit per-file in `_headers`. `sw.js` is `no-cache, no-store, must-revalidate`. JS/CSS are 24 h. HTML is 60 s. **Do not add wildcard rules** (see SW Update Flow).
+- Manual deploy via `workflow_dispatch`
 
 ## ABS Server
 
-- Running on NAS host in Docker
+- NAS host in Docker
 - Tailscale URL: `https://audiobookshelf.example.ts.net`
-- Container name: `audiobookshelf` (changed from `abs-audiobookshelf-1` after an update), port 13378
-- Compose file: `/path/to/docker-compose.yml`
+- Container: `audiobookshelf`, port 13378
+- Compose: `/path/to/docker-compose.yml`
 - Docker binary: `/path/to/docker`
-- ABS login: `jowtron` (not `admin`, not `joseph`)
+- ABS login: `jowtron`
 
 ## ABS API Notes
 
-- **Series detail endpoint** (`/api/series/{id}`) does NOT return books. Use the series list endpoint (`/api/libraries/{id}/series`) which includes books, and cache them client-side.
-- **Podcast episodes:** The library items endpoint returns podcasts without episodes. Use `/api/items/{id}?expanded=1` to get episodes. Personalized home sections for podcasts return entities with `recentEpisode` nested objects.
-- **Playback sessions:** `POST /api/items/{id}/play/{episodeId}` for podcast episodes. Session includes `audioTracks` with `contentUrl` and `startOffset` for multi-file items.
+- **Series detail** (`/api/series/{id}`) does not return books. Use the series list endpoint (`/api/libraries/{id}/series`) and cache client-side.
+- **Podcast episodes:** library items endpoint returns podcasts without episodes. Use `/api/items/{id}?expanded=1`.
+- **Playback sessions:** `POST /api/items/{id}/play/{episodeId}` for podcasts. Session has `audioTracks` with `contentUrl` and `startOffset`.
+- **HEAD on file endpoints:** ABS responds with correct `Content-Length` (the full file size). Use this for chunked download size discovery.
+
+## Player Quirks Learned
+
+- **Don't add a buffering "recovery" that nudges `currentTime` after a stall** — it forcibly seeks during normal short buffer underruns and causes louder glitches than the brief stall would have. (Removed in 49924c9.)
+- **No spinner on the play button.** Real audio players don't show constant buffering UI; users interpret it as "broken." Removed in f2e6c1c.
+- **`preload='auto'`** on the Audio element so the browser buffers ahead aggressively. Helps but doesn't fix slow-network glitches by itself.
+- **Pre-warm of next track** in multi-file books: when within 30 s of current track end, fetch first 256 KB of next track in background. Smooths the boundary swap.
 
 ## Common Pitfalls
 
-- **Never use Authorization header** for ABS API calls — use `?token=` query param
+- **Never use Authorization header** for ABS API calls — use `?token=`
 - **Always use `credentials: 'omit'`** on fetch calls
-- **Never use cache-first** in the service worker for JS/CSS files
-- Browser cache can serve stale HTML after deploys — keep `max-age` low (currently 60s)
-- The latest tab element must be null-checked (may not exist in cached HTML from before podcast support)
-- Safari on macOS is the primary test browser and is strictest about CORS
-- iOS Safari needs Tailscale domain "warmed up" before cross-origin fetches work
-- ABS container name may change after updates — always check with `docker ps`
-- ABS CORS origin caching means you should avoid hitting ABS from multiple different origins (e.g., don't use the Go proxy and Cadence simultaneously)
-- `input type="url"` in HTML rejects bare hostnames — use `type="text"` for server URL input and auto-prepend `https://` in JS
+- **Cache API URL fragments are stripped** — never use `#chunk=N` style cache keys, use query params
+- **Cloudflare Pages `_headers` rules are additive** — don't use wildcards if you need a header to override; use explicit per-file rules
+- **`Content-Range` is not CORS-safelisted** — use HEAD `Content-Length` for size discovery
+- **iOS PWA memory cap (~50 MB)** — never `cache.put` a multi-hundred-MB Response or `arrayBuffer()` a huge cached entry; both crash the tab
+- **iOS WebKit adds latency to SW-intercepted media fetches** — only intercept when something is actually cached
+- **Never use cache-first** in the SW for JS/CSS files
+- **Cache version must be bumped** when changing the on-disk format
+- **Safari on macOS is the primary test browser** — strictest about CORS
+- **iOS Safari needs Tailscale domain "warmed up"** before cross-origin fetches work
+- **ABS container name may change after updates** — always check with `docker ps`
+- **`?purge` URL param** wipes all caches and unregisters the SW — escape hatch for stuck installs
+- **ABS CORS origin caching** — avoid hitting ABS from multiple different origins simultaneously
+- **`input type="url"`** rejects bare hostnames — use `type="text"` and auto-prepend `https://`

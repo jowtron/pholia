@@ -1425,6 +1425,12 @@ const Offline = {
         let received = 0;
 
         for (let i = 0; i < numChunks; i++) {
+            const start = i * this.CHUNK_SIZE;
+            // Caller can filter out chunks they don't want cached at all
+            // (e.g. too far behind a playhead). Skipped chunks aren't fetched
+            // and aren't counted toward progress.
+            if (opts.shouldCache && !opts.shouldCache(start, total)) continue;
+
             const chunkK = this.chunkKey(key, i);
             const expected = (i === numChunks - 1) ? (total - i * this.CHUNK_SIZE) : this.CHUNK_SIZE;
 
@@ -1442,7 +1448,6 @@ const Offline = {
                 await cache.delete(chunkK);
             }
 
-            const start = i * this.CHUNK_SIZE;
             const end = Math.min(start + this.CHUNK_SIZE - 1, total - 1);
             if (opts.beforeChunk) await opts.beforeChunk(start, total);
             const fetchOpts = {

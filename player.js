@@ -154,10 +154,16 @@ const Player = {
             },
             {
                 priority: 'low',
+                // Skip chunks more than 30 min behind the current playhead —
+                // we only want to cache around where the listener is, not
+                // from the start of the book.
+                shouldCache: (byteOffset, totalSize) => {
+                    if (totalSize <= 0 || trackDuration <= 0) return true;
+                    const chunkTime = trackStart + (byteOffset / totalSize) * trackDuration;
+                    return chunkTime >= this.getGlobalTime() - 1800;
+                },
                 beforeChunk: async (byteOffset, totalSize) => {
                     if (signal.aborted) throw new Error('aborted');
-                    // Re-check the setting between chunks so toggling Cache
-                    // while playing OFF takes effect immediately.
                     if (localStorage.getItem('cadence_auto_cache') !== 'true') {
                         throw new Error('disabled');
                     }
