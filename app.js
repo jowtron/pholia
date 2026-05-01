@@ -104,6 +104,7 @@ const App = {
 
         // Initial poll (covers updates already installed at page load).
         this._pollForUpdate();
+        this._checkBuildVersion();
 
         // Reload when new SW takes control. Skip the first-install case so we
         // don't blow away in-memory state.
@@ -114,7 +115,10 @@ const App = {
         });
 
         document.addEventListener('visibilitychange', () => {
-            if (document.visibilityState === 'visible') this._pollForUpdate();
+            if (document.visibilityState === 'visible') {
+                this._pollForUpdate();
+                this._checkBuildVersion();
+            }
         });
     },
 
@@ -449,6 +453,31 @@ const App = {
         if (now - this._lastSwCheck < 10000) return;
         this._lastSwCheck = now;
         this._pollForUpdate();
+        this._checkBuildVersion();
+    },
+
+    // Fallback path for iOS PWA: reg.update() doesn't always detect a new
+    // sw.js byte-by-byte even with no-cache headers, so the SW poll can miss
+    // updates. Compare the deployed index.html's build hash to the one this
+    // page started with — a mismatch means a new build is live and we can
+    // show the update banner regardless of SW state. The banner's 12 s
+    // failsafe handles the no-waiting-SW case via window.location.reload.
+    async _checkBuildVersion() {
+        if (this._updateBannerShown) return;
+        const current = document.getElementById('build-version')?.textContent?.trim();
+        if (!current || current === 'dev') return;
+        try {
+            const res = await fetch('/index.html?_v=' + Date.now(), { cache: 'no-store' });
+            if (!res.ok) return;
+            const html = await res.text();
+            const m = html.match(/<div id="build-version">([^<]+)<\/div>/);
+            if (!m) return;
+            const remote = m[1].trim();
+            if (remote && remote !== 'dev' && remote !== current) {
+                const reg = await navigator.serviceWorker.getRegistration();
+                this._showUpdateBanner(reg || { waiting: null });
+            }
+        } catch {}
     },
 
     switchTab(tab) {
