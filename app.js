@@ -1091,7 +1091,24 @@ const App = {
             });
             elapsed += audioFiles[i].duration || 0;
         }
-        document.querySelectorAll('#content .tracklist-item[data-index]').forEach(el => {
+        // Update detail page chapter list and fullscreen player chapter list
+        // independently — only paint the one(s) currently showing this item.
+        if (this._currentDetailItem?.id === item.id) {
+            this._paintChapterCacheFill(
+                document.querySelectorAll('#content .tracklist-item[data-index]'),
+                trackInfo, chapters
+            );
+        }
+        if (Player.item?.id === item.id) {
+            this._paintChapterCacheFill(
+                document.querySelectorAll('#fs-chapter-list .tracklist-item[data-index]'),
+                trackInfo, chapters
+            );
+        }
+    },
+
+    _paintChapterCacheFill(els, trackInfo, chapters) {
+        els.forEach(el => {
             const idx = parseInt(el.dataset.index);
             const ch = chapters[idx];
             if (!ch) return;
@@ -1137,8 +1154,12 @@ const App = {
     // and the UI must reflect that, not just additions. Coalesces overlapping
     // events into one trailing refresh so the final state is never lost.
     async onCacheProgress({ itemId }) {
-        const item = this._currentDetailItem;
-        if (!item || item.id !== itemId) return;
+        // The event might be for the playing item, the item being viewed in
+        // detail, or both — markCachedChapters paints whichever lists match.
+        let item = null;
+        if (Player.item?.id === itemId) item = Player.item;
+        else if (this._currentDetailItem?.id === itemId) item = this._currentDetailItem;
+        if (!item) return;
         if (this._cacheProgressInFlight) {
             this._cacheProgressQueued = true;
             return;
@@ -1257,7 +1278,7 @@ const App = {
         await Offline.cleanupPhantoms();
         const items = await Offline.listDownloaded();
         if (!items.length) {
-            list.innerHTML = '<div class="downloads-empty">No downloads yet</div>';
+            list.innerHTML = '<div class="downloads-empty">Nothing cached yet</div>';
             clearBtn.style.display = 'none';
             return;
         }
@@ -1288,7 +1309,7 @@ const App = {
             });
         });
         clearBtn.onclick = async () => {
-            if (!confirm(`Remove all ${items.length} downloaded book${items.length === 1 ? '' : 's'}?`)) return;
+            if (!confirm(`Remove all ${items.length} cached book${items.length === 1 ? '' : 's'}?`)) return;
             list.innerHTML = '<div class="downloads-empty">Clearing…</div>';
             for (const item of items) await Offline.deleteBook(item);
             this.renderDownloadsList();
@@ -1319,7 +1340,8 @@ const App = {
             let prog = 0;
             if (isActive && chDur > 0) prog = ((gt - ch.start) / chDur) * 100;
             else if (gt >= ch.end) prog = 100;
-            html += `<li class="tracklist-item ${isActive ? 'is-active' : ''}" data-ch="${i}" id="fs-ch-${i}">`;
+            html += `<li class="tracklist-item ${isActive ? 'is-active' : ''}" data-index="${i}" id="fs-ch-${i}">`;
+            html += `<div class="tracklist-cache-fill"></div>`;
             html += `<div class="tracklist-progress" style="width:${prog}%"></div>`;
             html += `<button class="tracklist-play"><span class="tracklist-num">${ch.id != null ? ch.id + 1 : i + 1}</span>`;
             html += `<span class="tracklist-title">${esc(ch.title)}</span>`;
@@ -1331,12 +1353,13 @@ const App = {
             el.querySelector('.tracklist-play').addEventListener('click', (e) => {
                 const rect = el.getBoundingClientRect();
                 const fraction = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-                Player.seekChapterByTap(parseInt(el.dataset.ch), fraction);
+                Player.seekChapterByTap(parseInt(el.dataset.index), fraction);
             });
         });
         // Scroll to current chapter
         const activeEl = document.getElementById(`fs-ch-${Player.currentChapterIndex}`);
         if (activeEl) activeEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        if (Player.item) this.markCachedChapters(Player.item);
     },
 };
 

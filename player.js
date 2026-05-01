@@ -211,6 +211,20 @@ const Player = {
         const cache = await caches.open(Offline.AUDIO_CACHE);
         const itemId = this.item.id;
 
+        // Save metadata + cover up front so partial sliding-window caches
+        // persist across PWA restarts and appear in Settings → Cached with
+        // their actual size. Was previously only done after the for loop,
+        // which never finishes during a typical play session.
+        try {
+            const coverUrl = ABS.coverUrl(itemId);
+            const coverKey = Offline.keyFor(coverUrl);
+            if (!(await cache.match(coverKey))) {
+                const coverRes = await fetch(coverUrl, { credentials: 'omit', signal });
+                if (coverRes.ok) await cache.put(coverKey, coverRes);
+            }
+            await Offline.saveMeta(this.item);
+        } catch {}
+
         let elapsed = 0;
         for (let i = 0; i < tracks.length; i++) {
             const trackEnd = elapsed + (tracks[i].duration || 0);
@@ -233,17 +247,6 @@ const Player = {
             }
             elapsed = trackEnd;
         }
-
-        // Save metadata + cover so the book appears in the offline list.
-        try {
-            const coverUrl = ABS.coverUrl(itemId);
-            const coverKey = Offline.keyFor(coverUrl);
-            if (!(await cache.match(coverKey))) {
-                const coverRes = await fetch(coverUrl, { credentials: 'omit', signal });
-                if (coverRes.ok) await cache.put(coverKey, coverRes);
-            }
-            await Offline.saveMeta(this.item);
-        } catch {}
     },
 
     loadTime(globalTime) {
@@ -528,7 +531,7 @@ const Player = {
         };
         const fsCh = document.getElementById('fs-chapter-list');
         if (fsCh && !fsCh.classList.contains('hidden'))
-            updateChapterItems(fsCh.querySelectorAll('.tracklist-item[data-ch]'), 'ch');
+            updateChapterItems(fsCh.querySelectorAll('.tracklist-item[data-index]'), 'index');
         // Detail view chapter list (data-index items inside #content)
         const detailItems = document.querySelectorAll('#content .tracklist-item[data-index]');
         if (detailItems.length) updateChapterItems(detailItems, 'index');
