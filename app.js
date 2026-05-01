@@ -1049,56 +1049,80 @@ const App = {
         const audioFiles = item.media?.audioFiles || [];
         const chapters = item.media?.chapters || [];
         if (!audioFiles.length || !chapters.length) return;
-        const mask = await Offline.cachedTracksMask(item);
-        if (!mask.some(Boolean)) return;
-        const ranges = [];
+        const coverage = await Offline.chunkCoverage(item);
+        if (!coverage.some(c => c)) return;
+        const trackInfo = [];
         let elapsed = 0;
         for (let i = 0; i < audioFiles.length; i++) {
-            ranges.push({ start: elapsed, end: elapsed + (audioFiles[i].duration || 0), cached: mask[i] });
+            trackInfo.push({
+                start: elapsed,
+                end: elapsed + (audioFiles[i].duration || 0),
+                duration: audioFiles[i].duration || 0,
+                coverage: coverage[i],
+            });
             elapsed += audioFiles[i].duration || 0;
         }
         document.querySelectorAll('#content .tracklist-item[data-index]').forEach(el => {
             const idx = parseInt(el.dataset.index);
             const ch = chapters[idx];
             if (!ch) return;
-            const r = ranges.find(r => ch.start >= r.start && ch.start < r.end);
-            if (r?.cached) {
+            const r = trackInfo.find(r => ch.start >= r.start && ch.start < r.end);
+            if (!r) return;
+            const cached = this._chapterCovered(r, ch);
+            const fill = el.querySelector('.tracklist-cache-fill');
+            if (cached) {
                 el.classList.add('is-cached');
-                const fill = el.querySelector('.tracklist-cache-fill');
                 if (fill) fill.style.width = '100%';
+            } else {
+                el.classList.remove('is-cached');
+                if (fill) fill.style.width = '0%';
             }
         });
     },
 
-    // Live update: stream a track's cache progress into the matching chapter rows.
-    onCacheProgress({ itemId, trackIndex, received, total, done }) {
+    // True if the chapter's byte range within its track is fully covered by
+    // cached chunks. For legacy whole-file entries, returns true. For uncached
+    // tracks, returns false. With sliding-window caching, chapters near the
+    // playhead become cached even though the start of the file isn't.
+    _chapterCovered(trackInfo, ch) {
+        const cov = trackInfo.coverage;
+        if (!cov) return false;
+        if (cov.legacy) return true;
+        const { totalSize, chunkSize, numChunks, cached } = cov;
+        if (!cached.size) return false;
+        const trackDur = trackInfo.duration;
+        if (trackDur <= 0) return false;
+        const chEndTime = Math.min(ch.end, trackInfo.end);
+        const chStartByte = ((ch.start - trackInfo.start) / trackDur) * totalSize;
+        const chEndByte = ((chEndTime - trackInfo.start) / trackDur) * totalSize;
+        const firstChunk = Math.max(0, Math.floor(chStartByte / chunkSize));
+        const lastChunk = Math.min(numChunks - 1, Math.floor(Math.max(chStartByte, chEndByte - 1) / chunkSize));
+        for (let c = firstChunk; c <= lastChunk; c++) {
+            if (!cached.has(c)) return false;
+        }
+        return true;
+    },
+
+    // Live update: re-query coverage and refresh chapter rows. Re-queries on
+    // every event because chunks can be evicted by the sliding-window logic
+    // and the UI must reflect that, not just additions. Coalesces overlapping
+    // events into one trailing refresh so the final state is never lost.
+    async onCacheProgress({ itemId }) {
         const item = this._currentDetailItem;
         if (!item || item.id !== itemId) return;
-        const audioFiles = item.media?.audioFiles || [];
-        const chapters = item.media?.chapters || [];
-        const track = audioFiles[trackIndex];
-        if (!track) return;
-
-        let trackStart = 0;
-        for (let i = 0; i < trackIndex; i++) trackStart += audioFiles[i].duration || 0;
-        const trackEnd = trackStart + (track.duration || 0);
-        const trackDur = trackEnd - trackStart;
-        if (trackDur <= 0) return;
-
-        const fileFrac = total > 0 ? Math.min(1, received / total) : (done ? 1 : 0);
-        const cachedTimeUpTo = trackStart + fileFrac * trackDur;
-
-        document.querySelectorAll('#content .tracklist-item[data-index]').forEach(el => {
-            const idx = parseInt(el.dataset.index);
-            const ch = chapters[idx];
-            if (!ch || ch.start < trackStart || ch.start >= trackEnd) return;
-            const chEnd = Math.min(ch.end, trackEnd);
-            const chDur = chEnd - ch.start;
-            const frac = chDur > 0 ? Math.max(0, Math.min(1, (cachedTimeUpTo - ch.start) / chDur)) : 0;
-            const fill = el.querySelector('.tracklist-cache-fill');
-            if (fill) fill.style.width = (frac * 100) + '%';
-            if (done && frac >= 0.999) el.classList.add('is-cached');
-        });
+        if (this._cacheProgressInFlight) {
+            this._cacheProgressQueued = true;
+            return;
+        }
+        this._cacheProgressInFlight = true;
+        try {
+            do {
+                this._cacheProgressQueued = false;
+                await this.markCachedChapters(item);
+            } while (this._cacheProgressQueued);
+        } finally {
+            this._cacheProgressInFlight = false;
+        }
     },
 
     async renderOfflineControls(item) {
@@ -1496,22 +1520,44 @@ const Offline = {
         );
     },
 
-    // Returns one boolean per audioFile: true if fully cached (chunked or whole)
-    async cachedTracksMask(item) {
+    // Returns per-track coverage info needed to render chapter cache state.
+    // For each audioFile: null (nothing cached), { legacy: true } (whole-file
+    // cache, treat as fully covered), or { totalSize, chunkSize, numChunks,
+    // cached: Set<int> } for chunked entries. Single cache.keys() walk for
+    // efficiency.
+    async chunkCoverage(item) {
         const tracks = item.media?.audioFiles || [];
         if (!tracks.length) return [];
         try {
             const cache = await caches.open(this.AUDIO_CACHE);
+            const allUrls = (await cache.keys()).map(r => r.url);
+            const urlSet = new Set(allUrls);
             const out = [];
             for (const t of tracks) {
                 const key = this.keyFor(ABS.trackUrl(item.id, t.ino));
-                if (await cache.match(this.chunkMetaKey(key))) { out.push(true); continue; }
-                if (await cache.match(key)) { out.push(true); continue; }
-                out.push(false);
+                const metaUrl = this.chunkMetaKey(key);
+                if (urlSet.has(metaUrl)) {
+                    const metaRes = await cache.match(metaUrl);
+                    let meta;
+                    try { meta = await metaRes.json(); } catch { out.push(null); continue; }
+                    const chunkPrefix = key + (key.includes('?') ? '&' : '?') + '__chunk=';
+                    const cached = new Set();
+                    for (const u of allUrls) {
+                        if (u.startsWith(chunkPrefix)) {
+                            const idx = parseInt(u.substring(chunkPrefix.length), 10);
+                            if (!isNaN(idx)) cached.add(idx);
+                        }
+                    }
+                    out.push({ totalSize: meta.totalSize, chunkSize: meta.chunkSize, numChunks: meta.numChunks, cached });
+                } else if (urlSet.has(key)) {
+                    out.push({ legacy: true });
+                } else {
+                    out.push(null);
+                }
             }
             return out;
         } catch {
-            return tracks.map(() => false);
+            return tracks.map(() => null);
         }
     },
 
