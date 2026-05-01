@@ -64,6 +64,10 @@ Audio files are cached in **10 MB chunks** (NOT as whole-file Responses). One `c
 
 Per track: N chunk entries plus one meta entry (`totalSize`, `chunkSize`, `numChunks`, `contentType`, `sticky`).
 
+**Meta is written *up front* before the chunk loop**, not at the end. With sliding-window auto-cache the loop sleeps indefinitely waiting for playback to catch up to ahead-of-window chunks, so a trailing meta-write would leave coverage queries returning null for most of a session. As a consequence:
+- "Meta exists" no longer implies "fully cached" — `isDownloaded`, `fullyDownloadedIds`, `bookSize`, and `cleanupPhantoms` all walk actual chunk presence (don't trust meta alone).
+- `cleanupPhantoms` preserves any entry with at least one cached chunk; only fully-orphaned meta is dropped.
+
 **Cache keys MUST use query params, NOT URL fragments.** The Cache API spec strips fragments before storing or matching, so `url#chunk=0`, `url#chunk=1`, `url#meta` all collapse to the same key — every write overwrites the previous one. Use `url?__chunk=0`, `url?__meta=1` instead. (This bug caused weeks of mysterious "downloads complete instantly", "1 byte cached", "all chapters falsely green" symptoms.)
 
 The SW reassembles chunks on the fly when the audio element makes Range requests. Falls through to network if any required chunk is missing (handles partial caches and post-eviction requests gracefully).
@@ -88,18 +92,26 @@ The SW reassembles chunks on the fly when the audio element makes Range requests
 ### Cache while playing (sliding window)
 - Settings toggle, **default off**
 - Active during playback (5 s after `startItem`)
+- `saveMeta` runs at the *start* of `_startAutoCache` so the book persists across PWA restarts and shows in Settings → Cached even if the loop never finishes
 - Chunk-level filter: only caches chunks whose playback time is between `(playhead - 30 min)` and `(playhead + 1 hr)`
 - `shouldCache` filter skips behind-cutoff chunks; `beforeChunk` sleeps for ahead-of-window chunks
 - After each chunk caches, evicts chunks of the current track more than 30 min behind playhead — but only on `sticky: false` entries
 - Cache footprint stays bounded (~1.5 hr of audio at any time)
 - Sticky preservation: meta writes never downgrade a previously-sticky entry
 
+### Chapter cache UI
+
+The green overlay on chapter rows reflects *actual* chunk coverage, not `received/total` ratio. Computing fill from `received/total` was wrong for sliding-window because `received` only sums the in-window chunks (~5% of file), so the fill drew from byte 0 to 5% of the book — making it look like only the start was cached.
+
+`Offline.chunkCoverage(item)` does one `cache.keys()` walk and returns per-track `{ totalSize, chunkSize, numChunks, cached: Set<int> }`. `_chapterCovered` maps each chapter's playback-time range to a byte range, then to chunk indices, and only marks the chapter green when *all* overlapping chunks are present. The fullscreen player chapter list and the detail-page chapter list are both painted by the same code path.
+
 ## SW Update Flow
 
 - `_headers` has explicit per-file rules. **Do NOT add wildcard rules** — Cloudflare Pages headers are *additive*, so multiple matching rules concatenate. A wildcard `Cache-Control` plus the `/sw.js` `no-cache` resulted in `max-age=86400, ..., no-cache, ..., max-age=86400` — Safari picked one of the long values and cached `sw.js` for 24 hours, breaking all updates. Fixed in f79d8b3.
 - `App._pollForUpdate()` awaits `reg.update()`, then awaits the installing SW's `statechange`, then polls `reg.waiting` for up to 10 s (re-fetching the registration each iteration — iOS PWA can be slow to reflect state).
+- **`App._checkBuildVersion()`** runs in parallel: fetches `/index.html` with cache-bust, parses the deployed git hash from `#build-version`, and shows the update banner on mismatch. This is the load-bearing path on iOS PWA — `reg.update()` doesn't always re-fetch `sw.js` byte-for-byte even with no-cache headers, so the SW poll silently misses updates and only the version probe catches them. Without it, the only reliable update triggers are the manual "Check for updates" button and force-quitting the PWA.
 - Polled from: initial setup, `visibilitychange`, every `switchTab`/`pushNav` (debounced to 10 s).
-- Banner has 12 s reload failsafe; manual "Check for updates" button has a `window.location.reload()` fallback for truly stuck installs.
+- Banner has 12 s reload failsafe; manual "Check for updates" button has a `window.location.reload()` fallback for truly stuck installs. The banner click handler also falls through to `window.location.reload()` when there's no `reg.waiting` (covers the version-probe path where SW hasn't picked up the new sw.js yet).
 
 ## Persistent Login (PWA)
 
@@ -155,3 +167,5 @@ The SW reassembles chunks on the fly when the audio element makes Range requests
 - **`?purge` URL param** wipes all caches and unregisters the SW — escape hatch for stuck installs
 - **ABS CORS origin caching** — avoid hitting ABS from multiple different origins simultaneously
 - **`input type="url"`** rejects bare hostnames — use `type="text"` and auto-prepend `https://`
+- **`reg.update()` is unreliable on iOS PWA** — pair it with a build-version probe (`fetch('/index.html?_v=…')` + parse `#build-version`) for reliable update detection
+- **Don't trust "meta exists" as "fully cached"** — sliding-window writes meta upfront with chunks added incrementally; check actual chunk presence in validators

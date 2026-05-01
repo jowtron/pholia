@@ -2,7 +2,7 @@
 
 A static-HTML/CSS/JS Audiobookshelf client — installable as a PWA, deployed to Cloudflare Pages, no build step.
 
-Live: [cadence-6re.pages.dev](https://cadence-6re.pages.dev)
+Live: [pholia.pages.dev](https://pholia.pages.dev) (older URL `cadence-6re.pages.dev` still resolves)
 
 ## Features
 
@@ -17,16 +17,15 @@ Live: [cadence-6re.pages.dev](https://cadence-6re.pages.dev)
 
 ### Reliability on slow / flaky connections
 - `preload='auto'` so the browser buffers ahead aggressively
-- Buffering spinner overlay on play buttons when audio stalls
-- Auto-recovery: if playback stalls for 8s, `currentTime` is nudged to force a fresh HTTP Range request
 - Pre-warming: when within 30s of the end of a track in a multi-file book, the next track's first 256KB is fetched in the background so the boundary swap is near-instant
+- Service worker passes through uncached cross-origin requests natively (no SW round-trip) to avoid iOS WebKit's per-fetch latency on streaming audio
 
-### Offline mode
-- "Download for offline" button on each book — caches audio tracks and cover into the browser's Cache Storage
-- Service worker intercepts ABS audio requests; cached files are served with proper HTTP `206 Partial Content` slicing for seek support
-- "Downloaded" section on the home tab; works even when the ABS server is unreachable
-- Token-stripped cache keys so downloads survive auth token rotation
-- Per-book remove
+### Offline mode (two flavors)
+- **Download for offline (sticky)** — pin a book end-to-end. 10 MB chunked storage so multi-hundred-MB books don't OOM the iOS PWA. Shows in Settings → Cached. Survives auto-cache eviction.
+- **Cache while playing (sliding window)** — opt-in toggle in Settings. Caches a 30 min behind / 1 hr ahead window around the playhead during playback. Footprint stays bounded (~1.5 hr of audio at any time); chunks behind the window are auto-evicted unless the book is sticky-downloaded.
+- Chapter list shows a green overlay for chapters whose underlying chunks are all cached, in both the book detail page and the fullscreen player
+- Token-stripped cache keys so caches survive auth token rotation
+- Per-book remove + Clear-all in Settings
 
 ### Browsing
 - Home, Library, Series, Collections, Authors tabs
@@ -36,9 +35,10 @@ Live: [cadence-6re.pages.dev](https://cadence-6re.pages.dev)
 
 ### PWA / Install
 - Installable on iOS, Android, desktop
-- Persistent login (credentials in localStorage; only cleared on 401/403)
+- Persistent login (credentials in localStorage; only cleared on 401/403 — network failures preserve the session)
 - Network-first service worker for app shell with offline fallback
-- Auto-update with banner: detects new SW, applies after 5s, 12s reload failsafe if `controllerchange` doesn't fire
+- Auto-update with banner: detects new SW via `reg.update()` poll, applies after 5s, 12s reload failsafe
+- Build-version probe: fetches `index.html` on nav-tap / visibility change and compares the deployed git hash to the running one. Catches updates that iOS Safari's `reg.update()` silently misses.
 - `?purge` URL param wipes all caches and unregisters the SW (escape hatch for stuck installs)
 
 ## Architecture
@@ -48,11 +48,11 @@ Live: [cadence-6re.pages.dev](https://cadence-6re.pages.dev)
 | `index.html` | App shell — login, views, player UI |
 | `style.css` | Dark/light theme, glassmorphic player |
 | `api.js` | ABS API client (token via `?token=` query param, not Authorization header) |
-| `player.js` | Audio playback, chapters, sleep timer, media session, buffering recovery, pre-warming |
-| `app.js` | Routing, views, search, settings, `Offline` download manager, SW update flow |
-| `sw.js` | Service worker: app-shell cache + offline audio cache with Range support |
+| `player.js` | Audio playback, chapters, sleep timer, media session, sliding-window auto-cache, pre-warming |
+| `app.js` | Routing, views, search, settings, `Offline` cache manager, SW update flow |
+| `sw.js` | Service worker: app-shell cache + chunked offline audio cache with Range reassembly |
 | `manifest.json` | PWA manifest |
-| `_headers` | Cloudflare Pages cache control (HTML 60s, JS/CSS 24h, `sw.js` no-cache) |
+| `_headers` | Cloudflare Pages cache control (per-file rules — `sw.js` no-cache, JS/CSS 24h, HTML 60s) |
 
 ## CORS / auth
 
