@@ -1373,11 +1373,14 @@ const Offline = {
     },
 
     async isDownloaded(item) {
-        const urls = this.trackUrls(item);
-        if (!urls.length) return false;
-        const cache = await caches.open(this.AUDIO_CACHE);
-        for (const url of urls) {
-            if (!(await cache.match(this.keyFor(url)))) return false;
+        const tracks = item.media?.audioFiles || [];
+        if (!tracks.length) return false;
+        const coverage = await this.chunkCoverage(item);
+        for (let i = 0; i < tracks.length; i++) {
+            const cov = coverage[i];
+            if (!cov) return false;
+            if (cov.legacy) continue;
+            if (cov.cached.size !== cov.numChunks) return false;
         }
         return true;
     },
@@ -1462,19 +1465,33 @@ const Offline = {
         }
 
         const metaK = this.chunkMetaKey(key);
+        const numChunks = Math.ceil(total / this.CHUNK_SIZE);
 
-        // If a stale meta points to a different size, drop it so we re-write.
+        // Determine sticky state. Sliding-window auto-cache passes sticky:false;
+        // explicit Download passes sticky:true. We never downgrade a previously
+        // sticky entry — once a book has been pinned, it stays pinned.
+        let sticky = !!opts.sticky;
         const existingMeta = await cache.match(metaK);
         if (existingMeta) {
             try {
                 const m = await existingMeta.json();
                 if (m.totalSize !== total || m.chunkSize !== this.CHUNK_SIZE) {
                     await cache.delete(metaK);
+                } else if (m.sticky === true) {
+                    sticky = true;
                 }
             } catch { await cache.delete(metaK); }
         }
 
-        const numChunks = Math.ceil(total / this.CHUNK_SIZE);
+        // Write meta upfront so coverage queries (markCachedChapters) work
+        // mid-loop. With sliding-window caching the loop can take a long time
+        // (chunks ahead of the playhead sleep until playback catches up), so
+        // a trailing meta-write would leave the UI without coverage info for
+        // most of a session.
+        await cache.put(metaK, new Response(JSON.stringify({
+            contentType, totalSize: total, chunkSize: this.CHUNK_SIZE, numChunks, sticky,
+        }), { headers: { 'Content-Type': 'application/json' } }));
+
         let received = 0;
 
         for (let i = 0; i < numChunks; i++) {
@@ -1523,22 +1540,6 @@ const Offline = {
             received += blob.size;
             try { onChunk?.(received, total); } catch {}
         }
-
-        // Preserve sticky=true if the meta was previously sticky (a prior
-        // explicit Download). Auto-cache callers pass sticky=false, but we
-        // never downgrade — Download wins.
-        let sticky = !!opts.sticky;
-        try {
-            const prevMeta = await cache.match(metaK);
-            if (prevMeta) {
-                const m = await prevMeta.json();
-                if (m.sticky === true) sticky = true;
-            }
-        } catch {}
-
-        await cache.put(metaK, new Response(JSON.stringify({
-            contentType, totalSize: total, chunkSize: this.CHUNK_SIZE, numChunks, sticky,
-        }), { headers: { 'Content-Type': 'application/json' } }));
     },
 
     async saveMeta(item) {
@@ -1617,23 +1618,39 @@ const Offline = {
     async bookSize(item) {
         try {
             const cache = await caches.open(this.AUDIO_CACHE);
-            const urls = [...this.trackUrls(item), ABS.coverUrl(item.id)];
+            const coverage = await this.chunkCoverage(item);
+            const tracks = item.media?.audioFiles || [];
             let total = 0;
-            for (const url of urls) {
-                const key = this.keyFor(url);
-                // Chunked: read totalSize from the meta entry
-                const metaRes = await cache.match(this.chunkMetaKey(key));
-                if (metaRes) {
-                    try { const m = await metaRes.json(); total += m.totalSize || 0; continue; } catch {}
+            for (let i = 0; i < tracks.length; i++) {
+                const cov = coverage[i];
+                if (!cov) continue;
+                if (cov.legacy) {
+                    // Whole-file (legacy): trust content-length only. NEVER
+                    // load the body — multi-hundred-MB arrayBuffer OOMs iOS PWA.
+                    const key = this.keyFor(ABS.trackUrl(item.id, tracks[i].ino));
+                    const res = await cache.match(key);
+                    const len = res?.headers.get('content-length');
+                    if (len) total += parseInt(len, 10);
+                    continue;
                 }
-                // Whole-file (legacy): trust content-length only. NEVER load
-                // the body to measure — a multi-hundred-MB arrayBuffer call
-                // OOMs iOS PWA. If no length header, skip (better to undercount).
-                const res = await cache.match(key);
-                if (!res) continue;
-                const len = res.headers.get('content-length');
-                if (len) total += parseInt(len, 10);
+                // Chunked: count only the chunks actually present, not totalSize
+                // from meta (which describes the full file even when we only
+                // hold a sliding window of it).
+                const fullChunks = Math.max(0, cov.numChunks - 1);
+                const lastIdx = cov.numChunks - 1;
+                for (const idx of cov.cached) {
+                    if (idx === lastIdx) {
+                        total += cov.totalSize - lastIdx * cov.chunkSize;
+                    } else if (idx >= 0 && idx < fullChunks) {
+                        total += cov.chunkSize;
+                    }
+                }
             }
+            // Cover (small, always whole-file)
+            const coverKey = this.keyFor(ABS.coverUrl(item.id));
+            const coverRes = await cache.match(coverKey);
+            const coverLen = coverRes?.headers.get('content-length');
+            if (coverLen) total += parseInt(coverLen, 10);
             return total;
         } catch { return 0; }
     },
@@ -1646,27 +1663,14 @@ const Offline = {
         } catch { return new Set(); }
     },
 
-    // IDs of books where every audio file is in the cache.
+    // IDs of books where every audio file is fully cached (every chunk present
+    // for chunked entries, or the whole-file legacy entry exists).
     async fullyDownloadedIds() {
         try {
-            const metaCache = await caches.open(this.META_CACHE);
-            const audioCache = await caches.open(this.AUDIO_CACHE);
-            const keys = await metaCache.keys();
+            const items = await this.listDownloaded();
             const ids = new Set();
-            for (const req of keys) {
-                const res = await metaCache.match(req);
-                if (!res) continue;
-                let item;
-                try { item = await res.json(); } catch { continue; }
-                const tracks = item.media?.audioFiles || [];
-                if (!tracks.length) continue;
-                let all = true;
-                for (const t of tracks) {
-                    const key = this.keyFor(ABS.trackUrl(item.id, t.ino));
-                    const ok = (await audioCache.match(this.chunkMetaKey(key))) || (await audioCache.match(key));
-                    if (!ok) { all = false; break; }
-                }
-                if (all) ids.add(item.id);
+            for (const item of items) {
+                if (await this.isDownloaded(item)) ids.add(item.id);
             }
             return ids;
         } catch { return new Set(); }
@@ -1682,10 +1686,16 @@ const Offline = {
     // Cleans up after SW activate purges of legacy oversized entries — those
     // leave the metadata behind, which then shows up as a 0-byte phantom in
     // the settings list.
+    // Drop meta entries (and the cover) for books where no audio chunk is
+    // cached anymore. Partial caches (sliding-window in progress, or after
+    // window-eviction) are valid and preserved — only fully-orphaned metadata
+    // is cleaned up.
     async cleanupPhantoms() {
         try {
             const metaCache = await caches.open(this.META_CACHE);
             const audioCache = await caches.open(this.AUDIO_CACHE);
+            const allUrls = (await audioCache.keys()).map(r => r.url);
+            const urlSet = new Set(allUrls);
             const keys = await metaCache.keys();
             for (const req of keys) {
                 const res = await metaCache.match(req);
@@ -1698,38 +1708,20 @@ const Offline = {
                 let hasAny = false;
                 for (const t of tracks) {
                     const k = this.keyFor(ABS.trackUrl(item.id, t.ino));
-
-                    // Validate chunked entry: every chunk must exist with the
-                    // expected size. If it's broken, purge chunks + meta entirely.
-                    const chunkMeta = await audioCache.match(this.chunkMetaKey(k));
-                    if (chunkMeta) {
-                        let m = null;
-                        try { m = await chunkMeta.json(); } catch {}
-                        let ok = !!m;
-                        if (m) {
-                            for (let i = 0; i < (m.numChunks || 0); i++) {
-                                const exp = (i === m.numChunks - 1)
-                                    ? (m.totalSize - i * m.chunkSize)
-                                    : m.chunkSize;
-                                const c = await audioCache.match(this.chunkKey(k, i));
-                                const len = c ? parseInt(c.headers.get('content-length') || '0', 10) : 0;
-                                if (len !== exp) { ok = false; break; }
-                            }
-                        }
-                        if (ok) { hasAny = true; continue; }
-                        for (let i = 0; i < (m?.numChunks || 0); i++) {
-                            await audioCache.delete(this.chunkKey(k, i));
-                        }
-                        await audioCache.delete(this.chunkMetaKey(k));
-                    }
-
-                    // Legacy whole-file entry counts if present.
-                    if (await audioCache.match(k)) { hasAny = true; }
+                    if (urlSet.has(k)) { hasAny = true; break; }
+                    const chunkPrefix = k + (k.includes('?') ? '&' : '?') + '__chunk=';
+                    if (allUrls.some(u => u.startsWith(chunkPrefix))) { hasAny = true; break; }
                 }
 
                 if (!hasAny) {
                     await metaCache.delete(req);
                     await audioCache.delete(this.keyFor(ABS.coverUrl(item.id)));
+                    // Also drop any orphan meta/chunk entries (none expected,
+                    // but be safe).
+                    for (const t of tracks) {
+                        const k = this.keyFor(ABS.trackUrl(item.id, t.ino));
+                        await audioCache.delete(this.chunkMetaKey(k));
+                    }
                 }
             }
         } catch {}
