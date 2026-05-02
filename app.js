@@ -419,9 +419,13 @@ const App = {
     async setupPasskeyButton() {
         const btn = document.getElementById('passkey-login-btn');
         const divider = document.getElementById('login-divider');
+        // Show whenever the device supports platform passkeys — modern
+        // passkeys sync via iCloud Keychain / Google Password Manager, so a
+        // fresh browser window may still have access to a credential created
+        // on another device. The local "registered on this device" flag was
+        // hiding the button in exactly that case.
         const available = await Account.isPasskeyAvailable();
-        const registered = Account.hasPasskeyOnThisDevice() || !!Account.token();
-        if (available && registered) {
+        if (available) {
             btn.classList.remove('hidden');
             divider.classList.remove('hidden');
         } else {
@@ -1461,8 +1465,85 @@ const App = {
         document.getElementById('setting-auto-cache').checked = localStorage.getItem('cadence_auto_cache') === 'true';
         document.getElementById('settings-modal').classList.remove('hidden');
         this.renderDownloadsList();
+        this.renderAccountSection();
     },
     hideSettings() { document.getElementById('settings-modal').classList.add('hidden'); },
+
+    async renderAccountSection() {
+        const status = document.getElementById('account-status');
+        const actions = document.getElementById('account-actions');
+        if (!status || !actions) return;
+
+        const passkeyAvailable = await Account.isPasskeyAvailable();
+        const me = Account.token() ? await Account.whoami() : null;
+
+        if (!me) {
+            const dot = '<span class="account-dot off"></span>';
+            status.innerHTML = `${dot}Not signed in`;
+            actions.innerHTML = passkeyAvailable
+                ? '<div class="setting-hint">Log in below and accept the prompt to save this server to a passkey-protected account.</div>'
+                : '<div class="setting-hint">This device doesn\'t support passkeys, so Pholia accounts aren\'t available here.</div>';
+            return;
+        }
+
+        const dot = '<span class="account-dot on"></span>';
+        status.innerHTML = `${dot}Signed in · ${me.passkeys} passkey${me.passkeys === 1 ? '' : 's'}`;
+
+        let servers = [];
+        try { servers = await Account.listServers(); } catch {}
+
+        let html = '';
+        if (servers.length) {
+            html += '<div class="account-server-list">';
+            for (const s of servers) {
+                html += `<div class="account-server-row">
+                    <div class="acct-server-info">
+                        <div>${esc(s.label || s.username)}</div>
+                        <div class="acct-server-sub">${esc(s.username)} · ${esc(s.server_url)}</div>
+                    </div>
+                    <button class="text-btn account-server-remove" data-id="${s.id}">Remove</button>
+                </div>`;
+            }
+            html += '</div>';
+        }
+        if (passkeyAvailable && !Account.hasPasskeyOnThisDevice()) {
+            html += '<button id="account-add-passkey" type="button">Add a passkey on this device</button>';
+        }
+        html += '<button id="account-logout" type="button" class="danger-btn">Sign out of Pholia account</button>';
+        actions.innerHTML = html;
+
+        actions.querySelectorAll('.account-server-remove').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                if (!confirm('Remove this saved server? You\'ll need to log in manually next time.')) return;
+                btn.disabled = true; btn.textContent = 'Removing…';
+                try {
+                    await Account.deleteServer(btn.dataset.id);
+                    this.renderAccountSection();
+                } catch (e) {
+                    btn.disabled = false; btn.textContent = 'Remove';
+                    alert('Could not remove: ' + e.message);
+                }
+            });
+        });
+        document.getElementById('account-add-passkey')?.addEventListener('click', async (e) => {
+            const btn = e.currentTarget;
+            const orig = btn.textContent;
+            btn.disabled = true; btn.textContent = 'Setting up…';
+            try {
+                await Account.registerPasskey({ newAccount: false });
+                this.renderAccountSection();
+            } catch (err) {
+                const msg = err?.message || '';
+                if (!/Cancelled|NotAllowed/i.test(msg)) alert('Failed: ' + msg);
+                btn.disabled = false; btn.textContent = orig;
+            }
+        });
+        document.getElementById('account-logout')?.addEventListener('click', async () => {
+            if (!confirm('Sign out of your Pholia account on this device? Saved servers stay in the account but you\'ll need a passkey to access them again.')) return;
+            await Account.logout();
+            this.renderAccountSection();
+        });
+    },
 
     async renderDownloadsList() {
         const list = document.getElementById('downloads-list');
