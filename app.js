@@ -127,6 +127,21 @@ const App = {
         document.getElementById('login-form').addEventListener('submit', e => {
             e.preventDefault(); this.handleLogin();
         });
+        document.getElementById('passkey-login-btn').addEventListener('click', () => this.handlePasskeyLogin());
+        document.getElementById('save-account-yes').addEventListener('click', () => this._confirmSaveToAccount());
+        document.getElementById('save-account-no').addEventListener('click', () => this._dismissSaveToAccount());
+        document.getElementById('server-picker-add').addEventListener('click', () => {
+            document.getElementById('server-picker').classList.remove('active');
+            document.getElementById('login-screen').classList.add('active');
+            document.getElementById('login-form').reset();
+            document.getElementById('login-error').textContent = '';
+        });
+        document.getElementById('server-picker-logout').addEventListener('click', async () => {
+            await Account.logout();
+            document.getElementById('server-picker').classList.remove('active');
+            document.getElementById('login-screen').classList.add('active');
+            await this.setupPasskeyButton();
+        });
 
         // Tabs
         document.querySelectorAll('.tab').forEach(tab => {
@@ -319,16 +334,19 @@ const App = {
                 this.setupLibrarySelector();
                 this.showMain();
                 this.switchTab('home');
+                return;
             } catch (e) {
                 if (e.status === 401 || e.status === 403) {
-                    // Token is expired or invalid — clear credentials
+                    // Token expired — try silent re-login via the saved Pholia
+                    // account credentials before kicking back to login screen.
                     ABS.token = '';
                     localStorage.removeItem('cadence_token');
+                    if (await this._silentReloginViaAccount(savedServer, savedUser)) return;
                 } else {
                     // Network error or server down — keep credentials, show main UI
                     this._offlineMode = true;
                     this.showMain();
-                    const serverLink = ABS.serverUrl || localStorage.getItem('cadence_server') || '';
+                    const serverLink = ABS.serverUrl || savedServer || '';
                     this.setContent(
                         '<div class="loading">' +
                         'Could not reach server. Your session is saved.' +
@@ -337,8 +355,125 @@ const App = {
                         '</div>'
                     );
                     document.getElementById('retry-connect')?.addEventListener('click', () => this.retryConnect());
+                    return;
                 }
             }
+        }
+
+        // No ABS creds (or token expired and no silent re-login). If we have
+        // a Pholia account session, jump straight into the saved-servers
+        // flow. Otherwise show the login screen with a Face ID button if the
+        // device supports passkeys.
+        if (Account.token()) {
+            const me = await Account.whoami();
+            if (me) {
+                try {
+                    const servers = await Account.listServers();
+                    if (servers.length === 1) {
+                        await this.loginFromAccount(servers[0]);
+                        return;
+                    }
+                    if (servers.length > 1) {
+                        this.showServerPicker(servers);
+                        return;
+                    }
+                } catch {}
+            }
+        }
+        await this.setupPasskeyButton();
+    },
+
+    // Try to silently re-login to ABS using a password stored in the Pholia
+    // account, without ever bouncing the user to the login screen. Returns
+    // true on success.
+    async _silentReloginViaAccount(serverUrl, username) {
+        if (!Account.token() || !serverUrl || !username) return false;
+        try {
+            const servers = await Account.listServers();
+            const match = servers.find(s => s.server_url === serverUrl && s.username === username)
+                || servers.find(s => s.server_url === serverUrl);
+            if (!match) return false;
+            await this.loginFromAccount(match);
+            return true;
+        } catch { return false; }
+    },
+
+    async loginFromAccount(server) {
+        try {
+            const creds = await Account.getServerCredentials(server.id);
+            await ABS.login(creds.server_url, creds.username, creds.password);
+            ABS.saveCredentials(creds.server_url, creds.username, ABS.token);
+            this.libraries = await ABS.getLibraries();
+            this._offlineMode = false;
+            this.setupLibrarySelector();
+            this.showMain();
+            this.switchTab('home');
+        } catch (e) {
+            document.getElementById('server-picker').classList.remove('active');
+            document.getElementById('login-screen').classList.add('active');
+            await this.setupPasskeyButton();
+            document.getElementById('login-error').textContent = e.message || 'Login failed';
+        }
+    },
+
+    async setupPasskeyButton() {
+        const btn = document.getElementById('passkey-login-btn');
+        const divider = document.getElementById('login-divider');
+        const available = await Account.isPasskeyAvailable();
+        const registered = Account.hasPasskeyOnThisDevice() || !!Account.token();
+        if (available && registered) {
+            btn.classList.remove('hidden');
+            divider.classList.remove('hidden');
+        } else {
+            btn.classList.add('hidden');
+            divider.classList.add('hidden');
+        }
+    },
+
+    showServerPicker(servers) {
+        document.getElementById('login-screen').classList.remove('active');
+        document.getElementById('server-picker').classList.add('active');
+        const list = document.getElementById('server-picker-list');
+        list.innerHTML = '';
+        for (const s of servers) {
+            const row = document.createElement('div');
+            row.className = 'server-row';
+            const label = s.label || s.username;
+            row.innerHTML = `
+                <div class="server-label">${esc(label)}</div>
+                <div class="server-sub">${esc(s.username)} · ${esc(s.server_url)}</div>
+            `;
+            row.addEventListener('click', () => this.loginFromAccount(s));
+            list.appendChild(row);
+        }
+    },
+
+    async handlePasskeyLogin() {
+        const btn = document.getElementById('passkey-login-btn');
+        const errorEl = document.getElementById('login-error');
+        errorEl.textContent = '';
+        const orig = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = 'Authenticating…';
+        try {
+            await Account.authenticateWithPasskey();
+            const servers = await Account.listServers();
+            if (servers.length === 0) {
+                errorEl.textContent = 'No saved servers in your account — log in below to add one.';
+            } else if (servers.length === 1) {
+                await this.loginFromAccount(servers[0]);
+            } else {
+                this.showServerPicker(servers);
+            }
+        } catch (e) {
+            const msg = e?.message || '';
+            // User-cancelled the prompt — don't shout about it.
+            if (!/Cancelled|NotAllowed/i.test(msg)) {
+                errorEl.textContent = msg || 'Passkey sign-in failed';
+            }
+        } finally {
+            btn.disabled = false;
+            btn.textContent = orig;
         }
     },
 
@@ -383,9 +518,57 @@ const App = {
             this.setupLibrarySelector();
             this.showMain();
             this.switchTab('home');
+            // Defer the save-prompt slightly so the main UI is visible behind it.
+            setTimeout(() => this._maybeOfferSaveToAccount({ serverUrl, username, password }), 400);
         } catch (e) {
             errorEl.innerHTML = e.message;
         }
+    },
+
+    // After a successful manual ABS login, offer to save the credentials to
+    // a Pholia account. If the user is already logged into a Pholia account,
+    // save silently (they're adding another server). Otherwise show a modal
+    // asking if they want to create one with a passkey.
+    async _maybeOfferSaveToAccount({ serverUrl, username, password }) {
+        if (Account.token()) {
+            try { await Account.saveServer({ server_url: serverUrl, username, password }); } catch {}
+            return;
+        }
+        if (!await Account.isPasskeyAvailable()) return;
+        this._pendingServerSave = { serverUrl, username, password };
+        document.getElementById('save-account-modal').classList.remove('hidden');
+    },
+
+    async _confirmSaveToAccount() {
+        const modal = document.getElementById('save-account-modal');
+        const yesBtn = document.getElementById('save-account-yes');
+        const orig = yesBtn.textContent;
+        yesBtn.disabled = true;
+        yesBtn.textContent = 'Setting up…';
+        const pending = this._pendingServerSave;
+        this._pendingServerSave = null;
+        try {
+            await Account.registerPasskey({ newAccount: true });
+            if (pending) await Account.saveServer({
+                server_url: pending.serverUrl,
+                username: pending.username,
+                password: pending.password,
+            });
+        } catch (e) {
+            const msg = e?.message || '';
+            if (!/Cancelled|NotAllowed/i.test(msg)) {
+                alert('Could not set up Pholia account: ' + msg);
+            }
+        } finally {
+            yesBtn.disabled = false;
+            yesBtn.textContent = orig;
+            modal.classList.add('hidden');
+        }
+    },
+
+    _dismissSaveToAccount() {
+        document.getElementById('save-account-modal').classList.add('hidden');
+        this._pendingServerSave = null;
     },
 
     showMain() {
@@ -406,6 +589,17 @@ const App = {
         if (savedServer) document.getElementById('server-url').value = savedServer;
         if (savedUser) document.getElementById('username').value = savedUser;
         this.navStack = [];
+        // If a Pholia account is still signed in, show the picker straight
+        // away rather than making the user re-pick the server manually.
+        if (Account.token()) {
+            Account.listServers().then(servers => {
+                if (servers.length === 1) this.loginFromAccount(servers[0]);
+                else if (servers.length > 1) this.showServerPicker(servers);
+                else this.setupPasskeyButton();
+            }).catch(() => this.setupPasskeyButton());
+        } else {
+            this.setupPasskeyButton();
+        }
     },
 
     setupLibrarySelector() {

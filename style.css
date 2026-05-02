@@ -76,6 +76,59 @@ button { cursor: pointer; font-size: 1rem; border: none; color: var(--text); bac
 #login-form button[type="submit"]:hover { background: var(--accent-hover); }
 .error { color: var(--danger); font-size: 0.875rem; min-height: 1.25rem; }
 
+/* ── Passkey login button + divider ── */
+.passkey-btn {
+    width: 100%; padding: 0.75rem; background: var(--accent); color: #fff;
+    border-radius: var(--radius); font-weight: 600; font-size: 1rem;
+    margin-bottom: 0.75rem;
+}
+.passkey-btn:hover { background: var(--accent-hover); }
+.passkey-btn:disabled { opacity: 0.6; cursor: default; }
+.login-divider {
+    display: flex; align-items: center; gap: 0.5rem; margin: 0.75rem 0;
+    color: var(--text-muted); font-size: 0.8rem;
+}
+.login-divider::before, .login-divider::after {
+    content: ''; flex: 1; border-top: 1px solid var(--border);
+}
+
+/* ── Server picker ── */
+#server-picker { align-items: center; justify-content: center; }
+#server-picker-list {
+    display: flex; flex-direction: column; gap: 0.5rem;
+    margin: 1rem 0; text-align: left;
+}
+.server-row {
+    display: flex; flex-direction: column; gap: 0.25rem;
+    padding: 0.75rem 1rem; background: var(--card-bg);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    cursor: pointer;
+}
+.server-row:hover { border-color: var(--accent); }
+.server-row .server-label {
+    font-weight: 600; font-size: 0.95rem;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.server-row .server-sub {
+    color: var(--text-muted); font-size: 0.8rem;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ── Save-to-account modal ── */
+.modal-content {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 12px;
+    width: 90%; max-width: 400px; padding: 1.25rem;
+}
+.modal-content h3 { margin: 0 0 0.5rem 0; font-size: 1.05rem; }
+.modal-narrow { max-width: 360px; }
+.modal-actions {
+    display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1rem;
+}
+.modal-actions button:not(.text-btn) {
+    padding: 0.5rem 1rem; background: var(--accent); color: #fff;
+    border-radius: var(--radius); font-weight: 600;
+}
+
 /* ── Header ── */
 header {
     display: flex; align-items: center; justify-content: space-between;

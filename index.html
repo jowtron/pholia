@@ -20,6 +20,10 @@
             <div class="login-container">
                 <h1>Pholia</h1>
                 <p class="subtitle">Audiobookshelf Client</p>
+                <button id="passkey-login-btn" class="passkey-btn hidden" type="button">
+                    Sign in with Face ID
+                </button>
+                <div id="login-divider" class="login-divider hidden"><span>or</span></div>
                 <form id="login-form">
                     <input type="text" id="server-url" placeholder="Server URL (e.g. abs.example.com)" required>
                     <input type="text" id="username" placeholder="Username" required autocapitalize="none" autocorrect="off">
@@ -27,6 +31,32 @@
                     <button type="submit">Connect</button>
                     <p id="login-error" class="error"></p>
                 </form>
+            </div>
+        </div>
+
+        <!-- Server picker (shown after passkey login when account has saved servers) -->
+        <div id="server-picker" class="screen">
+            <div class="login-container">
+                <h1>Pholia</h1>
+                <p class="subtitle">Choose a server</p>
+                <div id="server-picker-list"></div>
+                <button id="server-picker-add" class="text-btn" type="button">Add another server</button>
+                <button id="server-picker-logout" class="text-btn" type="button">Sign out of Pholia account</button>
+            </div>
+        </div>
+
+        <!-- Save-to-account prompt (after manual ABS login on a fresh device) -->
+        <div id="save-account-modal" class="modal hidden">
+            <div class="modal-content modal-narrow">
+                <h3>Save to a Pholia account?</h3>
+                <p class="setting-hint">
+                    Save this server to a passkey-protected account so you can sign in with
+                    Face ID on any device. Your password is encrypted and never visible to anyone.
+                </p>
+                <div class="modal-actions">
+                    <button id="save-account-yes" type="button">Yes, save</button>
+                    <button id="save-account-no" class="text-btn" type="button">Not now</button>
+                </div>
             </div>
         </div>
 
@@ -251,6 +281,7 @@
     </div>
 
     <script src="api.js"></script>
+    <script src="account.js"></script>
     <script src="player.js"></script>
     <script src="app.js"></script>
     <script>
