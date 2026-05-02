@@ -399,8 +399,14 @@ const App = {
     },
 
     async loginFromAccount(server) {
+        let creds;
         try {
-            const creds = await Account.getServerCredentials(server.id);
+            creds = await Account.getServerCredentials(server.id);
+        } catch (e) {
+            this._showLoginScreenWithError(e.message || 'Could not load saved credentials');
+            return;
+        }
+        try {
             await ABS.login(creds.server_url, creds.username, creds.password);
             ABS.saveCredentials(creds.server_url, creds.username, ABS.token);
             this.libraries = await ABS.getLibraries();
@@ -409,14 +415,29 @@ const App = {
             this.showMain();
             this.switchTab('home');
         } catch (e) {
-            document.getElementById('server-picker').classList.remove('active');
-            document.getElementById('login-screen').classList.add('active');
-            await this.setupPasskeyButton();
-            // ABS.login throws an error message containing an <a> link for
-            // the Tailscale-warmup case; render it as HTML so the link is
-            // tappable. e.message is constructed by us, never user input.
-            document.getElementById('login-error').innerHTML = e.message || 'Login failed';
+            // Pre-fill the manual form with the saved server + username so
+            // the user can submit it as a fallback — typical case is
+            // Tailscale needing a warmup tap; once the link in the error
+            // wakes the connection, the form is ready to submit, and the
+            // browser's password autofill (saved against pholia.pages.dev,
+            // not the ABS server URL) handles the password field on focus.
+            this._showLoginScreenWithError(e.message || 'Login failed', {
+                serverUrl: creds.server_url,
+                username: creds.username,
+            });
         }
+    },
+
+    _showLoginScreenWithError(message, prefill = {}) {
+        document.getElementById('server-picker').classList.remove('active');
+        document.getElementById('login-screen').classList.add('active');
+        if (prefill.serverUrl) document.getElementById('server-url').value = prefill.serverUrl;
+        if (prefill.username) document.getElementById('username').value = prefill.username;
+        // Render as HTML so the Tailscale-warmup link from ABS.login is
+        // tappable. Messages are constructed by our own code, never user
+        // input.
+        document.getElementById('login-error').innerHTML = message;
+        this.setupPasskeyButton();
     },
 
     async setupPasskeyButton() {
