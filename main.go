@@ -20,7 +20,7 @@ func main() {
 		fs.ServeHTTP(w, r)
 	})
 
-	log.Println("Cadence running at http://localhost:8090")
+	log.Println("Pholia running at http://localhost:8090")
 	log.Fatal(http.ListenAndServe(":8090", nil))
 }
 

@@ -5,7 +5,7 @@ Static HTML/CSS/JS web app — an Audiobookshelf client with full offline playba
 - Deployed to **Cloudflare Pages** (project: `pholia`, URL: `pholia.pages.dev` — older URL `cadence-6re.pages.dev` still resolves)
 - GitHub repo: `jowtron/pholia` (private)
 - Go proxy (`main.go`) kept as fallback but not currently used
-- LocalStorage keys still use the legacy `cadence_*` prefix for backward-compat with installed PWAs
+- LocalStorage keys are now all `pholia_*`. A one-time migration block at the top of `api.js` copies any pre-existing `cadence_*` values across (the app was originally called Cadence). Pholia-account session bearer is `pholia_session`; the ABS JWT is `pholia_token`.
 
 ## Architecture
 
@@ -115,7 +115,7 @@ The green overlay on chapter rows reflects *actual* chunk coverage, not `receive
 
 ## Persistent Login (PWA)
 
-- Credentials in localStorage: `cadence_server`, `cadence_username`, `cadence_token`
+- Credentials in localStorage: `pholia_server`, `pholia_username`, `pholia_token` (one-time migration from `cadence_*` runs at the top of `api.js`)
 - `tryAutoLogin()` restores session on page load
 - Only clears token on 401/403 — network errors preserve token + show retry UI
 

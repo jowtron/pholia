@@ -53,7 +53,7 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Send the PWA origin so ABS caches the correct CORS origin
 	// (ABS only remembers one origin at a time — without this, the desktop
 	// proxy would overwrite it and break the PWA)
-	proxyReq.Header.Set("Origin", "https://cadence-6re.pages.dev")
+	proxyReq.Header.Set("Origin", "https://pholia.pages.dev")
 
 	resp, err := p.client.Do(proxyReq)
 	if err != nil {

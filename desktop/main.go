@@ -23,7 +23,7 @@ func main() {
 	app := NewApp()
 
 	err = wails.Run(&options.App{
-		Title:  "Cadence",
+		Title:  "Pholia",
 		Width:  1200,
 		Height: 800,
 		AssetServer: &assetserver.Options{
@@ -33,7 +33,7 @@ func main() {
 		BackgroundColour: &options.RGBA{R: 18, G: 18, B: 18, A: 255},
 		Mac: &mac.Options{
 			About: &mac.AboutInfo{
-				Title:   "Cadence",
+				Title:   "Pholia",
 				Message: "Audiobookshelf Client",
 			},
 		},

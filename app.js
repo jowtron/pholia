@@ -187,10 +187,10 @@ const App = {
         document.getElementById('setting-skip').addEventListener('change', e => Player.setSkipDuration(parseInt(e.target.value)));
         document.getElementById('setting-theme').addEventListener('change', e => {
             document.documentElement.setAttribute('data-theme', e.target.value);
-            localStorage.setItem('cadence_theme', e.target.value);
+            localStorage.setItem('pholia_theme', e.target.value);
         });
         document.getElementById('setting-auto-cache').addEventListener('change', e => {
-            localStorage.setItem('cadence_auto_cache', e.target.checked ? 'true' : 'false');
+            localStorage.setItem('pholia_auto_cache', e.target.checked ? 'true' : 'false');
             if (e.target.checked && Player.item) Player._startAutoCache();
             else if (!e.target.checked && Player._autoCacheController) {
                 Player._autoCacheController.abort();
@@ -198,13 +198,13 @@ const App = {
             }
         });
         // Apply saved theme
-        const savedTheme = localStorage.getItem('cadence_theme') || 'dark';
+        const savedTheme = localStorage.getItem('pholia_theme') || 'dark';
         document.documentElement.setAttribute('data-theme', savedTheme);
 
         // Library selector
         document.getElementById('library-select').addEventListener('change', e => {
             this.currentLibraryId = e.target.value;
-            localStorage.setItem('cadence_library', this.currentLibraryId);
+            localStorage.setItem('pholia_library', this.currentLibraryId);
             this.updateMediaType();
             this.switchTab('home');
         });
@@ -321,8 +321,8 @@ const App = {
     _offlineMode: false,
 
     async tryAutoLogin() {
-        const savedServer = localStorage.getItem('cadence_server');
-        const savedUser = localStorage.getItem('cadence_username');
+        const savedServer = localStorage.getItem('pholia_server');
+        const savedUser = localStorage.getItem('pholia_username');
         if (savedServer) document.getElementById('server-url').value = savedServer;
         if (savedUser) document.getElementById('username').value = savedUser;
 
@@ -340,7 +340,7 @@ const App = {
                     // Token expired — try silent re-login via the saved Pholia
                     // account credentials before kicking back to login screen.
                     ABS.token = '';
-                    localStorage.removeItem('cadence_token');
+                    localStorage.removeItem('pholia_token');
                     if (await this._silentReloginViaAccount(savedServer, savedUser)) return;
                 } else {
                     // Network error or server down — keep credentials, show main UI
@@ -495,7 +495,7 @@ const App = {
             if (e.status === 401 || e.status === 403) {
                 // Token expired while offline — need to re-login
                 ABS.token = '';
-                localStorage.removeItem('cadence_token');
+                localStorage.removeItem('pholia_token');
                 document.getElementById('main-screen').classList.remove('active');
                 document.getElementById('login-screen').classList.add('active');
                 document.getElementById('login-error').textContent = 'Session expired. Please log in again.';
@@ -586,8 +586,8 @@ const App = {
     logout() {
         Player.pause();
         Player.closeCurrentSession();
-        const savedServer = localStorage.getItem('cadence_server');
-        const savedUser = localStorage.getItem('cadence_username');
+        const savedServer = localStorage.getItem('pholia_server');
+        const savedUser = localStorage.getItem('pholia_username');
         ABS.clearCredentials();
         this.hideSettings();
         document.getElementById('main-screen').classList.remove('active');
@@ -623,7 +623,7 @@ const App = {
                 sel.appendChild(opt);
             });
         }
-        const saved = localStorage.getItem('cadence_library');
+        const saved = localStorage.getItem('pholia_library');
         if (saved && this.libraries.find(l => l.id === saved)) {
             this.currentLibraryId = saved;
             sel.value = saved;
@@ -1460,12 +1460,12 @@ const App = {
     // ── Settings ──
     showSettings() {
         document.getElementById('setting-server').textContent = ABS.serverUrl;
-        document.getElementById('setting-user').textContent = localStorage.getItem('cadence_username') || '';
+        document.getElementById('setting-user').textContent = localStorage.getItem('pholia_username') || '';
         document.getElementById('setting-build').textContent = document.getElementById('build-version')?.textContent || '?';
         document.getElementById('setting-speed').value = Player.audio.playbackRate;
         document.getElementById('setting-skip').value = Player.skipDuration;
-        document.getElementById('setting-theme').value = localStorage.getItem('cadence_theme') || 'dark';
-        document.getElementById('setting-auto-cache').checked = localStorage.getItem('cadence_auto_cache') === 'true';
+        document.getElementById('setting-theme').value = localStorage.getItem('pholia_theme') || 'dark';
+        document.getElementById('setting-auto-cache').checked = localStorage.getItem('pholia_auto_cache') === 'true';
         document.getElementById('settings-modal').classList.remove('hidden');
         this.renderDownloadsList();
         this.renderAccountSection();
@@ -1483,9 +1483,15 @@ const App = {
         if (!me) {
             const dot = '<span class="account-dot off"></span>';
             status.innerHTML = `${dot}Not signed in`;
-            actions.innerHTML = passkeyAvailable
-                ? '<div class="setting-hint">Log in below and accept the prompt to save this server to a passkey-protected account.</div>'
-                : '<div class="setting-hint">This device doesn\'t support passkeys, so Pholia accounts aren\'t available here.</div>';
+            if (!passkeyAvailable) {
+                actions.innerHTML = '<div class="setting-hint">This device doesn\'t support passkeys, so Pholia accounts aren\'t available here.</div>';
+                return;
+            }
+            actions.innerHTML = `
+                <div class="setting-hint">A Pholia account stores your server URL and password (encrypted) behind a passkey, so you can sign in with Face ID on any device.</div>
+                <button id="account-create" type="button">Set up Pholia account with passkey</button>
+            `;
+            document.getElementById('account-create').addEventListener('click', () => this._setupAccountFromSettings());
             return;
         }
 
@@ -1509,8 +1515,17 @@ const App = {
             }
             html += '</div>';
         }
-        if (passkeyAvailable && !Account.hasPasskeyOnThisDevice()) {
-            html += '<button id="account-add-passkey" type="button">Add a passkey on this device</button>';
+        if (passkeyAvailable) {
+            html += '<button id="account-add-passkey" type="button">Add another passkey</button>';
+        }
+        // If we're logged into ABS but the current server isn't in the
+        // saved list, offer to add it. (The password isn't in memory, so
+        // we ask for it.)
+        const currentServerSaved = servers.some(s =>
+            s.server_url === ABS.serverUrl && s.username === localStorage.getItem('pholia_username')
+        );
+        if (ABS.serverUrl && !currentServerSaved) {
+            html += '<button id="account-add-server" type="button">Save current server to account</button>';
         }
         html += '<button id="account-logout" type="button" class="danger-btn">Sign out of Pholia account</button>';
         actions.innerHTML = html;
@@ -1541,11 +1556,46 @@ const App = {
                 btn.disabled = false; btn.textContent = orig;
             }
         });
+        document.getElementById('account-add-server')?.addEventListener('click', () => this._saveCurrentServerFromSettings());
         document.getElementById('account-logout')?.addEventListener('click', async () => {
             if (!confirm('Sign out of your Pholia account on this device? Saved servers stay in the account but you\'ll need a passkey to access them again.')) return;
             await Account.logout();
             this.renderAccountSection();
         });
+    },
+
+    // Settings → Set up Pholia account: register a passkey to create the
+    // account, then save the currently-logged-in server (if any) by asking
+    // for the password (not in memory after auto-login).
+    async _setupAccountFromSettings() {
+        try {
+            await Account.registerPasskey({ newAccount: true });
+        } catch (err) {
+            const msg = err?.message || '';
+            if (!/Cancelled|NotAllowed/i.test(msg)) alert('Passkey setup failed: ' + msg);
+            return;
+        }
+        if (ABS.serverUrl) {
+            await this._saveCurrentServerFromSettings();
+        }
+        this.renderAccountSection();
+    },
+
+    async _saveCurrentServerFromSettings() {
+        if (!ABS.serverUrl) return;
+        const username = localStorage.getItem('pholia_username') || '';
+        const password = prompt(
+            `Save the current server (${ABS.serverUrl}) to your Pholia account? ` +
+            `Enter your ABS password — it'll be encrypted and stored so Face ID can ` +
+            `sign you in on any device.`
+        );
+        if (!password) return;
+        try {
+            await Account.saveServer({ server_url: ABS.serverUrl, username, password });
+            this.renderAccountSection();
+        } catch (e) {
+            alert('Save failed: ' + e.message);
+        }
     },
 
     async renderDownloadsList() {

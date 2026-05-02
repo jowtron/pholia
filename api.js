@@ -1,3 +1,56 @@
+// One-time localStorage migration from the legacy cadence_ prefix to pholia_.
+// Runs before anything reads keys. Safe to leave indefinitely — cheap on
+// every load, no-op once migrated.
+(function migratePholiaKeys() {
+    try {
+        // Earliest Pholia-account drafts stored the account session bearer
+        // under cadence_pholia_token, then briefly under pholia_token. The
+        // big rename below makes pholia_token mean "the ABS JWT" — so we
+        // need to move any pre-existing account session bearer out of the
+        // way to pholia_session BEFORE the cadence_token → pholia_token
+        // rename overwrites it.
+        const veryOld = localStorage.getItem('cadence_pholia_token');
+        if (veryOld && !localStorage.getItem('pholia_session')) {
+            localStorage.setItem('pholia_session', veryOld);
+        }
+        if (veryOld !== null) localStorage.removeItem('cadence_pholia_token');
+
+        // Was pholia_token actually a Pholia account session (yesterday's
+        // build) or already an ABS JWT? Distinguish by length: account
+        // sessions are exactly 64 hex chars; ABS JWTs are ~200+ chars.
+        const ambiguous = localStorage.getItem('pholia_token');
+        if (ambiguous && /^[0-9a-f]{64}$/.test(ambiguous) && !localStorage.getItem('pholia_session')) {
+            localStorage.setItem('pholia_session', ambiguous);
+            localStorage.removeItem('pholia_token');
+        }
+
+        const renames = {
+            'cadence_server': 'pholia_server',
+            'cadence_username': 'pholia_username',
+            'cadence_token': 'pholia_token',
+            'cadence_device_id': 'pholia_device_id',
+            'cadence_theme': 'pholia_theme',
+            'cadence_speed': 'pholia_speed',
+            'cadence_skip': 'pholia_skip',
+            'cadence_auto_cache': 'pholia_auto_cache',
+            'cadence_library': 'pholia_library',
+        };
+        for (const [oldK, newK] of Object.entries(renames)) {
+            const v = localStorage.getItem(oldK);
+            if (v !== null && localStorage.getItem(newK) === null) {
+                localStorage.setItem(newK, v);
+            }
+            localStorage.removeItem(oldK);
+        }
+
+        const oldPasskeyFlag = localStorage.getItem('cadence_passkey_registered');
+        if (oldPasskeyFlag && !localStorage.getItem('pholia_passkey_registered')) {
+            localStorage.setItem('pholia_passkey_registered', oldPasskeyFlag);
+        }
+        if (oldPasskeyFlag !== null) localStorage.removeItem('cadence_passkey_registered');
+    } catch {}
+})();
+
 // Audiobookshelf API client
 const ABS = {
     serverUrl: '',
@@ -171,25 +224,25 @@ const ABS = {
 
     // Get a stable device ID
     getDeviceId() {
-        let id = localStorage.getItem('cadence_device_id');
+        let id = localStorage.getItem('pholia_device_id');
         if (!id) {
-            id = 'cadence_' + Math.random().toString(36).substring(2, 15);
-            localStorage.setItem('cadence_device_id', id);
+            id = 'pholia_' + Math.random().toString(36).substring(2, 15);
+            localStorage.setItem('pholia_device_id', id);
         }
         return id;
     },
 
     // Save/load credentials from localStorage
     saveCredentials(serverUrl, username, token) {
-        localStorage.setItem('cadence_server', serverUrl);
-        localStorage.setItem('cadence_username', username);
-        localStorage.setItem('cadence_token', token);
+        localStorage.setItem('pholia_server', serverUrl);
+        localStorage.setItem('pholia_username', username);
+        localStorage.setItem('pholia_token', token);
     },
 
     loadCredentials() {
-        const serverUrl = localStorage.getItem('cadence_server');
-        const username = localStorage.getItem('cadence_username');
-        const token = localStorage.getItem('cadence_token');
+        const serverUrl = localStorage.getItem('pholia_server');
+        const username = localStorage.getItem('pholia_username');
+        const token = localStorage.getItem('pholia_token');
         if (serverUrl && token) {
             this.init(serverUrl, token);
             return { serverUrl, username, token };
@@ -198,9 +251,9 @@ const ABS = {
     },
 
     clearCredentials() {
-        localStorage.removeItem('cadence_server');
-        localStorage.removeItem('cadence_username');
-        localStorage.removeItem('cadence_token');
+        localStorage.removeItem('pholia_server');
+        localStorage.removeItem('pholia_username');
+        localStorage.removeItem('pholia_token');
         this.serverUrl = '';
         this.token = '';
     },

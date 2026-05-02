@@ -24,10 +24,10 @@ const Player = {
         this.audio.addEventListener('pause', () => this.setPlaying(false));
         this.audio.addEventListener('error', (e) => console.error('Audio error', e));
 
-        const speed = localStorage.getItem('cadence_speed');
+        const speed = localStorage.getItem('pholia_speed');
         if (speed) this.audio.playbackRate = parseFloat(speed);
 
-        const skip = localStorage.getItem('cadence_skip');
+        const skip = localStorage.getItem('pholia_skip');
         if (skip) this.skipDuration = parseInt(skip);
         this.updateSkipLabels();
 
@@ -51,7 +51,7 @@ const Player = {
 
     setSkipDuration(seconds) {
         this.skipDuration = seconds;
-        localStorage.setItem('cadence_skip', seconds);
+        localStorage.setItem('pholia_skip', seconds);
         this.updateSkipLabels();
     },
 
@@ -173,7 +173,7 @@ const Player = {
                 },
                 beforeChunk: async (byteOffset, totalSize) => {
                     if (signal.aborted) throw new Error('aborted');
-                    if (localStorage.getItem('cadence_auto_cache') !== 'true') {
+                    if (localStorage.getItem('pholia_auto_cache') !== 'true') {
                         throw new Error('disabled');
                     }
                     // Sliding window: estimate the playback time of this
@@ -184,7 +184,7 @@ const Player = {
                         while (chunkTime > this.getGlobalTime() + TARGET_AHEAD) {
                             await new Promise(r => setTimeout(r, 5000));
                             if (signal.aborted) throw new Error('aborted');
-                            if (localStorage.getItem('cadence_auto_cache') !== 'true') {
+                            if (localStorage.getItem('pholia_auto_cache') !== 'true') {
                                 throw new Error('disabled');
                             }
                         }
@@ -202,9 +202,9 @@ const Player = {
 
     // Opportunistically cache audio tracks ahead of the current position so a
     // network blip mid-listen doesn't kill playback. Bandwidth target: roughly
-    // one hour ahead. Toggled by the 'cadence_auto_cache' setting.
+    // one hour ahead. Toggled by the 'pholia_auto_cache' setting.
     async _startAutoCache() {
-        if (localStorage.getItem('cadence_auto_cache') !== 'true') return;
+        if (localStorage.getItem('pholia_auto_cache') !== 'true') return;
         const tracks = this.item?.media?.audioFiles || [];
         if (!tracks.length) return;
 
@@ -304,7 +304,7 @@ const Player = {
     },
 
     _restartAutoCache() {
-        if (localStorage.getItem('cadence_auto_cache') !== 'true') return;
+        if (localStorage.getItem('pholia_auto_cache') !== 'true') return;
         if (this._autoCacheController) {
             this._autoCacheController.abort();
             this._autoCacheController = null;
@@ -393,7 +393,7 @@ const Player = {
         this.loadTime(ch.start + pct * (ch.end - ch.start));
     },
 
-    setSpeed(rate) { this.audio.playbackRate = rate; localStorage.setItem('cadence_speed', rate); },
+    setSpeed(rate) { this.audio.playbackRate = rate; localStorage.setItem('pholia_speed', rate); },
 
     // ── Sleep timer with volume fade ──
     startSleep(minutes) {

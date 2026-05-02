@@ -7,8 +7,8 @@ export const CHALLENGE_EXPIRY_MS = 5 * 60_000;
 export const SESSION_DURATION_DAYS = 90;
 
 // RP ID is the registrable domain. WebAuthn restricts credentials to a
-// specific RP ID — pholia.pages.dev creds won't work on cadence-6re.pages.dev.
-// localhost is allowed for dev.
+// specific RP ID — a passkey registered against pholia.pages.dev cannot be
+// used on a different host. localhost is allowed for dev.
 export function rpIdFor(origin) {
     if (!origin) return 'pholia.pages.dev';
     try {

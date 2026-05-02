@@ -2,29 +2,21 @@
 // so a user can biometrically log in on a new device and have their server
 // list (with passwords for silent ABS JWT renewal) restored.
 //
-// LocalStorage keys. The main app's keys still use the legacy cadence_
-// prefix for PWA back-compat (renaming would log everyone out), but these
-// keys are new in the Pholia account era so they get the proper name.
-//   pholia_token               — bearer token for the Pholia API
+// LocalStorage keys.
+//   pholia_session             — bearer token for the Pholia account API
+//                                (separate from pholia_token, which is the
+//                                ABS JWT used by api.js)
 //   pholia_passkey_registered  — '1' once this device has registered a
 //                                passkey locally; informational only — the
 //                                Face ID button is shown whenever the
 //                                device supports passkeys.
+//
+// The cadence_pholia_token / cadence_passkey_registered → new-key
+// migration runs at the top of api.js so it executes before either file
+// reads from localStorage.
 
-const TOKEN_KEY = 'pholia_token';
+const TOKEN_KEY = 'pholia_session';
 const PASSKEY_FLAG = 'pholia_passkey_registered';
-
-// One-time migration: an earlier draft used cadence_-prefixed keys for these
-// two values. Move any existing data over so users who already registered a
-// passkey don't have to re-do it.
-(function migrate() {
-    const oldToken = localStorage.getItem('cadence_pholia_token');
-    if (oldToken && !localStorage.getItem(TOKEN_KEY)) localStorage.setItem(TOKEN_KEY, oldToken);
-    if (oldToken !== null) localStorage.removeItem('cadence_pholia_token');
-    const oldFlag = localStorage.getItem('cadence_passkey_registered');
-    if (oldFlag && !localStorage.getItem(PASSKEY_FLAG)) localStorage.setItem(PASSKEY_FLAG, oldFlag);
-    if (oldFlag !== null) localStorage.removeItem('cadence_passkey_registered');
-})();
 
 function bytesToBase64Url(bytes) {
     let binary = '';
