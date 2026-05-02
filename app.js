@@ -412,7 +412,10 @@ const App = {
             document.getElementById('server-picker').classList.remove('active');
             document.getElementById('login-screen').classList.add('active');
             await this.setupPasskeyButton();
-            document.getElementById('login-error').textContent = e.message || 'Login failed';
+            // ABS.login throws an error message containing an <a> link for
+            // the Tailscale-warmup case; render it as HTML so the link is
+            // tappable. e.message is constructed by us, never user input.
+            document.getElementById('login-error').innerHTML = e.message || 'Login failed';
         }
     },
 
