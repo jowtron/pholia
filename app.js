@@ -1384,6 +1384,14 @@ const Offline = {
     chunkMetaKey(baseKey) {
         return baseKey + (baseKey.includes('?') ? '&' : '?') + '__meta=1';
     },
+    // Sentinel marking that all chunks for this entry are cached. Only
+    // present when the SW is allowed to intercept and serve from cache;
+    // partial sliding-window caches do NOT get this sentinel. (iOS WebKit
+    // adds latency to SW-intercepted media fetches, so partial caches must
+    // be passed through natively.)
+    completeKey(baseKey) {
+        return baseKey + (baseKey.includes('?') ? '&' : '?') + '__complete=1';
+    },
 
     notifySwCacheChanged() {
         try { navigator.serviceWorker?.controller?.postMessage({ type: 'CACHE_CHANGED' }); } catch {}
@@ -1563,6 +1571,30 @@ const Offline = {
             received += blob.size;
             try { onChunk?.(received, total); } catch {}
         }
+
+        // Update the __complete sentinel based on whether every chunk is now
+        // present at the expected size. The SW only intercepts entries with
+        // this sentinel — partial caches must pass through to the network
+        // natively to avoid iOS WebKit's SW-media-fetch latency penalty.
+        const completeK = this.completeKey(key);
+        const wasComplete = !!(await cache.match(completeK));
+        let allPresent = true;
+        for (let i = 0; i < numChunks; i++) {
+            const c = await cache.match(this.chunkKey(key, i));
+            if (!c) { allPresent = false; break; }
+            const expected = (i === numChunks - 1) ? (total - i * this.CHUNK_SIZE) : this.CHUNK_SIZE;
+            const len = parseInt(c.headers.get('content-length') || '0', 10);
+            if (len !== expected) { allPresent = false; break; }
+        }
+        if (allPresent) {
+            await cache.put(completeK, new Response('', { headers: { 'Content-Type': 'application/octet-stream' } }));
+        } else {
+            await cache.delete(completeK);
+        }
+        // Refresh the SW's cachedKeys snapshot so it knows whether to start
+        // (or stop) intercepting this URL — only relevant when the sentinel
+        // actually changed.
+        if (allPresent !== wasComplete) this.notifySwCacheChanged();
     },
 
     async saveMeta(item) {
@@ -1632,6 +1664,7 @@ const Offline = {
                 } catch {}
                 await audioCache.delete(this.chunkMetaKey(key));
             }
+            await audioCache.delete(this.completeKey(key));
         }
         await audioCache.delete(this.keyFor(ABS.coverUrl(item.id)));
         await metaCache.delete(this.metaKey(item.id));

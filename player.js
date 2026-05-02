@@ -143,11 +143,20 @@ const Player = {
                     if (m.sticky) return;
                     const cutoff = this.getGlobalTime() - KEEP_BEHIND;
                     if (cutoff <= trackStart) return;
+                    let evictedAny = false;
                     for (let ci = 0; ci < m.numChunks; ci++) {
                         const chunkEndByte = Math.min((ci + 1) * m.chunkSize - 1, m.totalSize - 1);
                         const chunkEndTime = trackStart + (chunkEndByte / m.totalSize) * trackDuration;
                         if (chunkEndTime < cutoff) {
-                            await cache.delete(Offline.chunkKey(key, ci));
+                            if (await cache.delete(Offline.chunkKey(key, ci))) evictedAny = true;
+                        }
+                    }
+                    // After eviction the entry is no longer complete — drop
+                    // the sentinel so the SW stops intercepting (would force
+                    // a fetch fall-through inside the SW for every Range).
+                    if (evictedAny) {
+                        if (await cache.delete(Offline.completeKey(key))) {
+                            Offline.notifySwCacheChanged();
                         }
                     }
                 } catch {}

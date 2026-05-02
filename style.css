@@ -180,12 +180,14 @@ main {
     z-index: 2; pointer-events: none;
 }
 
-/* Cached-chapter overlay: translucent green fill that grows as the underlying
-   audio file is cached. Sits behind tracklist-progress and the play button. */
+/* Cached-chapter overlay: translucent green fill marking chapters whose
+   underlying chunks are all cached. Sits *above* tracklist-progress so the
+   green stays visible after the playback progress fill covers a chapter,
+   but below tracklist-play so it never obscures the button text. */
 .tracklist-cache-fill {
     position: absolute; top: 0; left: 0; bottom: 0; width: 0%;
     background: rgba(34, 197, 94, 0.18);
-    pointer-events: none; z-index: 0; transition: width 0.3s ease;
+    pointer-events: none; z-index: 1; transition: width 0.3s ease;
 }
 .h-scroll .card { position: relative; }
 .grid-item img {

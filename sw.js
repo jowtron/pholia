@@ -35,11 +35,39 @@ self.addEventListener('activate', e => {
             const audio = await caches.open(OFFLINE_AUDIO_CACHE);
             const audioKeys = await audio.keys();
             for (const req of audioKeys) {
-                if (req.url.includes('__chunk=') || req.url.includes('__meta=')) continue;
+                if (req.url.includes('__chunk=') || req.url.includes('__meta=') || req.url.includes('__complete=')) continue;
                 const r = await audio.match(req);
                 if (!r) continue;
                 const len = parseInt(r.headers.get('content-length') || '0', 10);
                 if (len > 50 * 1024 * 1024) await audio.delete(req);
+            }
+        } catch {}
+        // Migrate: ensure the __complete sentinel matches actual chunk
+        // presence for every chunked entry. The fetch handler intercepts
+        // ONLY entries with this sentinel — partial caches need to fall
+        // through to native fetch to avoid iOS WebKit's SW-media-fetch
+        // latency penalty. Without this, books fully downloaded before
+        // the sentinel was introduced would never be intercepted.
+        try {
+            const audio = await caches.open(OFFLINE_AUDIO_CACHE);
+            const audioKeys = await audio.keys();
+            const allUrls = new Set(audioKeys.map(r => r.url));
+            for (const req of audioKeys) {
+                if (!/[?&]__meta=1$/.test(req.url)) continue;
+                const baseKey = req.url.replace(/[?&]__meta=1$/, '');
+                const completeUrl = baseKey + (baseKey.includes('?') ? '&' : '?') + '__complete=1';
+                let meta;
+                try { meta = await (await audio.match(req)).json(); } catch { continue; }
+                let allPresent = true;
+                for (let i = 0; i < (meta.numChunks || 0); i++) {
+                    const chunkUrl = baseKey + (baseKey.includes('?') ? '&' : '?') + '__chunk=' + i;
+                    if (!allUrls.has(chunkUrl)) { allPresent = false; break; }
+                }
+                if (allPresent && !allUrls.has(completeUrl)) {
+                    await audio.put(completeUrl, new Response(''));
+                } else if (!allPresent && allUrls.has(completeUrl)) {
+                    await audio.delete(completeUrl);
+                }
             }
         } catch {}
         // Eagerly populate cachedKeys so the fetch handler can decide
@@ -100,8 +128,14 @@ self.addEventListener('fetch', e => {
         return;
     }
     const baseKey = offlineKey(url.toString());
-    if (!cachedKeys.has(metaKeyOf(baseKey)) && !cachedKeys.has(baseKey)) {
-        return; // not cached — let browser fetch natively
+    // Intercept only when the entry is fully cached: the __complete sentinel
+    // is present (chunked) or the legacy whole-file entry exists. Partial
+    // sliding-window caches (meta exists but chunks incomplete) are passed
+    // through to native fetch — falling through to fetch() inside the SW
+    // would re-issue every Range with iOS WebKit's media-fetch latency
+    // penalty stacked on top.
+    if (!cachedKeys.has(completeKeyOf(baseKey)) && !cachedKeys.has(baseKey)) {
+        return; // not complete — let browser fetch natively
     }
     e.respondWith(handleCrossOrigin(e.request));
 });
@@ -120,6 +154,9 @@ function chunkKey(baseKey, i) {
 }
 function metaKeyOf(baseKey) {
     return baseKey + (baseKey.includes('?') ? '&' : '?') + '__meta=1';
+}
+function completeKeyOf(baseKey) {
+    return baseKey + (baseKey.includes('?') ? '&' : '?') + '__complete=1';
 }
 
 async function handleCrossOrigin(request) {
