@@ -1,0 +1,13 @@
+name = "pholia"
+pages_build_output_dir = "."
+compatibility_date = "2025-05-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "pholia-accounts"
+database_id = "4e7f434d-2f39-484e-bbb8-f480b33ca8a6"
+
+# ENCRYPTION_KEY is set as a Pages secret via:
+#   wrangler pages secret put ENCRYPTION_KEY --project-name=pholia
+# It must be 32 bytes hex (64 hex chars). Generate with:
+#   openssl rand -hex 32
