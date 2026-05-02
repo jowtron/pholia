@@ -234,6 +234,7 @@ const Player = {
             await Offline.saveMeta(this.item);
         } catch {}
 
+        const KEEP_BEHIND_SEC = 1800; // mirror the per-chunk shouldCache cutoff
         let elapsed = 0;
         for (let i = 0; i < tracks.length; i++) {
             const trackEnd = elapsed + (tracks[i].duration || 0);
@@ -242,8 +243,11 @@ const Player = {
             const key = Offline.keyFor(url);
 
             if (signal.aborted) return;
-            // Skip tracks that end before the current position
-            if (trackEnd <= currentTime) { elapsed = trackEnd; continue; }
+            // Skip tracks ending more than 30 min before the playhead — the
+            // shouldCache filter would skip every chunk anyway. Tracks that
+            // end within the behind-window still get processed so their
+            // chunks within [playhead-30min, trackEnd] are cached.
+            if (trackEnd <= currentTime - KEEP_BEHIND_SEC) { elapsed = trackEnd; continue; }
             // Stop once we have ~1 hour cached ahead of the listener. For
             // single-file books this still lets the whole file cache (since
             // 1 hour of book is well past the start).
@@ -259,6 +263,7 @@ const Player = {
     },
 
     loadTime(globalTime) {
+        const prevTime = this.getGlobalTime();
         let url, offset = 0;
         if (this.session && this.session.audioTracks?.length) {
             const tracks = this.session.audioTracks;
@@ -290,6 +295,21 @@ const Player = {
         this.audio.play().catch(() => {
             this.audio.addEventListener('canplay', () => this.audio.play().catch(() => {}), { once: true });
         });
+        // Big seek (chapter nav, scrub, jump back/forward) — restart auto-cache
+        // so it re-evaluates which chunks fall in the new sliding window. The
+        // existing one-shot loop iterates chunks linearly forward and never
+        // revisits skipped ones, so without this, scrubbing back to an earlier
+        // section never fetches its chunks.
+        if (Math.abs(globalTime - prevTime) > 60) this._restartAutoCache();
+    },
+
+    _restartAutoCache() {
+        if (localStorage.getItem('cadence_auto_cache') !== 'true') return;
+        if (this._autoCacheController) {
+            this._autoCacheController.abort();
+            this._autoCacheController = null;
+        }
+        this._startAutoCache();
     },
 
     getGlobalTime() {
