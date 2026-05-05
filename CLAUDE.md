@@ -111,7 +111,7 @@ The green overlay on chapter rows reflects *actual* chunk coverage, not `receive
 - `App._pollForUpdate()` awaits `reg.update()`, then awaits the installing SW's `statechange`, then polls `reg.waiting` for up to 10 s (re-fetching the registration each iteration — iOS PWA can be slow to reflect state).
 - **`App._checkBuildVersion()`** runs in parallel: fetches `/index.html` with cache-bust, parses the deployed git hash from `#build-version`, and shows the update banner on mismatch. This is the load-bearing path on iOS PWA — `reg.update()` doesn't always re-fetch `sw.js` byte-for-byte even with no-cache headers, so the SW poll silently misses updates and only the version probe catches them. Without it, the only reliable update triggers are the manual "Check for updates" button and force-quitting the PWA.
 - Polled from: initial setup, `visibilitychange`, every `switchTab`/`pushNav` (debounced to 10 s).
-- Banner has 12 s reload failsafe; manual "Check for updates" button has a `window.location.reload()` fallback for truly stuck installs. The banner click handler also falls through to `window.location.reload()` when there's no `reg.waiting` (covers the version-probe path where SW hasn't picked up the new sw.js yet).
+- Banner has 12 s reload failsafe. The banner click handler falls through to `window.location.reload()` when there's no `reg.waiting` (covers the version-probe path where SW hasn't picked up the new sw.js yet). The manual "Check for updates" button runs both probes and shows "Up to date" when neither finds anything — it does NOT auto-reload (a previous brute-force reload here caused user confusion).
 
 ## Persistent Login (PWA)
 

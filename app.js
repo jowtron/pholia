@@ -169,18 +169,19 @@ const App = {
             btn.textContent = 'Checking…';
             btn.disabled = true;
             this._lastSwCheck = 0; // bypass debounce
-            await this._pollForUpdate();
+            // Run both probes — SW poll catches updates that installed via the
+            // normal lifecycle; build-version probe catches updates iOS PWA
+            // stubbornly fails to detect via reg.update().
+            await Promise.all([this._pollForUpdate(), this._checkBuildVersion()]);
             if (this._updateBannerShown) {
                 btn.textContent = 'Update found — see banner';
                 btn.disabled = false;
                 setTimeout(() => { btn.textContent = orig; }, 4000);
                 return;
             }
-            // Fallback: SW polling found nothing. iOS PWA can stubbornly cache
-            // sw.js — bypass everything by hard-reloading the page so the
-            // browser fetches the latest assets from the server.
-            btn.textContent = 'Reloading…';
-            window.location.reload();
+            btn.textContent = 'Up to date';
+            btn.disabled = false;
+            setTimeout(() => { btn.textContent = orig; }, 2500);
         });
         document.getElementById('logout-btn').addEventListener('click', () => this.logout());
         document.getElementById('setting-speed').addEventListener('change', e => Player.setSpeed(parseFloat(e.target.value)));
@@ -815,11 +816,12 @@ const App = {
                 if (item) this.showBookDetail(item);
             });
         });
+        // Funnel through quickPlay so the cache-first lookup is consistent
+        // with Continue Listening — both end up using the cached META.
         document.querySelectorAll('.play-overlay[data-offline-play]').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                const item = byId[btn.dataset.offlinePlay];
-                if (item) Player.startItem(item);
+                this.quickPlay(btn.dataset.offlinePlay);
             });
         });
     },
@@ -1171,9 +1173,18 @@ const App = {
         });
     },
 
+    // Cache-first: if the book is fully downloaded locally, play from the
+    // cached META blob (works offline, immune to server-side ino drift after
+    // library rescans). Only hits the network when the book isn't cached.
     async quickPlay(itemId) {
         try {
-            const item = await ABS.getItem(itemId);
+            let item = null;
+            const downloadedIds = await Offline.fullyDownloadedIds();
+            if (downloadedIds.has(itemId)) {
+                const downloaded = await Offline.fullyDownloaded();
+                item = downloaded.find(i => i.id === itemId) || null;
+            }
+            if (!item) item = await ABS.getItem(itemId);
             if (item.mediaType === 'podcast') {
                 this.showItem(itemId);
             } else {
