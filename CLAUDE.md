@@ -149,6 +149,7 @@ The green overlay on chapter rows reflects *actual* chunk coverage, not `receive
 - **No spinner on the play button.** Real audio players don't show constant buffering UI; users interpret it as "broken." Removed in f2e6c1c.
 - **`preload='auto'`** on the Audio element so the browser buffers ahead aggressively. Helps but doesn't fix slow-network glitches by itself.
 - **Pre-warm of next track** in multi-file books: when within 30 s of current track end, fetch first 256 KB of next track in background. Smooths the boundary swap.
+- **Books without chapters must still scrub.** The mini and FS scrubbers represent *chapter* progress, not book progress. When `chapters` is empty (some ABS items have none), `getChapterProgress` and `seekToChapterPercent` fall back to whole-book progress/seeking — don't reintroduce a `if (!ch) return` early-out without a fallback or the scrubber goes dead.
 
 ## Common Pitfalls
 
