@@ -261,11 +261,9 @@ const App = {
         fsSeek.addEventListener('touchstart', () => fsSeek.dataset.dragging = 'true');
         fsSeek.addEventListener('input', () => {
             const ch = Player.getCurrentChapter();
-            if (ch) {
-                const chDur = ch.end - ch.start;
-                const t = (fsSeek.value / 100) * chDur;
-                document.getElementById('fs-elapsed').textContent = formatTime(t);
-            }
+            const dur = ch ? (ch.end - ch.start) : Player.getTotalDuration();
+            const t = (fsSeek.value / 100) * dur;
+            document.getElementById('fs-elapsed').textContent = formatTime(t);
         });
         fsSeek.addEventListener('change', () => {
             delete fsSeek.dataset.dragging;

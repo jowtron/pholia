@@ -334,11 +334,21 @@ const Player = {
         return this.chapters[0] || null;
     },
 
-    // Get current chapter progress (0-100) and time within chapter
+    // Get current chapter progress (0-100) and time within chapter.
+    // Books without chapter metadata (e.g. some ABS items) fall back to
+    // whole-book progress so the scrubber still works.
     getChapterProgress() {
-        const ch = this.getCurrentChapter();
-        if (!ch) return { progress: 0, elapsed: 0, remaining: 0, duration: 0 };
         const gt = this.getGlobalTime();
+        const ch = this.getCurrentChapter();
+        if (!ch) {
+            const dur = this.getTotalDuration();
+            return {
+                progress: dur > 0 ? (gt / dur) * 100 : 0,
+                elapsed: gt,
+                remaining: Math.max(0, dur - gt),
+                duration: dur,
+            };
+        }
         const chDur = ch.end - ch.start;
         const chElapsed = gt - ch.start;
         return {
@@ -360,7 +370,7 @@ const Player = {
 
     seekToChapterPercent(pct) {
         const ch = this.getCurrentChapter();
-        if (!ch) return;
+        if (!ch) { this.seekToGlobalPercent(pct); return; }
         const chDur = ch.end - ch.start;
         this.loadTime(ch.start + (pct / 100) * chDur);
     },
