@@ -467,11 +467,39 @@ const App = {
             row.className = 'server-row';
             const label = s.label || s.username;
             row.innerHTML = `
-                <div class="server-label">${esc(label)}</div>
+                <div class="server-label"><span class="server-dot" aria-hidden="true"></span>${esc(label)}</div>
                 <div class="server-sub">${esc(s.username)} · ${esc(s.server_url)}</div>
             `;
             row.addEventListener('click', () => this.loginFromAccount(s));
             list.appendChild(row);
+            const dot = row.querySelector('.server-dot');
+            this._probeServerOnline(s.server_url).then(online => {
+                dot.classList.add(online ? 'online' : 'offline');
+                row.title = online ? 'Server reachable' : 'Server not reachable';
+            });
+        }
+    },
+
+    // no-cors fetch resolves on any reachable response (opaque) and rejects
+    // on DNS/network failure — perfect reachability signal that sidesteps
+    // any CORS quirks on /ping.
+    async _probeServerOnline(serverUrl) {
+        if (!serverUrl) return false;
+        const url = serverUrl.replace(/\/+$/, '') + '/ping';
+        try {
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 4000);
+            await fetch(url, {
+                method: 'GET',
+                mode: 'no-cors',
+                credentials: 'omit',
+                cache: 'no-store',
+                signal: ctrl.signal,
+            });
+            clearTimeout(timer);
+            return true;
+        } catch {
+            return false;
         }
     },
 
@@ -600,6 +628,7 @@ const App = {
 
     showMain() {
         document.getElementById('login-screen').classList.remove('active');
+        document.getElementById('server-picker').classList.remove('active');
         document.getElementById('main-screen').classList.add('active');
     },
 
@@ -616,12 +645,14 @@ const App = {
         if (savedServer) document.getElementById('server-url').value = savedServer;
         if (savedUser) document.getElementById('username').value = savedUser;
         this.navStack = [];
-        // If a Pholia account is still signed in, show the picker straight
-        // away rather than making the user re-pick the server manually.
+        // If a Pholia account is still signed in, show the picker — even when
+        // there's only one saved server. Auto-logging into the sole server
+        // here would be indistinguishable from "logout did nothing"; the user
+        // can still pick it from the list, sign out of the account fully, or
+        // hit "Add another server" for a manual connect to a different ABS.
         if (Account.token()) {
             Account.listServers().then(servers => {
-                if (servers.length === 1) this.loginFromAccount(servers[0]);
-                else if (servers.length > 1) this.showServerPicker(servers);
+                if (servers.length >= 1) this.showServerPicker(servers);
                 else this.setupPasskeyButton();
             }).catch(() => this.setupPasskeyButton());
         } else {
