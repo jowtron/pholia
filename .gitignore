@@ -2,6 +2,8 @@ isub
 .DS_Store
 .wrangler/
 memory/
+pholia-pre-rewrite.bundle
+pholia-replacements.txt
 desktop/frontend/
 !desktop/frontend/.gitkeep
 desktop/build/bin/
