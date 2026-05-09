@@ -37,13 +37,15 @@ This is the single most important section. These learnings were hard-won through
 
 6. **`Content-Range` is NOT CORS-safelisted.** ABS doesn't add `Access-Control-Expose-Headers: Content-Range`, so JS can't read it from a Range response. Use HEAD's `Content-Length` for size discovery — that header IS safelisted.
 
-### iOS Safari / Tailscale connectivity
+### Connection-failure recovery
 
-iOS Safari requires visiting a Tailscale `.ts.net` domain directly in the browser before cross-origin `fetch()` calls to that domain will work. Connection resets after force-quit or extended sleep.
+When a fetch fails for any reason (server down, network blip, sleeping
+laptop hosting ABS), Pholia surfaces a tappable link to the ABS URL so
+the user can poke the server in their browser, plus auto-retries on
+`visibilitychange` and `online` events.
 
-**How Pholia handles this:**
 - Login failure shows a tappable link to open the ABS URL directly
-- Saved-session failure shows "Open server to wake connection" + Retry
+- Saved-session failure shows "Open server to test connection" + Retry
 - Auto-retry on `visibilitychange` and `online` events
 
 ## Service Worker — Critical Architecture
@@ -129,10 +131,8 @@ The green overlay on chapter rows reflects *actual* chunk coverage, not `receive
 
 ## ABS Server
 
-ABS runs in Docker — typically reached over Tailscale (the iOS warmup quirk
-documented above is specific to that setup). Specifics of the ABS host
-(container name, ports, paths) are intentionally left out of this repo;
-keep them in private notes.
+ABS runs in Docker. Specifics of the ABS host (container name, ports,
+paths) are intentionally left out of this repo; keep them in private notes.
 
 ## ABS API Notes
 
@@ -161,7 +161,6 @@ keep them in private notes.
 - **Never use cache-first** in the SW for JS/CSS files
 - **Cache version must be bumped** when changing the on-disk format
 - **Safari on macOS is the primary test browser** — strictest about CORS
-- **iOS Safari needs Tailscale domain "warmed up"** before cross-origin fetches work
 - **ABS container name may change after updates** — always check with `docker ps`
 - **`?purge` URL param** wipes all caches and unregisters the SW — escape hatch for stuck installs
 - **ABS CORS origin caching** — avoid hitting ABS from multiple different origins simultaneously

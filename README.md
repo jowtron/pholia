@@ -83,6 +83,6 @@ The Go proxy (`main.go`) is kept around as a fallback for environments where COR
 
 ## Caveats / known issues
 
-- iOS Safari needs the Tailscale `.ts.net` domain "warmed up" by visiting it directly in the browser before cross-origin `fetch()` calls work; the app shows a tappable link on connection failure
+- On any connection failure (server down, sleeping host, network blip), the app shows a tappable link to the ABS URL so you can poke the server in your browser and then hit Retry
 - Old service workers can stick around aggressively on iOS — use `?purge` if needed
 - ABS only reflects one CORS origin at a time; avoid using the Go proxy and the deployed app simultaneously against the same server

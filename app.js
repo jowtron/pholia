@@ -358,7 +358,7 @@ const App = {
                     this.setContent(
                         '<div class="loading">' +
                         'Could not reach server. Your session is saved.' +
-                        (serverLink ? `<br><a href="${serverLink}" target="_blank" style="color:var(--accent);font-size:0.85rem">Open server to wake connection</a>` : '') +
+                        (serverLink ? `<br><a href="${serverLink}" target="_blank" style="color:var(--accent);font-size:0.85rem">Open server to test connection</a>` : '') +
                         '<br><button id="retry-connect" class="text-btn" style="margin-top:1rem;font-size:1rem">Retry</button>' +
                         '</div>'
                     );
@@ -424,11 +424,10 @@ const App = {
             this.switchTab('home');
         } catch (e) {
             // Pre-fill the manual form with the saved server + username so
-            // the user can submit it as a fallback — typical case is
-            // Tailscale needing a warmup tap; once the link in the error
-            // wakes the connection, the form is ready to submit, and the
-            // browser's password autofill (saved against pholia.pages.dev,
-            // not the ABS server URL) handles the password field on focus.
+            // the user can submit it as a fallback once they've poked the
+            // server via the link in the error. Browser password autofill
+            // (saved against pholia.pages.dev, not the ABS server URL)
+            // handles the password field on focus.
             this._showLoginScreenWithError(e.message || 'Login failed', {
                 serverUrl: creds.server_url,
                 username: creds.username,
@@ -441,9 +440,9 @@ const App = {
         document.getElementById('login-screen').classList.add('active');
         if (prefill.serverUrl) document.getElementById('server-url').value = prefill.serverUrl;
         if (prefill.username) document.getElementById('username').value = prefill.username;
-        // Render as HTML so the Tailscale-warmup link from ABS.login is
-        // tappable. Messages are constructed by our own code, never user
-        // input.
+        // Render as HTML so the "tap to open server" link from ABS.login
+        // is tappable. Messages are constructed by our own code, never
+        // user input.
         document.getElementById('login-error').innerHTML = message;
         this.setupPasskeyButton();
     },
