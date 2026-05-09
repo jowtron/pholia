@@ -1562,13 +1562,19 @@ const App = {
         let servers = [];
         try { servers = await Account.listServers(); } catch {}
 
+        const currentUsername = localStorage.getItem('pholia_username');
         let html = '';
         if (servers.length) {
             html += '<div class="account-server-list">';
             for (const s of servers) {
-                html += `<div class="account-server-row">
+                const isCurrent = s.server_url === ABS.serverUrl && s.username === currentUsername;
+                const cls = 'account-server-row' + (isCurrent ? ' current' : ' clickable');
+                const tag = isCurrent
+                    ? '<span class="account-server-current">Connected</span>'
+                    : '';
+                html += `<div class="${cls}" data-id="${s.id}" data-idx="${servers.indexOf(s)}" ${isCurrent ? '' : 'role="button" tabindex="0"'}>
                     <div class="acct-server-info">
-                        <div>${esc(s.label || s.username)}</div>
+                        <div>${esc(s.label || s.username)}${tag}</div>
                         <div class="acct-server-sub">${esc(s.username)} · ${esc(s.server_url)}</div>
                     </div>
                     <button class="text-btn account-server-remove" data-id="${s.id}">Remove</button>
@@ -1591,8 +1597,24 @@ const App = {
         html += '<button id="account-logout" type="button" class="danger-btn">Sign out of Pholia account</button>';
         actions.innerHTML = html;
 
+        actions.querySelectorAll('.account-server-row.clickable').forEach(row => {
+            const connect = async () => {
+                if (row.classList.contains('busy')) return;
+                row.classList.add('busy');
+                const idx = parseInt(row.dataset.idx, 10);
+                const server = servers[idx];
+                if (!server) return;
+                try { await this.loginFromAccount(server); }
+                finally { row.classList.remove('busy'); }
+            };
+            row.addEventListener('click', connect);
+            row.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); connect(); }
+            });
+        });
         actions.querySelectorAll('.account-server-remove').forEach(btn => {
-            btn.addEventListener('click', async () => {
+            btn.addEventListener('click', async (e) => {
+                e.stopPropagation();
                 if (!confirm('Remove this saved server? You\'ll need to log in manually next time.')) return;
                 btn.disabled = true; btn.textContent = 'Removing…';
                 try {

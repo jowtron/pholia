@@ -163,12 +163,27 @@ button { cursor: pointer; font-size: 1rem; border: none; color: var(--text); bac
 }
 .account-server-row {
     display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;
-    padding: 0.4rem 0; border-top: 1px solid var(--border); font-size: 0.85rem;
+    padding: 0.4rem 0.5rem; border-top: 1px solid var(--border); font-size: 0.85rem;
+    border-radius: var(--radius);
 }
+.account-server-row.clickable {
+    cursor: pointer; -webkit-tap-highlight-color: transparent;
+    transition: background 0.15s;
+}
+.account-server-row.clickable:hover,
+.account-server-row.clickable:focus-visible { background: var(--surface-2, rgba(255,255,255,0.04)); outline: none; }
+.account-server-row.clickable:active { background: var(--surface-3, rgba(255,255,255,0.08)); }
+.account-server-row.busy { opacity: 0.6; pointer-events: none; }
 .account-server-row .acct-server-info {
     min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .account-server-row .acct-server-sub { color: var(--text-muted); font-size: 0.75rem; }
+.account-server-current {
+    display: inline-block; margin-left: 0.4rem; padding: 0.05rem 0.4rem;
+    font-size: 0.65rem; font-weight: 600; letter-spacing: 0.02em;
+    color: #22c55e; border: 1px solid #22c55e; border-radius: 999px;
+    vertical-align: middle; text-transform: uppercase;
+}
 
 /* ── Header ── */
 header {
