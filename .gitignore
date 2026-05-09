@@ -1,7 +1,10 @@
 isub
 .DS_Store
 .wrangler/
+memory/
 desktop/frontend/
 !desktop/frontend/.gitkeep
 desktop/build/bin/
 desktop/build/appicon.png
+desktop/build/appicon.icns
+desktop/wailsjs/

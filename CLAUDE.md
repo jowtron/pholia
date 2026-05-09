@@ -3,7 +3,7 @@
 Static HTML/CSS/JS web app — an Audiobookshelf client with full offline playback and a sliding-window cache-while-playing feature.
 
 - Deployed to **Cloudflare Pages** (project: `pholia`, URL: `pholia.pages.dev` — older URL `cadence-6re.pages.dev` still resolves)
-- GitHub repo: `jowtron/pholia` (private)
+- GitHub repo: hosted on GitHub
 - Go proxy (`main.go`) kept as fallback but not currently used
 - LocalStorage keys are now all `pholia_*`. A one-time migration block at the top of `api.js` copies any pre-existing `cadence_*` values across (the app was originally called Cadence). Pholia-account session bearer is `pholia_session`; the ABS JWT is `pholia_token`.
 
@@ -25,7 +25,7 @@ This is the single most important section. These learnings were hard-won through
 
 ### The CORS saga
 
-1. **ABS CORS setup:** `ALLOW_CORS=1` env var on the Docker container on NAS host.
+1. **ABS CORS setup:** `ALLOW_CORS=1` env var on the ABS Docker container.
 
 2. **ABS OIDC update broke CORS:** An ABS update added OIDC support, which adds `access-control-allow-credentials: true` to all responses. Combined with `access-control-allow-headers: *`, this violates the CORS spec (wildcards are invalid when credentials are indicated). Safari enforces strictly and blocks all requests.
 
@@ -129,12 +129,10 @@ The green overlay on chapter rows reflects *actual* chunk coverage, not `receive
 
 ## ABS Server
 
-- NAS host in Docker
-- Tailscale URL: `https://audiobookshelf.example.ts.net`
-- Container: `audiobookshelf`, port 13378
-- Compose: `/path/to/docker-compose.yml`
-- Docker binary: `/path/to/docker`
-- ABS login: `jowtron`
+ABS runs in Docker — typically reached over Tailscale (the iOS warmup quirk
+documented above is specific to that setup). Specifics of the ABS host
+(container name, ports, paths) are intentionally left out of this repo;
+keep them in private notes.
 
 ## ABS API Notes
 
