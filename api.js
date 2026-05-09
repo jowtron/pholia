@@ -152,9 +152,12 @@ const ABS = {
         return this.request(`/api/libraries/${libraryId}/search?q=${encodeURIComponent(query)}&limit=20`);
     },
 
-    // Single item with full details
-    async getItem(itemId) {
-        return this.request(`/api/items/${itemId}?expanded=1`);
+    // Single item with full details. Pass includeProgress: true to fold the
+    // user's mediaProgress into the same round trip — saves a separate
+    // /api/me/progress/:id call for "open book + show resume position".
+    async getItem(itemId, { includeProgress = false } = {}) {
+        const inc = includeProgress ? '&include=progress' : '';
+        return this.request(`/api/items/${itemId}?expanded=1${inc}`);
     },
 
     // Cover art URL (direct — img tags don't need CORS proxy)
@@ -170,10 +173,7 @@ const ABS = {
     // Start playback session
     async startSession(itemId, episodeId = null) {
         const body = {
-            deviceInfo: {
-                clientName: 'Pholia',
-                deviceId: this.getDeviceId(),
-            },
+            deviceInfo: this.deviceInfo(),
             forceDirectPlay: true,
             forceTranscode: false,
             supportedMimeTypes: ['audio/mpeg', 'audio/mp4', 'audio/ogg', 'audio/flac', 'audio/aac', 'audio/webm'],
@@ -203,13 +203,15 @@ const ABS = {
         });
     },
 
-    // Get user's media progress for an item
+    // Get user's media progress for an item. Uses the single-item endpoint
+    // (/api/me/progress/:id) which is much cheaper than fetching the full
+    // /api/me payload (all mediaProgress + bookmarks). 404 means no progress
+    // recorded yet — return null, not an error.
     async getProgress(itemId) {
         try {
-            const me = await this.request('/api/me');
-            const progress = me.mediaProgress?.find(p => p.libraryItemId === itemId);
-            return progress || null;
-        } catch {
+            return await this.request(`/api/me/progress/${itemId}`);
+        } catch (e) {
+            if (e.status === 404) return null;
             return null;
         }
     },
@@ -230,6 +232,27 @@ const ABS = {
             localStorage.setItem('pholia_device_id', id);
         }
         return id;
+    },
+
+    // Build the deviceInfo payload sent with playback sessions. Richer info
+    // (clientVersion, osName, model) makes ABS's session history readable —
+    // ShelfPlayer/Plappa do this; previously Pholia rows just said "Pholia".
+    // Coarse-grained on purpose: don't fingerprint beyond client + OS family.
+    deviceInfo() {
+        const ua = navigator.userAgent || '';
+        let osName = 'Unknown', manufacturer = 'Unknown', model = 'Browser';
+        if (/iPhone|iPad|iPod/i.test(ua)) { osName = 'iOS'; manufacturer = 'Apple'; model = /iPad/i.test(ua) ? 'iPad' : 'iPhone'; }
+        else if (/Mac OS X|Macintosh/i.test(ua)) { osName = 'macOS'; manufacturer = 'Apple'; model = 'Mac'; }
+        else if (/Android/i.test(ua)) { osName = 'Android'; manufacturer = 'Android'; model = 'Phone'; }
+        else if (/Windows/i.test(ua)) { osName = 'Windows'; manufacturer = 'Microsoft'; model = 'PC'; }
+        else if (/Linux/i.test(ua)) { osName = 'Linux'; manufacturer = 'Linux'; model = 'PC'; }
+        const clientVersion = document.getElementById('build-version')?.textContent?.trim() || 'dev';
+        return {
+            clientName: 'Pholia',
+            clientVersion,
+            deviceId: this.getDeviceId(),
+            manufacturer, model, osName,
+        };
     },
 
     // Save/load credentials from localStorage

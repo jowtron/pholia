@@ -298,6 +298,15 @@ const App = {
             if (document.visibilityState === 'visible' && this._offlineMode && ABS.token) {
                 this.retryConnect();
             }
+            // Cross-device drift: if we were listening on the web while Pholia
+            // was backgrounded, the cached currentTime is stale. Refetch the
+            // server's progress and reseat the player — only when we're not
+            // actively playing (live sync would clobber a server-side bump
+            // anyway during playback). Cheap because getProgress is now a
+            // single-item endpoint.
+            if (document.visibilityState === 'visible' && ABS.token && !this._offlineMode) {
+                this._refreshCurrentItemProgress();
+            }
         });
         window.addEventListener('online', () => {
             if (this._offlineMode && ABS.token) {
@@ -529,6 +538,31 @@ const App = {
         } finally {
             btn.disabled = false;
             btn.textContent = orig;
+        }
+    },
+
+    // Refetch the loaded item's progress from the server and reseat the
+    // playhead. Called from visibilitychange when not playing — handles the
+    // "listened on the web while Pholia was backgrounded" drift. Also
+    // refreshes the detail view if we're looking at the same item.
+    async _refreshCurrentItemProgress() {
+        const item = Player.item || this._currentDetailItem;
+        if (!item || Player.isPlaying) return;
+        let progress;
+        try { progress = await ABS.getProgress(item.id); } catch { return; }
+        if (!progress) return;
+        const serverTime = progress.currentTime || 0;
+        // Only reseat the player if the server's time is meaningfully ahead
+        // — the forward-only guard. Going backwards is almost always stale
+        // data clobbering newer state. 5 s slack covers normal sync jitter.
+        if (Player.item?.id === item.id) {
+            const localTime = Player.getGlobalTime();
+            if (serverTime > localTime + 5) Player.loadTime(serverTime);
+        }
+        // Re-render the detail view so the resume time / chapter highlight /
+        // % complete reflect the new progress.
+        if (this._currentDetailItem?.id === item.id && document.querySelector('.detail-view')) {
+            this.showBookDetail(item);
         }
     },
 
@@ -1279,6 +1313,9 @@ const App = {
 
         const btnText = currentTime > 0 ? `Resume from ${formatTime(currentTime)}` : 'Play';
         html += `<button class="play-btn-large" id="detail-play">${btnText}</button>`;
+        const finished = !!progress?.isFinished;
+        const finishedLabel = finished ? 'Mark as not started' : 'Mark as finished';
+        html += `<button class="text-btn detail-finish-btn" id="detail-finish">${finishedLabel}</button>`;
         html += `<div id="offline-controls" class="offline-controls"></div>`;
 
         if (chapters.length) {
@@ -1318,6 +1355,31 @@ const App = {
                 const active = document.querySelector('.tracklist-item.is-active');
                 if (active) active.scrollIntoView({ block: 'center', behavior: 'smooth' });
             }, 100);
+        });
+        document.getElementById('detail-finish')?.addEventListener('click', async (e) => {
+            const btn = e.currentTarget;
+            const wantFinished = !finished;
+            const dur = duration || 0;
+            // Marking finished pegs progress to 100% and currentTime to end.
+            // Marking not-started rewinds to 0 — that's what the user expects
+            // when they "restart" a book. ABS rejects PATCH bodies that omit
+            // currentTime/progress, so always send the full triple.
+            const body = wantFinished
+                ? { isFinished: true,  currentTime: dur, progress: 1 }
+                : { isFinished: false, currentTime: 0,   progress: 0 };
+            btn.disabled = true; btn.textContent = wantFinished ? 'Marking…' : 'Resetting…';
+            try {
+                await ABS.updateProgress(item.id, body);
+                // If it's the currently-playing item, reseat the playhead so
+                // the UI matches what just happened on the server.
+                if (Player.item?.id === item.id) {
+                    if (!wantFinished) Player.loadTime(0);
+                }
+                this.showBookDetail(item);
+            } catch (err) {
+                btn.disabled = false; btn.textContent = finishedLabel;
+                alert('Could not update: ' + (err?.message || 'unknown error'));
+            }
         });
         document.querySelectorAll('.tracklist-item').forEach(el => {
             el.querySelector('.tracklist-play').addEventListener('click', (e) => {

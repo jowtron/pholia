@@ -381,6 +381,11 @@ main {
     border: none; cursor: pointer; width: 100%; max-width: 300px;
 }
 .play-btn-large:hover { background: var(--accent-hover); }
+.detail-finish-btn {
+    display: block; margin: 0.4rem 0 0.5rem; padding: 0.4rem 0;
+    color: var(--text-muted); font-size: 0.85rem;
+}
+.detail-finish-btn:hover { color: var(--accent); }
 
 /* Offline download controls (book detail) */
 .offline-controls {
