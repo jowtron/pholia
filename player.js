@@ -469,12 +469,21 @@ const Player = {
 
     _lastChapterIndex: -1,
     _prewarmedFromTrackIndex: -1,
+    _lastPositionPublish: 0,
     onTimeUpdate() {
         this.updateUI();
         // Update media session on chapter change
         if (this.currentChapterIndex !== this._lastChapterIndex) {
             this._lastChapterIndex = this.currentChapterIndex;
             this.updateMediaSession();
+        }
+        // iOS Safari ignores one-shot setPositionState calls and falls back
+        // to the audio element's intrinsic duration on the lock screen.
+        // Republishing once a second keeps the chapter-scoped scrubber sticky.
+        const now = Date.now();
+        if (now - this._lastPositionPublish > 1000) {
+            this._lastPositionPublish = now;
+            this._updatePositionState();
         }
         if (this.sleepEndOfChapter) {
             const next = this.chapters[this.currentChapterIndex + 1];
