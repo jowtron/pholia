@@ -47,6 +47,16 @@ const Player = {
         navigator.mediaSession.setActionHandler('seekforward', (details) => {
             this.skip(details?.seekOffset || this.skipDuration);
         });
+        // seekTime is in the same frame of reference we publish via
+        // setPositionState — chapter-relative when chapters exist.
+        try {
+            navigator.mediaSession.setActionHandler('seekto', (details) => {
+                if (details?.seekTime == null) return;
+                const ch = this.getCurrentChapter();
+                const target = ch ? ch.start + details.seekTime : details.seekTime;
+                this.loadTime(target);
+            });
+        } catch (e) { /* not supported on this browser */ }
     },
 
     setSkipDuration(seconds) {
@@ -301,6 +311,7 @@ const Player = {
         // revisits skipped ones, so without this, scrubbing back to an earlier
         // section never fetches its chunks.
         if (Math.abs(globalTime - prevTime) > 60) this._restartAutoCache();
+        this._updatePositionState();
     },
 
     _restartAutoCache() {
@@ -359,8 +370,8 @@ const Player = {
         };
     },
 
-    play() { this.audio.play().catch(() => {}); },
-    pause() { this.audio.pause(); },
+    play() { this.audio.play().catch(() => {}); this._updatePositionState(); },
+    pause() { this.audio.pause(); this._updatePositionState(); },
     toggle() { this.audio.paused ? this.play() : this.pause(); },
 
     skip(seconds) {
@@ -403,7 +414,7 @@ const Player = {
         this.loadTime(ch.start + pct * (ch.end - ch.start));
     },
 
-    setSpeed(rate) { this.audio.playbackRate = rate; localStorage.setItem('pholia_speed', rate); },
+    setSpeed(rate) { this.audio.playbackRate = rate; localStorage.setItem('pholia_speed', rate); this._updatePositionState(); },
 
     // ── Sleep timer with volume fade ──
     startSleep(minutes) {
@@ -585,6 +596,26 @@ const Player = {
             album: this.item.media?.metadata?.title || '',
             artwork: [{ src: ABS.coverUrl(this.item.id), sizes: '512x512', type: 'image/jpeg' }],
         });
+        this._updatePositionState();
+    },
+
+    // Publish chapter-relative position so the iOS/macOS now-playing
+    // scrubber reflects the current chapter, not the whole book.
+    // Falls back to whole-book values when the item has no chapters.
+    _updatePositionState() {
+        if (!('mediaSession' in navigator) || !this.item) return;
+        if (typeof navigator.mediaSession.setPositionState !== 'function') return;
+        const chp = this.getChapterProgress();
+        const duration = chp.duration;
+        if (!isFinite(duration) || duration <= 0) return;
+        const position = Math.max(0, Math.min(chp.elapsed, duration));
+        try {
+            navigator.mediaSession.setPositionState({
+                duration,
+                position,
+                playbackRate: this.audio.playbackRate || 1,
+            });
+        } catch (e) { /* invalid state — ignore */ }
     },
 
     startSync() {
