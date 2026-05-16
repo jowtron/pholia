@@ -1,6 +1,8 @@
 const CACHE_NAME = 'pholia-v4';
 const OFFLINE_AUDIO_CACHE = 'pholia-offline-audio-v2';
 const OFFLINE_META_CACHE = 'pholia-offline-meta-v1';
+const COVERS_CACHE = 'pholia-covers-v1';
+const MAX_COVERS = 500;
 const APP_SHELL = [
     './',
     './index.html',
@@ -17,7 +19,7 @@ const APP_SHELL = [
     './icons/icon-512.png',
 ];
 
-const KEEP_CACHES = new Set([CACHE_NAME, OFFLINE_AUDIO_CACHE, OFFLINE_META_CACHE]);
+const KEEP_CACHES = new Set([CACHE_NAME, OFFLINE_AUDIO_CACHE, OFFLINE_META_CACHE, COVERS_CACHE]);
 
 self.addEventListener('install', e => {
     e.waitUntil(
@@ -117,6 +119,15 @@ self.addEventListener('fetch', e => {
         return;
     }
 
+    // Cross-origin cover/author images: cache-first, populated lazily on first
+    // fetch. Independent from the audio cache so eviction here doesn't churn
+    // downloaded books. The iOS-WebKit SW-fetch latency penalty doesn't matter
+    // for one-shot image GETs the way it does for many-Range audio streaming.
+    if (e.request.method === 'GET' && isCoverUrl(url)) {
+        e.respondWith(handleCover(e.request));
+        return;
+    }
+
     // Cross-origin: only intercept if we know something is cached for this
     // URL. Otherwise return without calling respondWith so the browser
     // handles the request natively (no SW round-trip overhead).
@@ -145,6 +156,41 @@ function offlineKey(url) {
     const u = new URL(url);
     u.searchParams.delete('token');
     return u.toString();
+}
+
+const COVER_PATH_RE = /\/api\/(items\/[^/]+\/cover|authors\/[^/]+\/image)$/;
+function isCoverUrl(url) {
+    return COVER_PATH_RE.test(url.pathname);
+}
+
+async function handleCover(request) {
+    const cache = await caches.open(COVERS_CACHE);
+    const key = offlineKey(request.url);
+    const cached = await cache.match(key);
+    if (cached) return cached;
+    try {
+        const res = await fetch(request);
+        if (res.ok) {
+            cache.put(key, res.clone()).then(() => evictCovers(cache)).catch(() => {});
+        }
+        return res;
+    } catch {
+        return new Response(null, { status: 503 });
+    }
+}
+
+// cache.keys() returns insertion order — delete the oldest entries when over
+// the cap. Throttled so it doesn't run on every put.
+let coverEvictBusy = false;
+async function evictCovers(cache) {
+    if (coverEvictBusy) return;
+    coverEvictBusy = true;
+    try {
+        const keys = await cache.keys();
+        const excess = keys.length - MAX_COVERS;
+        if (excess <= 0) return;
+        for (let i = 0; i < excess; i++) await cache.delete(keys[i]);
+    } finally { coverEvictBusy = false; }
 }
 
 // Cache keys for chunked entries. Fragments (#) are stripped by the Cache
