@@ -273,6 +273,7 @@ const Player = {
     },
 
     loadTime(globalTime) {
+        if (this._fadeRaf) this.clearSleep();
         const prevTime = this.getGlobalTime();
         let url, offset = 0;
         if (this.session && this.session.audioTracks?.length) {
@@ -370,7 +371,11 @@ const Player = {
         };
     },
 
-    play() { this.audio.play().catch(() => {}); this._updatePositionState(); },
+    play() {
+        if (this._fadeRaf) this.clearSleep();
+        this.audio.play().catch(() => {});
+        this._updatePositionState();
+    },
     pause() { this.audio.pause(); this._updatePositionState(); },
     toggle() { this.audio.paused ? this.play() : this.pause(); },
 
@@ -417,27 +422,57 @@ const Player = {
     setSpeed(rate) { this.audio.playbackRate = rate; localStorage.setItem('pholia_speed', rate); this._updatePositionState(); },
 
     // ── Sleep timer with volume fade ──
+    SLEEP_FADE_MS: 3000,
+    SLEEP_REWIND_S: 5,
+    _fadeRaf: null,
+    _fadeStartVolume: 1,
+
     startSleep(minutes) {
         this.clearSleep();
         if (minutes === 'chapter') { this.sleepEndOfChapter = true; this.setSleepActive(true); return; }
-        this.savedVolume = this.audio.volume;
         this.sleepEndTime = Date.now() + minutes * 60000;
         this.sleepTimerId = setInterval(() => {
             const remaining = this.sleepEndTime - Date.now();
             if (remaining <= 0) {
-                this.pause(); this.audio.volume = this.savedVolume; this.clearSleep(); return;
+                clearInterval(this.sleepTimerId); this.sleepTimerId = null;
+                this._finishSleep();
+                return;
             }
             const m = Math.floor(remaining / 60000);
             const s = Math.floor((remaining % 60000) / 1000);
             this.setSleepDisplay(m + ':' + (s < 10 ? '0' : '') + s);
-            if (remaining < 30000) {
-                this.audio.volume = Math.max(0, (remaining / 30000) * this.savedVolume);
-            }
         }, 1000);
         this.setSleepActive(true);
     },
 
+    // Fade audio.volume → 0 over SLEEP_FADE_MS, then pause, rewind, restore
+    // volume so the next play resumes at full volume a few seconds back.
+    _finishSleep() {
+        if (this._fadeRaf) return;
+        this._fadeStartVolume = this.audio.volume;
+        const t0 = performance.now();
+        const step = (now) => {
+            const t = Math.min(1, (now - t0) / this.SLEEP_FADE_MS);
+            this.audio.volume = this._fadeStartVolume * (1 - t);
+            if (t < 1) { this._fadeRaf = requestAnimationFrame(step); return; }
+            this._fadeRaf = null;
+            this.pause();
+            this.audio.currentTime = Math.max(0, this.audio.currentTime - this.SLEEP_REWIND_S);
+            this.audio.volume = this._fadeStartVolume;
+            this.clearSleep();
+        };
+        this._fadeRaf = requestAnimationFrame(step);
+    },
+
+    _cancelFade() {
+        if (!this._fadeRaf) return;
+        cancelAnimationFrame(this._fadeRaf);
+        this._fadeRaf = null;
+        this.audio.volume = this._fadeStartVolume;
+    },
+
     clearSleep() {
+        this._cancelFade();
         if (this.sleepTimerId) { clearInterval(this.sleepTimerId); this.sleepTimerId = null; }
         this.sleepEndTime = null; this.sleepEndOfChapter = false;
         this.setSleepActive(false); this.setSleepDisplay('');
@@ -488,7 +523,8 @@ const Player = {
         if (this.sleepEndOfChapter) {
             const next = this.chapters[this.currentChapterIndex + 1];
             if (next && next.start - this.getGlobalTime() <= 0.5) {
-                this.pause(); this.sleepEndOfChapter = false; this.setSleepActive(false);
+                this.sleepEndOfChapter = false;
+                this._finishSleep();
             }
         }
         this.maybePrewarmNextTrack();
