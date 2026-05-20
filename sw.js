@@ -260,6 +260,7 @@ async function serveCached(request, cachedResponse) {
             'Content-Length': String(chunk.byteLength),
             'Content-Range': `bytes ${start}-${end}/${total}`,
             'Accept-Ranges': 'bytes',
+            'Access-Control-Allow-Origin': '*',
         },
     });
 }
@@ -295,6 +296,7 @@ async function serveChunked(request, cache, baseKey, meta) {
                 'Content-Type': contentType || 'audio/mpeg',
                 'Content-Length': String(totalSize),
                 'Accept-Ranges': 'bytes',
+                'Access-Control-Allow-Origin': '*',
             },
         });
     }
@@ -329,6 +331,7 @@ async function serveChunked(request, cache, baseKey, meta) {
             'Content-Length': String(end - start + 1),
             'Content-Range': `bytes ${start}-${end}/${totalSize}`,
             'Accept-Ranges': 'bytes',
+            'Access-Control-Allow-Origin': '*',
         },
     });
 }
