@@ -1611,8 +1611,10 @@ const App = {
             }
             actions.innerHTML = `
                 <div class="setting-hint">A Pholia account stores your server URL and password (encrypted) behind a passkey, so you can sign in with Face ID on any device.</div>
-                <button id="account-create" type="button">Set up Pholia account with passkey</button>
+                <button id="account-signin" type="button">Sign in with existing passkey</button>
+                <button id="account-create" type="button">Set up new Pholia account</button>
             `;
+            document.getElementById('account-signin').addEventListener('click', () => this._signInExistingFromSettings());
             document.getElementById('account-create').addEventListener('click', () => this._setupAccountFromSettings());
             return;
         }
@@ -1721,6 +1723,23 @@ const App = {
         }
         if (ABS.serverUrl) {
             await this._saveCurrentServerFromSettings();
+        }
+        this.renderAccountSection();
+    },
+
+    // Settings → Sign in with existing passkey: authenticate against an
+    // existing Pholia account from a device that's only logged into a server.
+    // Re-renders the section so the user sees their saved servers and the
+    // "save current server" offer if applicable.
+    async _signInExistingFromSettings() {
+        try {
+            await Account.authenticateWithPasskey();
+        } catch (err) {
+            const msg = err?.message || '';
+            if (!/Cancelled|NotAllowed/i.test(msg) && err?.name !== 'NotAllowedError') {
+                alert('Passkey sign-in failed: ' + msg);
+            }
+            return;
         }
         this.renderAccountSection();
     },

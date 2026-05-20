@@ -273,7 +273,7 @@ const Player = {
     },
 
     loadTime(globalTime) {
-        if (this._fadeRaf) this.clearSleep();
+        if (this._fadeTimer) this.clearSleep();
         const prevTime = this.getGlobalTime();
         let url, offset = 0;
         if (this.session && this.session.audioTracks?.length) {
@@ -372,7 +372,7 @@ const Player = {
     },
 
     play() {
-        if (this._fadeRaf) this.clearSleep();
+        if (this._fadeTimer) this.clearSleep();
         this.audio.play().catch(() => {});
         this._updatePositionState();
     },
@@ -424,7 +424,7 @@ const Player = {
     // ── Sleep timer with volume fade ──
     SLEEP_FADE_MS: 3000,
     SLEEP_REWIND_S: 5,
-    _fadeRaf: null,
+    _fadeTimer: null,
     _fadeStartVolume: 1,
 
     startSleep(minutes) {
@@ -447,27 +447,32 @@ const Player = {
 
     // Fade audio.volume → 0 over SLEEP_FADE_MS, then pause, rewind, restore
     // volume so the next play resumes at full volume a few seconds back.
+    // Uses setInterval rather than rAF because rAF doesn't fire when the iOS
+    // PWA is backgrounded or the screen is locked — exactly the case for a
+    // sleep timer. setInterval is throttled to ~1Hz in background but still
+    // fires, so the pause + rewind still lands (fade becomes stepped, audible
+    // but acceptable).
     _finishSleep() {
-        if (this._fadeRaf) return;
+        if (this._fadeTimer) return;
         this._fadeStartVolume = this.audio.volume;
-        const t0 = performance.now();
-        const step = (now) => {
-            const t = Math.min(1, (now - t0) / this.SLEEP_FADE_MS);
+        const t0 = Date.now();
+        this._fadeTimer = setInterval(() => {
+            const t = Math.min(1, (Date.now() - t0) / this.SLEEP_FADE_MS);
             this.audio.volume = this._fadeStartVolume * (1 - t);
-            if (t < 1) { this._fadeRaf = requestAnimationFrame(step); return; }
-            this._fadeRaf = null;
+            if (t < 1) return;
+            clearInterval(this._fadeTimer);
+            this._fadeTimer = null;
             this.pause();
             this.audio.currentTime = Math.max(0, this.audio.currentTime - this.SLEEP_REWIND_S);
             this.audio.volume = this._fadeStartVolume;
             this.clearSleep();
-        };
-        this._fadeRaf = requestAnimationFrame(step);
+        }, 100);
     },
 
     _cancelFade() {
-        if (!this._fadeRaf) return;
-        cancelAnimationFrame(this._fadeRaf);
-        this._fadeRaf = null;
+        if (!this._fadeTimer) return;
+        clearInterval(this._fadeTimer);
+        this._fadeTimer = null;
         this.audio.volume = this._fadeStartVolume;
     },
 
