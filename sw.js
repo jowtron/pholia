@@ -228,6 +228,11 @@ async function handleCrossOrigin(request) {
 }
 
 const SAFE_SLICE_LIMIT = 50 * 1024 * 1024;
+// Maximum bytes returned per 206 from serveChunked. Wide Ranges (e.g.
+// "bytes=N-") would otherwise pull every overlapping chunk's arrayBuffer
+// into the JS heap at once and OOM iOS PWA (~50 MB budget). iOS re-issues
+// a fresh Range for the next slice when it sees a partial 206.
+const MAX_RANGE_SLICE = 4 * 1024 * 1024;
 
 // Serve a cached full-body response, slicing into a 206 if the request has
 // Range. For files larger than SAFE_SLICE_LIMIT we refuse to load the body
@@ -297,8 +302,9 @@ async function serveChunked(request, cache, baseKey, meta) {
     const m = /bytes=(\d+)-(\d*)/.exec(range);
     if (!m) return new Response(null, { status: 416 });
     const start = parseInt(m[1], 10);
-    const end = m[2] ? Math.min(parseInt(m[2], 10), totalSize - 1) : totalSize - 1;
+    let end = m[2] ? Math.min(parseInt(m[2], 10), totalSize - 1) : totalSize - 1;
     if (start > end || start >= totalSize) return new Response(null, { status: 416 });
+    if (end - start + 1 > MAX_RANGE_SLICE) end = start + MAX_RANGE_SLICE - 1;
 
     const startChunk = Math.floor(start / chunkSize);
     const endChunk = Math.floor(end / chunkSize);
