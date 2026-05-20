@@ -273,7 +273,7 @@ const Player = {
     },
 
     loadTime(globalTime) {
-        if (this._fadeTimer) this.clearSleep();
+        if (this._fadeTimer || this._fadeFinishTimer) this.clearSleep();
         const prevTime = this.getGlobalTime();
         let url, offset = 0;
         if (this.session && this.session.audioTracks?.length) {
@@ -372,7 +372,7 @@ const Player = {
     },
 
     play() {
-        if (this._fadeTimer) this.clearSleep();
+        if (this._fadeTimer || this._fadeFinishTimer) this.clearSleep();
         this.audio.play().catch(() => {});
         this._updatePositionState();
     },
@@ -425,6 +425,7 @@ const Player = {
     SLEEP_FADE_MS: 3000,
     SLEEP_REWIND_S: 5,
     _fadeTimer: null,
+    _fadeFinishTimer: null,
     _fadeStartVolume: 1,
 
     startSleep(minutes) {
@@ -447,33 +448,35 @@ const Player = {
 
     // Fade audio.volume → 0 over SLEEP_FADE_MS, then pause, rewind, restore
     // volume so the next play resumes at full volume a few seconds back.
-    // Uses setInterval rather than rAF because rAF doesn't fire when the iOS
-    // PWA is backgrounded or the screen is locked — exactly the case for a
-    // sleep timer. setInterval is throttled to ~1Hz in background but still
-    // fires, so the pause + rewind still lands (fade becomes stepped, audible
-    // but acceptable).
+    // Two independent timers: an interval that animates volume, and a single
+    // setTimeout that guarantees the pause+rewind lands at SLEEP_FADE_MS
+    // regardless of whether the volume animation completes. iOS Safari can
+    // silently ignore audio.volume writes (device volume is hardware-only),
+    // and timer cadences vary in the background — but the setTimeout is the
+    // load-bearing guarantee that the player actually stops.
     _finishSleep() {
-        if (this._fadeTimer) return;
+        if (this._fadeFinishTimer) return;
         this._fadeStartVolume = this.audio.volume;
         const t0 = Date.now();
         this._fadeTimer = setInterval(() => {
             const t = Math.min(1, (Date.now() - t0) / this.SLEEP_FADE_MS);
-            this.audio.volume = this._fadeStartVolume * (1 - t);
-            if (t < 1) return;
-            clearInterval(this._fadeTimer);
-            this._fadeTimer = null;
+            try { this.audio.volume = this._fadeStartVolume * (1 - t); } catch {}
+            if (t >= 1) { clearInterval(this._fadeTimer); this._fadeTimer = null; }
+        }, 100);
+        this._fadeFinishTimer = setTimeout(() => {
+            this._fadeFinishTimer = null;
+            if (this._fadeTimer) { clearInterval(this._fadeTimer); this._fadeTimer = null; }
             this.pause();
             this.audio.currentTime = Math.max(0, this.audio.currentTime - this.SLEEP_REWIND_S);
-            this.audio.volume = this._fadeStartVolume;
+            try { this.audio.volume = this._fadeStartVolume; } catch {}
             this.clearSleep();
-        }, 100);
+        }, this.SLEEP_FADE_MS);
     },
 
     _cancelFade() {
-        if (!this._fadeTimer) return;
-        clearInterval(this._fadeTimer);
-        this._fadeTimer = null;
-        this.audio.volume = this._fadeStartVolume;
+        if (this._fadeTimer) { clearInterval(this._fadeTimer); this._fadeTimer = null; }
+        if (this._fadeFinishTimer) { clearTimeout(this._fadeFinishTimer); this._fadeFinishTimer = null; }
+        try { this.audio.volume = this._fadeStartVolume; } catch {}
     },
 
     clearSleep() {
