@@ -238,7 +238,7 @@ const App = {
             btn.addEventListener('click', e => {
                 e.stopPropagation();
                 const val = btn.dataset.minutes;
-                Player.startSleep(val === 'chapter' ? 'chapter' : parseInt(val));
+                Player.startSleep(val === 'chapter' ? 'chapter' : parseFloat(val));
                 document.getElementById('pp-sleep-menu').classList.remove('open');
             });
         });
@@ -277,7 +277,7 @@ const App = {
         document.querySelectorAll('#fs-sleep-menu button[data-minutes]').forEach(btn => {
             btn.addEventListener('click', () => {
                 const val = btn.dataset.minutes;
-                Player.startSleep(val === 'chapter' ? 'chapter' : parseInt(val));
+                Player.startSleep(val === 'chapter' ? 'chapter' : parseFloat(val));
                 document.getElementById('fs-sleep-menu').classList.remove('open');
             });
         });
