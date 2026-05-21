@@ -834,12 +834,16 @@ const App = {
                     if (section.type === 'series') {
                         const bookId = entity.books?.[0]?.id;
                         if (bookId) coverSrc = ABS.coverUrl(bookId);
+                        // Cache books so the click handler can show the
+                        // detail view without re-fetching the series list.
+                        this._seriesCache[entity.id] = entity.books || [];
                     } else if (section.type === 'authors') {
                         coverSrc = ABS.authorImageUrl(entity.id);
                     } else if (itemId) {
                         coverSrc = ABS.coverUrl(itemId);
                     }
-                    html += `<div class="card" data-id="${itemId}" data-type="${section.type}"${episodeId ? ` data-episode-id="${episodeId}"` : ''}>`;
+                    const titleAttr = ` data-title="${esc(entity.name || title)}"`;
+                    html += `<div class="card" data-id="${itemId}" data-type="${section.type}"${titleAttr}${episodeId ? ` data-episode-id="${episodeId}"` : ''}>`;
                     if (coverSrc) {
                         html += `<img src="${coverSrc}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
                     }
@@ -1235,7 +1239,12 @@ const App = {
         this.markDownloadedCards();
         document.querySelectorAll('.grid-item[data-id], .card[data-id]').forEach(el => {
             el.addEventListener('click', () => {
-                if (el.dataset.episodeId) {
+                const type = el.dataset.type;
+                if (type === 'series') {
+                    this.showSeriesDetail(el.dataset.id, el.dataset.title || 'Series');
+                } else if (type === 'authors') {
+                    this.showAuthorDetail(el.dataset.id, el.dataset.title || 'Author');
+                } else if (el.dataset.episodeId) {
                     this.playEpisode(el.dataset.id, el.dataset.episodeId);
                 } else {
                     this.showItem(el.dataset.id);
@@ -1245,6 +1254,14 @@ const App = {
         document.querySelectorAll('.play-overlay[data-play-id]').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
+                // Series/author tiles have no meaningful "play" action — the
+                // overlay's container click already routes to the detail view.
+                const card = btn.closest('.card,.grid-item');
+                if (card && (card.dataset.type === 'series' || card.dataset.type === 'authors')) {
+                    if (card.dataset.type === 'series') this.showSeriesDetail(card.dataset.id, card.dataset.title || 'Series');
+                    else this.showAuthorDetail(card.dataset.id, card.dataset.title || 'Author');
+                    return;
+                }
                 const epId = btn.dataset.playEpisode;
                 if (epId) this.playEpisode(btn.dataset.playId, epId);
                 else this.quickPlay(btn.dataset.playId);

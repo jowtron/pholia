@@ -27,7 +27,17 @@ const Player = {
         this.audio.crossOrigin = 'anonymous';
         this.audio.addEventListener('timeupdate', () => this.onTimeUpdate());
         this.audio.addEventListener('ended', () => this.onTrackEnded());
-        this.audio.addEventListener('play', () => this.setPlaying(true));
+        this.audio.addEventListener('play', () => {
+            this.setPlaying(true);
+            // OS lock-screen / media-key play bypasses Player.play() — make
+            // sure a residual zero gain from a sleep fade gets cleared here
+            // too, otherwise the user resumes to silence.
+            if (this._gainNode && this._audioCtx && this._gainNode.gain.value < 1) {
+                const t = this._audioCtx.currentTime;
+                this._gainNode.gain.cancelScheduledValues(t);
+                this._gainNode.gain.setValueAtTime(1, t);
+            }
+        });
         this.audio.addEventListener('pause', () => this.setPlaying(false));
         this.audio.addEventListener('error', (e) => console.error('Audio error', e));
 
@@ -380,6 +390,14 @@ const Player = {
 
     play() {
         if (this._fadeFinishTimer) this.clearSleep();
+        // A completed sleep fade leaves the GainNode at 0 so the pause
+        // drain doesn't pop. Restore before audio starts so the next
+        // play resumes at full volume.
+        if (this._gainNode && this._audioCtx && this._gainNode.gain.value < 1) {
+            const t = this._audioCtx.currentTime;
+            this._gainNode.gain.cancelScheduledValues(t);
+            this._gainNode.gain.setValueAtTime(1, t);
+        }
         this.audio.play().catch(() => {});
         this._updatePositionState();
     },
@@ -503,11 +521,10 @@ const Player = {
             this._fadeFinishTimer = null;
             this.pause();
             this.audio.currentTime = Math.max(0, this.audio.currentTime - this.SLEEP_REWIND_S);
-            if (this._gainNode && this._audioCtx) {
-                const t = this._audioCtx.currentTime;
-                this._gainNode.gain.cancelScheduledValues(t);
-                this._gainNode.gain.setValueAtTime(1, t);
-            }
+            // Leave gain at 0 — pause() drains the audio pipeline async, and
+            // setting gain back to 1 here causes a brief loud burst as the
+            // tail samples play through. Gain is restored on the next play()
+            // (and via the audio 'play' event listener) before audio starts.
             this.clearSleep();
         }, this.SLEEP_FADE_MS);
     },
