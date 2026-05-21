@@ -18,26 +18,9 @@ const Player = {
 
     init() {
         this.audio.preload = 'auto';
-        // Required for Web Audio to route the audio output (used by the
-        // sleep-timer GainNode fade — iOS ignores audio.volume writes, so
-        // a software gain is the only audible fade option). Without this
-        // the element loads cross-origin audio but Web Audio mutes the
-        // routed output. ABS shim and SW audio responses both include
-        // Access-Control-Allow-Origin so the browser accepts the load.
-        this.audio.crossOrigin = 'anonymous';
         this.audio.addEventListener('timeupdate', () => this.onTimeUpdate());
         this.audio.addEventListener('ended', () => this.onTrackEnded());
-        this.audio.addEventListener('play', () => {
-            this.setPlaying(true);
-            // OS lock-screen / media-key play bypasses Player.play() — make
-            // sure a residual zero gain from a sleep fade gets cleared here
-            // too, otherwise the user resumes to silence.
-            if (this._gainNode && this._audioCtx && this._gainNode.gain.value < 1) {
-                const t = this._audioCtx.currentTime;
-                this._gainNode.gain.cancelScheduledValues(t);
-                this._gainNode.gain.setValueAtTime(1, t);
-            }
-        });
+        this.audio.addEventListener('play', () => this.setPlaying(true));
         this.audio.addEventListener('pause', () => this.setPlaying(false));
         this.audio.addEventListener('error', (e) => console.error('Audio error', e));
 
@@ -290,7 +273,6 @@ const Player = {
     },
 
     loadTime(globalTime) {
-        if (this._fadeFinishTimer) this.clearSleep();
         const prevTime = this.getGlobalTime();
         let url, offset = 0;
         if (this.session && this.session.audioTracks?.length) {
@@ -389,15 +371,6 @@ const Player = {
     },
 
     play() {
-        if (this._fadeFinishTimer) this.clearSleep();
-        // A completed sleep fade leaves the GainNode at 0 so the pause
-        // drain doesn't pop. Restore before audio starts so the next
-        // play resumes at full volume.
-        if (this._gainNode && this._audioCtx && this._gainNode.gain.value < 1) {
-            const t = this._audioCtx.currentTime;
-            this._gainNode.gain.cancelScheduledValues(t);
-            this._gainNode.gain.setValueAtTime(1, t);
-        }
         this.audio.play().catch(() => {});
         this._updatePositionState();
     },
@@ -446,46 +419,16 @@ const Player = {
 
     setSpeed(rate) { this.audio.playbackRate = rate; localStorage.setItem('pholia_speed', rate); this._updatePositionState(); },
 
-    // ── Sleep timer with volume fade ──
-    SLEEP_FADE_MS: 3000,
+    // ── Sleep timer ──
+    // Web Audio routing was tried for an audible fade on iOS (since
+    // audio.volume writes are silently ignored there) but caused audio to
+    // stop entirely on screen lock: iOS suspends AudioContext when locked,
+    // and createMediaElementSource permanently captures the element's
+    // output through that AC. Native lock-screen playback is the priority.
     SLEEP_REWIND_S: 5,
-    _audioCtx: null,
-    _gainNode: null,
-    _fadeFinishTimer: null,
-
-    // Lazily route the audio element through Web Audio so we can drive a
-    // real software gain. iOS Safari treats audio.volume as hardware-only
-    // (writes are silently ignored), so a JS volume ramp produces no
-    // audible fade on the device that matters. GainNode bypasses that —
-    // Web Audio runs in the audio thread with its own mixer. Must be
-    // invoked from a user gesture so AudioContext is allowed to resume on
-    // iOS; startSleep is the gesture entry point. The audio element must
-    // have crossOrigin set and the upstream response must include
-    // Access-Control-Allow-Origin or the routed output is muted.
-    _ensureGainNode() {
-        if (this._gainNode) return this._gainNode;
-        try {
-            const AC = window.AudioContext || window.webkitAudioContext;
-            if (!AC) return null;
-            this._audioCtx = new AC();
-            const source = this._audioCtx.createMediaElementSource(this.audio);
-            this._gainNode = this._audioCtx.createGain();
-            source.connect(this._gainNode);
-            this._gainNode.connect(this._audioCtx.destination);
-        } catch {
-            this._audioCtx = null;
-            this._gainNode = null;
-            return null;
-        }
-        if (this._audioCtx.state === 'suspended') {
-            this._audioCtx.resume().catch(() => {});
-        }
-        return this._gainNode;
-    },
 
     startSleep(minutes) {
         this.clearSleep();
-        this._ensureGainNode();
         if (minutes === 'chapter') { this.sleepEndOfChapter = true; this.setSleepActive(true); return; }
         this.sleepEndTime = Date.now() + minutes * 60000;
         this.sleepTimerId = setInterval(() => {
@@ -502,48 +445,13 @@ const Player = {
         this.setSleepActive(true);
     },
 
-    // Schedule a Web Audio gain ramp to 0 over SLEEP_FADE_MS, and a
-    // separate setTimeout that fires the pause + rewind at the same
-    // deadline. The pause is on the setTimeout, not chained off the gain
-    // animation, so playback always stops even if the gain ramp can't run
-    // (older browser, no Web Audio, CORS-tainted source, etc.). Gain is
-    // restored to 1 after the pause so the next play() is at full volume.
     _finishSleep() {
-        if (this._fadeFinishTimer) return;
-        const fadeS = this.SLEEP_FADE_MS / 1000;
-        if (this._gainNode && this._audioCtx) {
-            const t = this._audioCtx.currentTime;
-            this._gainNode.gain.cancelScheduledValues(t);
-            this._gainNode.gain.setValueAtTime(this._gainNode.gain.value, t);
-            this._gainNode.gain.linearRampToValueAtTime(0, t + fadeS);
-        }
-        this._fadeFinishTimer = setTimeout(() => {
-            this._fadeFinishTimer = null;
-            this.pause();
-            this.audio.currentTime = Math.max(0, this.audio.currentTime - this.SLEEP_REWIND_S);
-            // Leave gain at 0 — pause() drains the audio pipeline async, and
-            // setting gain back to 1 here causes a brief loud burst as the
-            // tail samples play through. Gain is restored on the next play()
-            // (and via the audio 'play' event listener) before audio starts.
-            this.clearSleep();
-        }, this.SLEEP_FADE_MS);
-    },
-
-    _cancelFade() {
-        if (this._fadeFinishTimer) { clearTimeout(this._fadeFinishTimer); this._fadeFinishTimer = null; }
-        if (this._gainNode && this._audioCtx) {
-            const t = this._audioCtx.currentTime;
-            this._gainNode.gain.cancelScheduledValues(t);
-            // Don't snap gain back to 1 here. clearSleep() also runs this
-            // path after a natural fade completion (right after pause()),
-            // and snapping to 1 while pause() is still draining the audio
-            // pipeline produces an audible burst at the end of the fade.
-            // The next play() restores gain before audio starts instead.
-        }
+        this.pause();
+        this.audio.currentTime = Math.max(0, this.audio.currentTime - this.SLEEP_REWIND_S);
+        this.clearSleep();
     },
 
     clearSleep() {
-        this._cancelFade();
         if (this.sleepTimerId) { clearInterval(this.sleepTimerId); this.sleepTimerId = null; }
         this.sleepEndTime = null; this.sleepEndOfChapter = false;
         this.setSleepActive(false); this.setSleepDisplay('');
