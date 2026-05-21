@@ -105,7 +105,13 @@ const ABS = {
             err.isNetwork = false;
             throw err;
         }
-        return res.json();
+        // ABS returns 200/204 with no body for progress-sync endpoints —
+        // res.json() on an empty body throws SyntaxError. Treat empty
+        // responses as null rather than letting them surface as errors.
+        if (res.status === 204) return null;
+        const text = await res.text();
+        if (!text) return null;
+        return JSON.parse(text);
     },
 
     // Auth
