@@ -534,7 +534,11 @@ const Player = {
         if (this._gainNode && this._audioCtx) {
             const t = this._audioCtx.currentTime;
             this._gainNode.gain.cancelScheduledValues(t);
-            this._gainNode.gain.setValueAtTime(1, t);
+            // Don't snap gain back to 1 here. clearSleep() also runs this
+            // path after a natural fade completion (right after pause()),
+            // and snapping to 1 while pause() is still draining the audio
+            // pipeline produces an audible burst at the end of the fade.
+            // The next play() restores gain before audio starts instead.
         }
     },
 
