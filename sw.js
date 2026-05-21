@@ -105,6 +105,15 @@ async function loadCachedKeys() {
 self.addEventListener('fetch', e => {
     const url = new URL(e.request.url);
 
+    // HEAD requests want headers only — never a body. The auto-cache size
+    // probe (_streamFetchToCache HEAD) hits cached audio URLs; if we let
+    // serveChunked answer, its "no Range" branch streams every cached
+    // chunk into memory because the HEAD caller never drains the body.
+    // That OOMs the SW under iOS PWA's tiny memory budget, kills the
+    // worker mid-handler ("Service Worker context closed"), and on iOS
+    // takes the whole page down with it. Pass HEAD straight to network.
+    if (e.request.method === 'HEAD') return;
+
     if (url.origin === self.location.origin) {
         // App shell: network-first, cache fallback when offline.
         e.respondWith(
