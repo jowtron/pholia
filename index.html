@@ -237,7 +237,22 @@
         <div id="fs-player" class="fs-player hidden">
             <button class="fs-close" id="fs-close" aria-label="Close">&times;</button>
             <div class="fs-scroll">
-                <img class="fs-cover" id="fs-cover" src="" alt="">
+                <div class="fs-cover-stack">
+                    <div class="fs-cover-wrap" id="fs-cover-wrap" role="button" tabindex="0" aria-label="Show file info">
+                        <div class="fs-cover-wrap-inner">
+                            <img class="fs-cover fs-cover-face fs-cover-front" id="fs-cover" src="" alt="">
+                            <div class="fs-cover-face fs-cover-back" id="fs-cover-back">
+                                <div class="fs-info-title">File info</div>
+                                <dl class="fs-info-list" id="fs-info-list"></dl>
+                                <div class="fs-info-hint">Tap to flip back</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="fs-description-wrap" id="fs-description-wrap" hidden>
+                        <div class="fs-description" id="fs-description"></div>
+                        <button class="fs-description-toggle" id="fs-description-toggle" type="button" hidden>Read more</button>
+                    </div>
+                </div>
             </div>
             <div class="fs-bottom">
                 <div class="fs-title" id="fs-title"></div>

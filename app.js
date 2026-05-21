@@ -286,6 +286,21 @@ const App = {
             document.getElementById('fs-sleep-menu').classList.remove('open');
         });
 
+        // FS cover flip — tap cover to show file info on the back
+        const coverWrap = document.getElementById('fs-cover-wrap');
+        coverWrap.addEventListener('click', () => coverWrap.classList.toggle('is-flipped'));
+        coverWrap.addEventListener('keydown', e => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); coverWrap.classList.toggle('is-flipped'); }
+        });
+
+        // FS description expand/collapse
+        document.getElementById('fs-description-toggle').addEventListener('click', () => {
+            const d = document.getElementById('fs-description');
+            const btn = document.getElementById('fs-description-toggle');
+            const collapsed = d.classList.toggle('is-collapsed');
+            btn.textContent = collapsed ? 'Read more' : 'Show less';
+        });
+
         // FS chapters
         document.getElementById('fs-toggle-chapters').addEventListener('click', () => {
             const el = document.getElementById('fs-chapter-list');
@@ -1846,7 +1861,75 @@ const App = {
         if (!Player.item) return;
         document.getElementById('fs-player').classList.remove('hidden');
         document.body.classList.add('fs-open');
+        document.getElementById('fs-cover-wrap').classList.remove('is-flipped');
+        this._renderFsFileInfo();
+        this._renderFsDescription();
         Player.updateUI();
+    },
+
+    _renderFsFileInfo() {
+        const list = document.getElementById('fs-info-list');
+        const item = Player.item;
+        const tracks = item?.media?.audioFiles || [];
+        const cur = tracks[Player.currentTrackIndex] || tracks[0];
+        const rows = [];
+        const md = cur?.metadata || {};
+        const codec = cur?.codec || md.codec;
+        const bitRate = cur?.bitRate ?? md.bitRate ?? cur?.bitrate;
+        const channels = cur?.channels ?? md.channels;
+        const sampleRate = cur?.sampleRate ?? md.sampleRate;
+        const mimeType = cur?.mimeType || cur?.format;
+        const size = cur?.metadata?.size ?? cur?.size;
+        const filename = cur?.metadata?.filename || cur?.filename;
+        const duration = cur?.duration;
+        const trackCount = tracks.length;
+
+        const fmtBitrate = (b) => {
+            if (b == null) return null;
+            const kbps = b > 10000 ? Math.round(b / 1000) : Math.round(b);
+            return kbps + ' kbps';
+        };
+        const fmtSize = (n) => {
+            if (n == null) return null;
+            if (n >= 1024 * 1024 * 1024) return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+            if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
+            if (n >= 1024) return (n / 1024).toFixed(1) + ' KB';
+            return n + ' B';
+        };
+        const fmtSample = (s) => s == null ? null : (s >= 1000 ? (s / 1000).toFixed(1) + ' kHz' : s + ' Hz');
+        const add = (k, v) => { if (v != null && v !== '') rows.push([k, v]); };
+
+        add('Codec', codec ? String(codec).toUpperCase() : null);
+        add('Bitrate', fmtBitrate(bitRate));
+        add('Sample rate', fmtSample(sampleRate));
+        add('Channels', channels);
+        add('Container', mimeType);
+        add('Duration', duration ? formatTime(duration) : null);
+        add('Size', fmtSize(size));
+        if (trackCount > 1) add('Track', `${(Player.currentTrackIndex ?? 0) + 1} of ${trackCount}`);
+        add('File', filename);
+
+        list.innerHTML = rows.length
+            ? rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(String(v))}</dd>`).join('')
+            : '<dt style="grid-column:1/-1;color:var(--text-muted);font-style:italic">No file info available</dt>';
+    },
+
+    _renderFsDescription() {
+        const wrap = document.getElementById('fs-description-wrap');
+        const body = document.getElementById('fs-description');
+        const btn = document.getElementById('fs-description-toggle');
+        const desc = Player.item?.media?.metadata?.description?.trim();
+        if (!desc) { wrap.hidden = true; return; }
+        wrap.hidden = false;
+        body.textContent = desc;
+        body.classList.add('is-collapsed');
+        btn.textContent = 'Read more';
+        // Show the toggle only if the text actually overflows the collapsed height
+        requestAnimationFrame(() => {
+            const overflows = body.scrollHeight > body.clientHeight + 2;
+            btn.hidden = !overflows;
+            if (!overflows) body.classList.remove('is-collapsed');
+        });
     },
     closeFullscreen() {
         document.getElementById('fs-player').classList.add('hidden');
