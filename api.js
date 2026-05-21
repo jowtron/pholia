@@ -165,6 +165,11 @@ const ABS = {
         return `${this.serverUrl}/api/items/${itemId}/cover?token=${this.token}`;
     },
 
+    // Author photo URL — different endpoint from item covers.
+    authorImageUrl(authorId) {
+        return `${this.serverUrl}/api/authors/${authorId}/image?token=${this.token}`;
+    },
+
     // Audio track URL (direct — audio tags don't need CORS proxy)
     trackUrl(itemId, ino) {
         return `${this.serverUrl}/api/items/${itemId}/file/${ino}?token=${this.token}`;

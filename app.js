@@ -824,8 +824,25 @@ const App = {
                     const subtitle = isEpisode ? (meta.title || '') : (meta.authorName || '');
                     const progress = entity.mediaProgress?.progress || entity.progress?.progress || 0;
                     const episodeId = isEpisode && ep ? ep.id : '';
+                    // /personalized returns different shapes per section.type:
+                    //   book/episode \u2192 entity.id is a library item id \u2192 coverUrl
+                    //   series       \u2192 entity is a series; cover comes from its first book
+                    //   authors      \u2192 entity is an author; image is at /api/authors/:id/image
+                    // Using coverUrl(entity.id) blindly produces 404s for the
+                    // non-book sections.
+                    let coverSrc = '';
+                    if (section.type === 'series') {
+                        const bookId = entity.books?.[0]?.id;
+                        if (bookId) coverSrc = ABS.coverUrl(bookId);
+                    } else if (section.type === 'authors') {
+                        coverSrc = ABS.authorImageUrl(entity.id);
+                    } else if (itemId) {
+                        coverSrc = ABS.coverUrl(itemId);
+                    }
                     html += `<div class="card" data-id="${itemId}" data-type="${section.type}"${episodeId ? ` data-episode-id="${episodeId}"` : ''}>`;
-                    html += `<img src="${ABS.coverUrl(itemId)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
+                    if (coverSrc) {
+                        html += `<img src="${coverSrc}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
+                    }
                     html += `<button class="play-overlay" data-play-id="${itemId}"${episodeId ? ` data-play-episode="${episodeId}"` : ''}>\u25B6</button>`;
                     html += `<div class="card-title">${esc(title)}</div>`;
                     html += `<div class="card-sub">${esc(subtitle)}</div>`;
