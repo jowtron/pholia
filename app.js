@@ -815,16 +815,45 @@ const App = {
     showLoading() { this.setContent('<div class="loading">Loading</div>'); },
 
     // ── Home ──
+    _homeCache: null,            // { libraryId, html, downloadedIds, ts }
+    _homeRevalidating: false,
+    _invalidateHomeCache() { this._homeCache = null; },
+
     async showHome() {
         document.getElementById('header-title').textContent = 'Home';
-        this.showLoading();
-        if (!this.currentLibraryId) return;
+        if (!this.currentLibraryId) { this.showLoading(); return; }
 
+        // Stale-while-revalidate: if we have a cached render for this library
+        // paint it immediately, then fetch in the background and swap if it
+        // changed. Otherwise show the loading state.
+        const cached = this._homeCache;
+        if (cached && cached.libraryId === this.currentLibraryId) {
+            this.setContent(cached.html);
+            this.bindCardClicks();
+            this.bindOfflineCardClicks(cached.downloadedItems || []);
+            this._refreshHomeInBackground();
+            return;
+        }
+        this.showLoading();
+        await this._renderHome();
+    },
+
+    async _refreshHomeInBackground() {
+        if (this._homeRevalidating) return;
+        this._homeRevalidating = true;
+        try { await this._renderHome({ silent: true }); }
+        finally { this._homeRevalidating = false; }
+    },
+
+    async _renderHome({ silent = false } = {}) {
+        const targetLib = this.currentLibraryId;
         const downloaded = await Offline.fullyDownloaded();
         const offlineHtml = this.renderOfflineSection(downloaded);
 
         try {
-            const sections = await ABS.request(`/api/libraries/${this.currentLibraryId}/personalized`);
+            const sections = await ABS.request(`/api/libraries/${targetLib}/personalized`);
+            // If user switched library mid-fetch, drop this result.
+            if (targetLib !== this.currentLibraryId) return;
             let html = offlineHtml;
             for (const section of sections) {
                 if (!section.entities?.length) continue;
@@ -835,8 +864,24 @@ const App = {
                     const itemId = entity.id || entity.libraryItemId;
                     const ep = entity.recentEpisode;
                     const meta = entity.media?.metadata || entity.metadata || {};
-                    const title = isEpisode && ep ? ep.title : (meta.title || entity.title || 'Unknown');
-                    const subtitle = isEpisode ? (meta.title || '') : (meta.authorName || '');
+                    // Series/author entities use entity.name, not meta.title.
+                    let title, subtitle;
+                    if (isEpisode && ep) {
+                        title = ep.title; subtitle = meta.title || '';
+                    } else if (section.type === 'series') {
+                        title = entity.name || 'Unknown';
+                        subtitle = entity.numBooks != null
+                            ? `${entity.numBooks} book${entity.numBooks === 1 ? '' : 's'}`
+                            : (entity.books?.length ? `${entity.books.length} books` : '');
+                    } else if (section.type === 'authors') {
+                        title = entity.name || 'Unknown';
+                        subtitle = entity.numBooks != null
+                            ? `${entity.numBooks} book${entity.numBooks === 1 ? '' : 's'}`
+                            : '';
+                    } else {
+                        title = meta.title || entity.title || 'Unknown';
+                        subtitle = meta.authorName || '';
+                    }
                     const progress = entity.mediaProgress?.progress || entity.progress?.progress || 0;
                     const episodeId = isEpisode && ep ? ep.id : '';
                     // /personalized returns different shapes per section.type:
@@ -873,10 +918,25 @@ const App = {
                 html += '</div>';
             }
             if (!html) html = '<div class="loading">No items yet</div>';
-            this.setContent(html);
-            this.bindCardClicks();
-            this.bindOfflineCardClicks(downloaded);
+            // Cache the assembled markup so re-entering the Home tab is instant.
+            const cachePrev = this._homeCache?.html;
+            this._homeCache = {
+                libraryId: targetLib,
+                html,
+                downloadedItems: downloaded,
+                ts: Date.now(),
+            };
+            // Only paint if the user is currently looking at Home and either
+            // we weren't called silently, or the markup actually changed.
+            const onHome = this.currentTab === 'home' && this.navStack.length === 0;
+            if (onHome && (!silent || cachePrev !== html)) {
+                this.setContent(html);
+                this.bindCardClicks();
+                this.bindOfflineCardClicks(downloaded);
+            }
         } catch (e) {
+            // Don't clobber a good cached render on a background refresh failure.
+            if (silent) return;
             // If we have downloaded books, still render those so the user can play offline.
             if (offlineHtml) {
                 this.setContent(offlineHtml + `<div class="loading">Server unreachable — offline books only</div>`);
@@ -1563,6 +1623,7 @@ const App = {
                 if (!confirm('Remove downloaded audio for this book?')) return;
                 el.innerHTML = '<span class="offline-status">Removing…</span>';
                 await Offline.deleteBook(item);
+                this._invalidateHomeCache();
                 this.renderOfflineControls(item);
             });
         } else {
@@ -1579,6 +1640,7 @@ const App = {
                             status.textContent = `Downloading ${done}/${total}…`;
                         }
                     });
+                    this._invalidateHomeCache();
                     this.renderOfflineControls(item);
                 } catch (e) {
                     el.innerHTML = `<span class="offline-status error">Failed: ${esc(e.message)}</span>
@@ -1845,6 +1907,7 @@ const App = {
                 if (!item) return;
                 btn.disabled = true; btn.textContent = 'Removing…';
                 await Offline.deleteBook(item);
+                this._invalidateHomeCache();
                 this.renderDownloadsList();
             });
         });
@@ -1852,6 +1915,7 @@ const App = {
             if (!confirm(`Remove all ${items.length} cached book${items.length === 1 ? '' : 's'}?`)) return;
             list.innerHTML = '<div class="downloads-empty">Clearing…</div>';
             for (const item of items) await Offline.deleteBook(item);
+            this._invalidateHomeCache();
             this.renderDownloadsList();
         };
     },
