@@ -2077,6 +2077,17 @@ const Offline = {
         return baseKey + (baseKey.includes('?') ? '&' : '?') + '__complete=1';
     },
 
+    // Memoized chunkCoverage results, keyed by itemId. Each entry records the
+    // _coverageVersion at compute time. Any chunk write or delete bumps the
+    // global version, invalidating all cached entries on next access. For a
+    // settled (fully-downloaded) book that nothing is writing to, the cache
+    // stays valid for the page's lifetime — turning a thousand-entry
+    // cache.keys() walk into a Map.get() on every detail-page / fullscreen
+    // open.
+    _coverageCache: new Map(),
+    _coverageVersion: 0,
+    _invalidateCoverage() { this._coverageVersion++; },
+
     notifySwCacheChanged() {
         try { navigator.serviceWorker?.controller?.postMessage({ type: 'CACHE_CHANGED' }); } catch {}
     },
@@ -2252,6 +2263,7 @@ const Offline = {
                 status: 200,
                 headers: { 'Content-Type': contentType, 'Content-Length': String(blob.size) },
             }));
+            this._invalidateCoverage();
             received += blob.size;
             try { onChunk?.(received, total); } catch {}
         }
@@ -2292,9 +2304,21 @@ const Offline = {
     // Returns per-track coverage info needed to render chapter cache state.
     // For each audioFile: null (nothing cached), { legacy: true } (whole-file
     // cache, treat as fully covered), or { totalSize, chunkSize, numChunks,
-    // cached: Set<int> } for chunked entries. Single cache.keys() walk for
-    // efficiency.
+    // cached: Set<int> } for chunked entries. Memoized — see _coverageCache.
     async chunkCoverage(item) {
+        const ver = this._coverageVersion;
+        const hit = this._coverageCache.get(item.id);
+        if (hit && hit.version === ver) return hit.coverage;
+        const coverage = await this._computeChunkCoverage(item);
+        // Only commit if the version hasn't moved underneath us during the
+        // async walk (another chunk wrote mid-compute → next caller rebuilds).
+        if (this._coverageVersion === ver) {
+            this._coverageCache.set(item.id, { coverage, version: ver });
+        }
+        return coverage;
+    },
+
+    async _computeChunkCoverage(item) {
         const tracks = item.media?.audioFiles || [];
         if (!tracks.length) return [];
         try {
@@ -2352,6 +2376,8 @@ const Offline = {
         }
         await audioCache.delete(this.keyFor(ABS.coverUrl(item.id)));
         await metaCache.delete(this.metaKey(item.id));
+        this._coverageCache.delete(item.id);
+        this._invalidateCoverage();
         this.notifySwCacheChanged();
     },
 
