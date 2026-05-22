@@ -815,45 +815,83 @@ const App = {
     showLoading() { this.setContent('<div class="loading">Loading</div>'); },
 
     // ── Home ──
-    _homeCache: null,            // { libraryId, html, downloadedIds, ts }
-    _homeRevalidating: false,
-    _invalidateHomeCache() { this._homeCache = null; },
+    // ── Generic tab cache (stale-while-revalidate) ──
+    // Keyed by `${tab}|${libraryId}`. Each entry stores the rendered html
+    // and the downloaded items list (only the home tab uses the latter).
+    _tabCache: {},
+    _tabRevalidating: {},
+    _invalidateTabCache(tab) {
+        if (!tab) { this._tabCache = {}; return; }
+        for (const k of Object.keys(this._tabCache)) {
+            if (k.startsWith(tab + '|')) delete this._tabCache[k];
+        }
+    },
+    // Back-compat for older call sites.
+    _invalidateHomeCache() { this._invalidateTabCache('home'); },
+
+    _tabKey(tab) { return `${tab}|${this.currentLibraryId}`; },
+    _tabStillActive(key) {
+        return this.navStack.length === 0 && key === this._tabKey(this.currentTab);
+    },
+
+    // produce: async () => string | { html, bindData? }
+    //   Pure fetch + html assembly; no DOM writes. Throws on fetch error.
+    //   Return bindData when the bind step needs runtime data; it gets
+    //   cached alongside html so the cache-hit path can rebind correctly.
+    // bind: (bindData) => void. Called after every paint (cache + fresh +
+    //   revalidate). Must re-query the DOM each call.
+    async _renderTab(tab, produce, bind) {
+        const key = this._tabKey(tab);
+        const cached = this._tabCache[key];
+        if (cached) {
+            this.setContent(cached.html);
+            bind?.(cached.bindData);
+            this._refreshTab(key, produce, bind);
+            return;
+        }
+        this.showLoading();
+        try {
+            const out = this._normalizeProduce(await produce());
+            this._tabCache[key] = { ...out, ts: Date.now() };
+            if (this._tabStillActive(key)) {
+                this.setContent(out.html);
+                bind?.(out.bindData);
+            }
+        } catch (e) {
+            if (this._tabStillActive(key)) {
+                this.setContent(`<div class="loading">Error: ${esc(e.message)}</div>`);
+            }
+        }
+    },
+
+    async _refreshTab(key, produce, bind) {
+        if (this._tabRevalidating[key]) return;
+        this._tabRevalidating[key] = true;
+        try {
+            const out = this._normalizeProduce(await produce());
+            const prev = this._tabCache[key]?.html;
+            this._tabCache[key] = { ...out, ts: Date.now() };
+            if (this._tabStillActive(key) && prev !== out.html) {
+                this.setContent(out.html);
+                bind?.(out.bindData);
+            }
+        } catch { /* keep cached render on background failure */ }
+        finally { this._tabRevalidating[key] = false; }
+    },
+
+    _normalizeProduce(v) {
+        return typeof v === 'string' ? { html: v, bindData: undefined } : v;
+    },
 
     async showHome() {
         document.getElementById('header-title').textContent = 'Home';
         if (!this.currentLibraryId) { this.showLoading(); return; }
-
-        // Stale-while-revalidate: if we have a cached render for this library
-        // paint it immediately, then fetch in the background and swap if it
-        // changed. Otherwise show the loading state.
-        const cached = this._homeCache;
-        if (cached && cached.libraryId === this.currentLibraryId) {
-            this.setContent(cached.html);
-            this.bindCardClicks();
-            this.bindOfflineCardClicks(cached.downloadedItems || []);
-            this._refreshHomeInBackground();
-            return;
-        }
-        this.showLoading();
-        await this._renderHome();
-    },
-
-    async _refreshHomeInBackground() {
-        if (this._homeRevalidating) return;
-        this._homeRevalidating = true;
-        try { await this._renderHome({ silent: true }); }
-        finally { this._homeRevalidating = false; }
-    },
-
-    async _renderHome({ silent = false } = {}) {
         const targetLib = this.currentLibraryId;
-        const downloaded = await Offline.fullyDownloaded();
-        const offlineHtml = this.renderOfflineSection(downloaded);
-
-        try {
+        return this._renderTab('home', async () => {
+            const downloadedItems = await Offline.fullyDownloaded();
+            const offlineHtml = this.renderOfflineSection(downloadedItems);
             const sections = await ABS.request(`/api/libraries/${targetLib}/personalized`);
-            // If user switched library mid-fetch, drop this result.
-            if (targetLib !== this.currentLibraryId) return;
+            if (targetLib !== this.currentLibraryId) throw new Error('library switched');
             let html = offlineHtml;
             for (const section of sections) {
                 if (!section.entities?.length) continue;
@@ -918,33 +956,11 @@ const App = {
                 html += '</div>';
             }
             if (!html) html = '<div class="loading">No items yet</div>';
-            // Cache the assembled markup so re-entering the Home tab is instant.
-            const cachePrev = this._homeCache?.html;
-            this._homeCache = {
-                libraryId: targetLib,
-                html,
-                downloadedItems: downloaded,
-                ts: Date.now(),
-            };
-            // Only paint if the user is currently looking at Home and either
-            // we weren't called silently, or the markup actually changed.
-            const onHome = this.currentTab === 'home' && this.navStack.length === 0;
-            if (onHome && (!silent || cachePrev !== html)) {
-                this.setContent(html);
-                this.bindCardClicks();
-                this.bindOfflineCardClicks(downloaded);
-            }
-        } catch (e) {
-            // Don't clobber a good cached render on a background refresh failure.
-            if (silent) return;
-            // If we have downloaded books, still render those so the user can play offline.
-            if (offlineHtml) {
-                this.setContent(offlineHtml + `<div class="loading">Server unreachable — offline books only</div>`);
-                this.bindOfflineCardClicks(downloaded);
-            } else {
-                this.setContent(`<div class="loading">Error: ${esc(e.message)}</div>`);
-            }
-        }
+            return { html, bindData: downloadedItems };
+        }, (downloadedItems) => {
+            this.bindCardClicks();
+            this.bindOfflineCardClicks(downloadedItems || []);
+        });
     },
 
     renderOfflineSection(items) {
@@ -987,23 +1003,19 @@ const App = {
     // ── Library ──
     async showLibrary() {
         document.getElementById('header-title').textContent = 'Library';
-        this.showLoading();
-        try {
+        return this._renderTab('library', async () => {
             const data = await ABS.getLibraryItems(this.currentLibraryId, 0, 200);
-            this.renderGrid(data.results);
-        } catch (e) {
-            this.setContent(`<div class="loading">Error: ${esc(e.message)}</div>`);
-        }
+            return this.gridHtml(data.results);
+        }, () => this.bindCardClicks());
     },
 
     // ── Latest (podcasts) ──
     async showLatest() {
         document.getElementById('header-title').textContent = 'Latest';
-        this.showLoading();
-        try {
+        return this._renderTab('latest', async () => {
             const data = await ABS.request(`/api/libraries/${this.currentLibraryId}/recent-episodes?limit=50`);
             const episodes = data.episodes || [];
-            if (!episodes.length) { this.setContent('<div class="loading">No recent episodes</div>'); return; }
+            if (!episodes.length) return '<div class="loading">No recent episodes</div>';
             let html = '<ul class="tracklist">';
             for (const ep of episodes) {
                 const title = ep.title || 'Unknown Episode';
@@ -1019,13 +1031,12 @@ const App = {
                 html += '</button></li>';
             }
             html += '</ul>';
-            this.setContent(html);
+            return html;
+        }, () => {
             document.querySelectorAll('.tracklist-item[data-episode-id]').forEach(el => {
                 el.addEventListener('click', () => this.playEpisode(el.dataset.itemId, el.dataset.episodeId));
             });
-        } catch (e) {
-            this.setContent(`<div class="loading">Error: ${esc(e.message)}</div>`);
-        }
+        });
     },
 
     async playEpisode(itemId, episodeId) {
@@ -1074,15 +1085,14 @@ const App = {
 
     async showSeries() {
         document.getElementById('header-title').textContent = 'Series';
-        this.showLoading();
-        try {
+        return this._renderTab('series', async () => {
             const data = await ABS.request(`/api/libraries/${this.currentLibraryId}/series?limit=200&sort=name`);
             const series = data.results || [];
-            this._seriesCache = {};
+            const seriesCache = {};
             let html = '<div class="list-view">';
             for (const s of series) {
                 const books = s.books || [];
-                this._seriesCache[s.id] = books;
+                seriesCache[s.id] = books;
                 const count = books.length || s.numBooks || 0;
                 const bookIds = books.slice(0, 4).map(b => (b.libraryItemId || b.id));
                 html += `<div class="list-item" data-series-id="${s.id}" data-series-name="${esc(s.name)}">`;
@@ -1091,13 +1101,16 @@ const App = {
                 html += '</div>';
             }
             html += '</div>';
-            this.setContent(html);
+            return { html, bindData: seriesCache };
+        }, (seriesCache) => {
+            // Re-prime the series-id → books map so detail clicks work without
+            // re-fetching. Merge instead of replace so home-tab series entries
+            // (also stored in _seriesCache) aren't lost.
+            Object.assign(this._seriesCache, seriesCache || {});
             document.querySelectorAll('.list-item[data-series-id]').forEach(el => {
                 el.addEventListener('click', () => this.showSeriesDetail(el.dataset.seriesId, el.dataset.seriesName));
             });
-        } catch (e) {
-            this.setContent(`<div class="loading">Error: ${esc(e.message)}</div>`);
-        }
+        });
     },
 
     showSeriesDetail(seriesId, seriesName) {
@@ -1109,8 +1122,7 @@ const App = {
     // ── Collections ──
     async showCollections() {
         document.getElementById('header-title').textContent = 'Collections';
-        this.showLoading();
-        try {
+        return this._renderTab('collections', async () => {
             const data = await ABS.request(`/api/libraries/${this.currentLibraryId}/collections`);
             const collections = data.results || data.collections || data || [];
             let html = '<div class="list-view">';
@@ -1123,13 +1135,12 @@ const App = {
             }
             if (!collections.length) html += '<div class="loading">No collections</div>';
             html += '</div>';
-            this.setContent(html);
+            return html;
+        }, () => {
             document.querySelectorAll('.list-item[data-collection-id]').forEach(el => {
                 el.addEventListener('click', () => this.showCollectionDetail(el.dataset.collectionId));
             });
-        } catch (e) {
-            this.setContent(`<div class="loading">Error: ${esc(e.message)}</div>`);
-        }
+        });
     },
 
     async showCollectionDetail(collectionId) {
@@ -1147,8 +1158,7 @@ const App = {
     // ── Authors ──
     async showAuthors() {
         document.getElementById('header-title').textContent = 'Authors';
-        this.showLoading();
-        try {
+        return this._renderTab('authors', async () => {
             const data = await ABS.request(`/api/libraries/${this.currentLibraryId}/authors`);
             const authors = data.authors || [];
             authors.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
@@ -1166,13 +1176,12 @@ const App = {
                 html += '</div>';
             }
             html += '</div>';
-            this.setContent(html);
+            return html;
+        }, () => {
             document.querySelectorAll('.list-item[data-author-id]').forEach(el => {
                 el.addEventListener('click', () => this.showAuthorDetail(el.dataset.authorId, el.dataset.authorName));
             });
-        } catch (e) {
-            this.setContent(`<div class="loading">Error: ${esc(e.message)}</div>`);
-        }
+        });
     },
 
     async showAuthorDetail(authorId, authorName) {
@@ -1276,7 +1285,7 @@ const App = {
         return `<div class="series-mosaic ${cls}">${imgs}</div>`;
     },
 
-    renderGrid(items) {
+    gridHtml(items) {
         let html = '<div class="grid">';
         for (const item of items) {
             const meta = item.media?.metadata || {};
@@ -1284,7 +1293,10 @@ const App = {
             html += this.gridItemHtml(item.id, meta.title, meta.authorName, progress);
         }
         html += '</div>';
-        this.setContent(html);
+        return html;
+    },
+    renderGrid(items) {
+        this.setContent(this.gridHtml(items));
         this.bindCardClicks();
     },
 
