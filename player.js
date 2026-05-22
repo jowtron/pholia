@@ -547,36 +547,69 @@ const Player = {
         }
     },
 
+    _lastUI: {},
     updateUI() {
         if (!this.item) return;
+        // Skip DOM writes while the page is hidden (PWA backgrounded or screen
+        // locked). The lock-screen scrubber is driven by _updatePositionState,
+        // which runs independently. timeupdate fires ~4 Hz even with screen
+        // off, so skipping here is the main "phone in pocket" battery win.
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+
         const gt = this.getGlobalTime();
         const dur = this.getTotalDuration();
         const ch = this.getCurrentChapter();
         const chp = this.getChapterProgress();
+        const last = this._lastUI;
 
-        // Mini player — shows CHAPTER progress, not book progress
-        document.getElementById('pp-track').textContent = this.item.media?.metadata?.title || 'Unknown';
-        document.getElementById('pp-narrator').textContent = ch?.title || '';
-        document.getElementById('pp-cover').src = ABS.coverUrl(this.item.id);
-        document.getElementById('pp-time').textContent = formatTime(chp.elapsed) + ' / ' + formatTime(chp.duration);
-        document.getElementById('pp-remaining').textContent = '-' + formatTime(chp.remaining);
-        document.getElementById('pp-scrubber-bg').style.width = chp.progress + '%';
+        // Skip the write if the value hasn't changed — avoids style invalidation
+        // churn on the steady fields (title, cover, author) every tick.
+        const setText = (id, val) => {
+            if (last[id] === val) return;
+            last[id] = val;
+            const el = document.getElementById(id);
+            if (el) el.textContent = val;
+        };
+        const setSrc = (id, val) => {
+            const k = id + '|src';
+            if (last[k] === val) return;
+            last[k] = val;
+            const el = document.getElementById(id);
+            if (el) el.src = val;
+        };
+
+        const title = this.item.media?.metadata?.title || 'Unknown';
+        const author = this.item.media?.metadata?.authorName || '';
+        const cover = ABS.coverUrl(this.item.id);
+        const elapsedTxt = formatTime(chp.elapsed);
+        const remTxt = '-' + formatTime(chp.remaining);
+        const chLabel = ch ? `Ch. ${this.currentChapterIndex + 1}: ${ch.title}` : '';
+        const progStr = chp.progress + '%';
+
+        // Mini player
+        setText('pp-track', title);
+        setText('pp-narrator', ch?.title || '');
+        setSrc('pp-cover', cover);
+        setText('pp-time', elapsedTxt + ' / ' + formatTime(chp.duration));
+        setText('pp-remaining', remTxt);
+        if (last['pp-scrubber-bg'] !== progStr) {
+            last['pp-scrubber-bg'] = progStr;
+            const el = document.getElementById('pp-scrubber-bg');
+            if (el) el.style.width = progStr;
+        }
         const ppSeek = document.getElementById('pp-seek');
         if (!ppSeek.dataset.dragging) ppSeek.value = chp.progress;
 
-        // Fullscreen player — scrubber is CHAPTER progress, summary shows book progress
-        document.getElementById('fs-cover').src = ABS.coverUrl(this.item.id);
-        document.getElementById('fs-title').textContent = this.item.media?.metadata?.title || 'Unknown';
-        document.getElementById('fs-narrator').textContent = this.item.media?.metadata?.authorName || '';
-        const chLabel = ch ? `Ch. ${this.currentChapterIndex + 1}: ${ch.title}` : '';
-        document.getElementById('fs-chapter').textContent = chLabel;
-        document.getElementById('fs-elapsed').textContent = formatTime(chp.elapsed);
-        document.getElementById('fs-remaining').textContent = '-' + formatTime(chp.remaining);
+        // Fullscreen player
+        setSrc('fs-cover', cover);
+        setText('fs-title', title);
+        setText('fs-narrator', author);
+        setText('fs-chapter', chLabel);
+        setText('fs-elapsed', elapsedTxt);
+        setText('fs-remaining', remTxt);
 
-        // Book-level progress summary
         const bookPct = dur > 0 ? Math.round((gt / dur) * 100) : 0;
-        document.getElementById('fs-progress-summary').textContent =
-            `${bookPct}% of book \u2022 ${formatTime(gt)} / ${formatTime(dur)}`;
+        setText('fs-progress-summary', `${bookPct}% of book \u2022 ${formatTime(gt)} / ${formatTime(dur)}`);
 
         const fsSeek = document.getElementById('fs-seek');
         if (!fsSeek.dataset.dragging) fsSeek.value = chp.progress;
@@ -640,7 +673,11 @@ const Player = {
     startSync() {
         this.stopSync();
         this.lastSyncTime = Date.now();
-        this.syncInterval = setInterval(() => this.syncProgress(), 15000);
+        // 30s matches what real ABS clients do; cuts the radio-wake count
+        // in half compared to the previous 15s during a typical listening
+        // session. Local currentTime is always known, so the only thing we
+        // lose is server-side position resolution at finer than 30s.
+        this.syncInterval = setInterval(() => this.syncProgress(), 30000);
     },
 
     stopSync() {

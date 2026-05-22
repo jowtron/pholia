@@ -840,13 +840,19 @@ const App = {
     //   cached alongside html so the cache-hit path can rebind correctly.
     // bind: (bindData) => void. Called after every paint (cache + fresh +
     //   revalidate). Must re-query the DOM each call.
+    // Skip the background revalidate if the cache entry is younger than this.
+    // Stops every tab-tap from firing a fresh network request and radio wake.
+    TAB_CACHE_FRESH_MS: 30000,
+
     async _renderTab(tab, produce, bind) {
         const key = this._tabKey(tab);
         const cached = this._tabCache[key];
         if (cached) {
             this.setContent(cached.html);
             bind?.(cached.bindData);
-            this._refreshTab(key, produce, bind);
+            if (Date.now() - cached.ts > this.TAB_CACHE_FRESH_MS) {
+                this._refreshTab(key, produce, bind);
+            }
             return;
         }
         this.showLoading();
