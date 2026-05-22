@@ -420,11 +420,6 @@ const Player = {
     setSpeed(rate) { this.audio.playbackRate = rate; localStorage.setItem('pholia_speed', rate); this._updatePositionState(); },
 
     // ── Sleep timer ──
-    // Web Audio routing was tried for an audible fade on iOS (since
-    // audio.volume writes are silently ignored there) but caused audio to
-    // stop entirely on screen lock: iOS suspends AudioContext when locked,
-    // and createMediaElementSource permanently captures the element's
-    // output through that AC. Native lock-screen playback is the priority.
     SLEEP_REWIND_S: 5,
 
     startSleep(minutes) {
