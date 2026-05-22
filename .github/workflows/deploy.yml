@@ -23,7 +23,11 @@ jobs:
           fetch-depth: 1
 
       - name: Inject build version
-        run: sed -i "s/>dev</>$(git rev-parse --short HEAD)</" index.html
+        run: |
+          HASH=$(git rev-parse --short HEAD)
+          # Build-version div + cache-bust ?v= on every script/link tag so
+          # each deploy presents new URLs and bypasses 24h browser cache.
+          sed -i "s/>dev</>$HASH</; s/?v=dev/?v=$HASH/g" index.html
 
       - name: Deploy to Cloudflare Pages (retry with backoff)
         env:

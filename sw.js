@@ -1,4 +1,4 @@
-const CACHE_NAME = 'pholia-v4';
+const CACHE_NAME = 'pholia-v5';
 const OFFLINE_AUDIO_CACHE = 'pholia-offline-audio-v2';
 const OFFLINE_META_CACHE = 'pholia-offline-meta-v1';
 const COVERS_CACHE = 'pholia-covers-v1';
@@ -116,14 +116,24 @@ self.addEventListener('fetch', e => {
 
     if (url.origin === self.location.origin) {
         // App shell: network-first, cache fallback when offline.
+        // Strip the ?v= cache-bust param so different deploys collapse to one
+        // cache entry per logical file. APP_SHELL preloads use canonical URLs
+        // (no ?v=) so the offline fallback still finds them after a fresh
+        // install. Without this, each deploy would leak a new cache entry per
+        // file and the install-time entries would never get refreshed.
+        const cacheKey = (() => {
+            const u = new URL(e.request.url);
+            u.searchParams.delete('v');
+            return u.toString();
+        })();
         e.respondWith(
             fetch(e.request).then(res => {
                 if (res.ok) {
                     const clone = res.clone();
-                    caches.open(CACHE_NAME).then(cache => cache.put(e.request, clone));
+                    caches.open(CACHE_NAME).then(cache => cache.put(cacheKey, clone));
                 }
                 return res;
-            }).catch(() => caches.match(e.request))
+            }).catch(() => caches.match(cacheKey))
         );
         return;
     }

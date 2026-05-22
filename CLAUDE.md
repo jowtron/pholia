@@ -76,7 +76,7 @@ The SW reassembles chunks on the fly when the audio element makes Range requests
 
 ### Cache versions
 
-- `pholia-v4` — app shell
+- `pholia-v5` — app shell
 - `pholia-offline-audio-v2` — chunked audio + covers (v1 used the broken fragment keys; v2 is auto-cleaned by activate)
 - `pholia-offline-meta-v1` — per-book metadata JSON
 
