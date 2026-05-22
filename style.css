@@ -722,6 +722,10 @@ main {
     border-radius: 50%; animation: spin 0.6s linear infinite; margin-left: 0.5rem;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+.empty-state {
+    display: flex; align-items: center; justify-content: center;
+    padding: 3rem; color: var(--text-muted); font-style: italic;
+}
 
 /* ── MOBILE ── */
 @media (max-width: 600px) {

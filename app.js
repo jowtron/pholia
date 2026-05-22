@@ -955,7 +955,7 @@ const App = {
                 }
                 html += '</div>';
             }
-            if (!html) html = '<div class="loading">No items yet</div>';
+            if (!html) html = '<div class="empty-state">No items yet</div>';
             return { html, bindData: downloadedItems };
         }, (downloadedItems) => {
             this.bindCardClicks();
@@ -1015,7 +1015,7 @@ const App = {
         return this._renderTab('latest', async () => {
             const data = await ABS.request(`/api/libraries/${this.currentLibraryId}/recent-episodes?limit=50`);
             const episodes = data.episodes || [];
-            if (!episodes.length) return '<div class="loading">No recent episodes</div>';
+            if (!episodes.length) return '<div class="empty-state">No recent episodes</div>';
             let html = '<ul class="tracklist">';
             for (const ep of episodes) {
                 const title = ep.title || 'Unknown Episode';
@@ -1133,7 +1133,7 @@ const App = {
                 html += `<div><div class="list-name">${esc(c.name)}</div><div class="list-count">${count} book${count !== 1 ? 's' : ''}</div></div>`;
                 html += '</div>';
             }
-            if (!collections.length) html += '<div class="loading">No collections</div>';
+            if (!collections.length) html += '<div class="empty-state">No collections</div>';
             html += '</div>';
             return html;
         }, () => {
@@ -1245,7 +1245,7 @@ const App = {
                 }
                 html += '</div>';
             }
-            if (!html) html = '<div class="loading">No results</div>';
+            if (!html) html = '<div class="empty-state">No results</div>';
             resultsEl.innerHTML = html;
             this.bindSearchClicks(resultsEl);
         } catch (e) {
