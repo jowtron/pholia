@@ -16,13 +16,18 @@ const Player = {
     lastSyncTime: 0,
     skipDuration: 30,
 
+    _audioRecoveryAttempts: 0,
+
     init() {
         this.audio.preload = 'auto';
         this.audio.addEventListener('timeupdate', () => this.onTimeUpdate());
         this.audio.addEventListener('ended', () => this.onTrackEnded());
         this.audio.addEventListener('play', () => this.setPlaying(true));
         this.audio.addEventListener('pause', () => this.setPlaying(false));
-        this.audio.addEventListener('error', (e) => console.error('Audio error', e));
+        this.audio.addEventListener('error', () => this._recoverFromAudioError());
+        // Sustained playback clears the recovery budget so transient stalls
+        // over a long listening session don't exhaust 3 attempts forever.
+        this.audio.addEventListener('playing', () => { this._audioRecoveryAttempts = 0; });
 
         const speed = localStorage.getItem('pholia_speed');
         if (speed) this.audio.playbackRate = parseFloat(speed);
@@ -59,6 +64,43 @@ const Player = {
         } catch (e) { /* not supported on this browser */ }
     },
 
+    // iOS Safari can permanently abandon a stream after its ~1 s Range-stall
+    // budget expires (pCloud-backed Ranges via the shim regularly exceed it).
+    // Reload the same src and restore playhead; cap at 3 attempts so a
+    // genuinely broken stream doesn't infinite-loop.
+    _recoverFromAudioError() {
+        const err = this.audio.error;
+        const code = err?.code;
+        console.error('Audio error', { code, message: err?.message });
+        const recoverable = code === 2 /* MEDIA_ERR_NETWORK */ || code === 3 /* MEDIA_ERR_DECODE */;
+        if (!recoverable || !this.audio.src) return;
+        if (this._audioRecoveryAttempts >= 3) {
+            console.warn('Audio recovery budget exhausted; tap play to retry');
+            return;
+        }
+        this._audioRecoveryAttempts++;
+        const attempt = this._audioRecoveryAttempts;
+        const delay = 250 * Math.pow(2, attempt - 1); // 250, 500, 1000 ms
+        const savedTime = this.audio.currentTime || 0;
+        const wasPlaying = this.isPlaying;
+        console.warn(`Recovering audio (attempt ${attempt}/3, resume at ${savedTime.toFixed(1)}s)`);
+        setTimeout(() => {
+            try {
+                this.audio.addEventListener('loadedmetadata', () => {
+                    try { this.audio.currentTime = savedTime; } catch {}
+                    if (wasPlaying) {
+                        this.audio.play().catch(() => {
+                            this.audio.addEventListener('canplay', () => this.audio.play().catch(() => {}), { once: true });
+                        });
+                    }
+                }, { once: true });
+                this.audio.load();
+            } catch (e) {
+                console.error('Audio recovery failed', e);
+            }
+        }, delay);
+    },
+
     setSkipDuration(seconds) {
         this.skipDuration = seconds;
         localStorage.setItem('pholia_skip', seconds);
@@ -76,6 +118,7 @@ const Player = {
     async startItem(item, startTime = null) {
         if (this.session) await this.closeCurrentSession();
         if (this._autoCacheController) { this._autoCacheController.abort(); this._autoCacheController = null; }
+        this._audioRecoveryAttempts = 0;
 
         this.item = item;
         this.chapters = item.media?.chapters || [];
