@@ -452,45 +452,67 @@ async function serveChunked(request, cache, baseKey, meta) {
     const startChunk = Math.floor(start / chunkSize);
     const requestEndChunk = Math.min(Math.floor(end / chunkSize), numChunks - 1);
 
-    // For partial caches, only return data up to the first missing chunk so
-    // the audio element gets one continuous stream then makes one more Range
-    // request for the rest (which the SW will passthrough). Avoids the
-    // fast-cache / slow-network alternating pattern that broke iOS playback.
-    // Walk the in-memory chunkSet (cheap) instead of awaiting cache.match.
+    // Find the contiguous cached run starting from the request offset.
     const chunkSet = cachedChunks?.get(baseKey) || new Set();
     let lastContiguousChunk = startChunk;
     for (let i = startChunk + 1; i <= requestEndChunk; i++) {
         if (!chunkSet.has(i)) break;
         lastContiguousChunk = i;
     }
-    const effectiveEnd = Math.min(end, (lastContiguousChunk + 1) * chunkSize - 1, totalSize - 1);
-    const contentLength = effectiveEnd - start + 1;
+    const cacheEnd = Math.min(end, (lastContiguousChunk + 1) * chunkSize - 1, totalSize - 1);
+    const needsNetwork = cacheEnd < end;
+    const totalLength = end - start + 1;
 
-    // ReadableStream with default queueing: one chunk enqueued at a time.
-    // Memory peak ≈ one chunkSize (10 MB), well under the iOS PWA budget.
+    // Bridged stream: pull cached chunks first, then pipe network bytes for
+    // any gap that follows. The audio element sees ONE continuous response
+    // covering the full requested Range — like conservative-gate passthrough,
+    // but with the cached prefix served instantly. Earlier "stop at cache
+    // end and make the audio element issue a new Range" design broke iOS
+    // playback (the audio element couldn't reconnect cleanly across the
+    // cache→network seam).
     let cur = startChunk;
+    let networkReader = null;
+    let networkAbort = null;
+
     const stream = new ReadableStream({
         async pull(controller) {
-            if (cur > lastContiguousChunk) {
-                controller.close();
+            // Cache phase.
+            if (cur <= lastContiguousChunk) {
+                try {
+                    const c = await cache.match(chunkKey(baseKey, cur));
+                    if (!c) { controller.error(new Error('chunk evicted: ' + cur)); return; }
+                    const buf = await c.arrayBuffer();
+                    const chunkStartByte = cur * chunkSize;
+                    const sliceStart = Math.max(0, start - chunkStartByte);
+                    const sliceEnd = Math.min(buf.byteLength, cacheEnd - chunkStartByte + 1);
+                    controller.enqueue(new Uint8Array(buf, sliceStart, sliceEnd - sliceStart));
+                    cur++;
+                } catch (err) { controller.error(err); }
                 return;
             }
-            try {
-                const c = await cache.match(chunkKey(baseKey, cur));
-                if (!c) {
-                    // Evicted mid-stream — error so the audio element retries.
-                    controller.error(new Error('chunk evicted: ' + cur));
-                    return;
-                }
-                const buf = await c.arrayBuffer();
-                const chunkStartByte = cur * chunkSize;
-                const sliceStart = Math.max(0, start - chunkStartByte);
-                const sliceEnd = Math.min(buf.byteLength, effectiveEnd - chunkStartByte + 1);
-                controller.enqueue(new Uint8Array(buf, sliceStart, sliceEnd - sliceStart));
-                cur++;
-            } catch (err) {
-                controller.error(err);
+            // Network phase.
+            if (!needsNetwork) { controller.close(); return; }
+            if (!networkReader) {
+                try {
+                    const headers = new Headers(request.headers);
+                    headers.set('Range', `bytes=${cacheEnd + 1}-${end}`);
+                    networkAbort = new AbortController();
+                    const res = await fetch(request.url, { headers, signal: networkAbort.signal });
+                    if (res.status !== 206 && res.status !== 200) {
+                        controller.error(new Error('network fetch ' + res.status));
+                        return;
+                    }
+                    networkReader = res.body.getReader();
+                } catch (err) { controller.error(err); return; }
             }
+            try {
+                const { value, done } = await networkReader.read();
+                if (done) { controller.close(); return; }
+                controller.enqueue(value);
+            } catch (err) { controller.error(err); }
+        },
+        cancel() {
+            try { networkAbort?.abort(); } catch {}
         },
     });
 
@@ -499,8 +521,8 @@ async function serveChunked(request, cache, baseKey, meta) {
         statusText: 'Partial Content',
         headers: {
             'Content-Type': contentType || 'audio/mpeg',
-            'Content-Length': String(contentLength),
-            'Content-Range': `bytes ${start}-${effectiveEnd}/${totalSize}`,
+            'Content-Length': String(totalLength),
+            'Content-Range': `bytes ${start}-${end}/${totalSize}`,
             'Accept-Ranges': 'bytes',
             'Access-Control-Allow-Origin': '*',
         },
