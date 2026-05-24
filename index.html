@@ -221,7 +221,17 @@
                         SW partial-cache (experimental)
                         <input type="checkbox" id="setting-sw-experimental">
                     </label>
-                    <div class="setting-hint">Lets the service worker serve cached chunks for partially-cached books. Off by default — has broken playback in the past. Enable, reproduce the issue, share console logs.</div>
+                    <div class="setting-hint">Lets the service worker serve cached chunks for partially-cached books. Off by default — has broken playback in the past. Enable, reproduce the issue, then copy the log below.</div>
+                    <div id="sw-log-section" class="downloads-section hidden">
+                        <div class="downloads-header">
+                            <h3>SW debug log</h3>
+                            <div>
+                                <button id="sw-log-copy" class="text-btn">Copy</button>
+                                <button id="sw-log-clear" class="text-btn">Clear</button>
+                            </div>
+                        </div>
+                        <pre id="sw-log-pre" style="max-height:240px;overflow:auto;font-size:0.7rem;background:var(--card-bg);padding:8px;border-radius:6px;white-space:pre-wrap;word-break:break-all;margin:0"></pre>
+                    </div>
                     <div class="downloads-section">
                         <div class="downloads-header">
                             <h3>Cached</h3>

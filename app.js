@@ -28,16 +28,31 @@ const App = {
         } catch {}
     },
 
+    _swLog: [],
+    _swLogMax: 200,
+
     setupSwDebugBridge() {
         if (!('serviceWorker' in navigator)) return;
         // Send config now and on every controllerchange (new SW = needs the flag again).
         this.sendSwConfig();
         navigator.serviceWorker.addEventListener('controllerchange', () => this.sendSwConfig());
         navigator.serviceWorker.addEventListener('message', (e) => {
-            if (e.data?.type === 'SW_DEBUG') {
-                console.log('[sw]', e.data.tag, e.data.data);
-            }
+            if (e.data?.type !== 'SW_DEBUG') return;
+            console.log('[sw]', e.data.tag, e.data.data);
+            const ts = new Date(e.data.t || Date.now()).toISOString().substring(11, 23);
+            this._swLog.push(`${ts} ${e.data.tag} ${JSON.stringify(e.data.data)}`);
+            if (this._swLog.length > this._swLogMax) this._swLog.shift();
+            this._renderSwLog();
         });
+    },
+
+    _renderSwLog() {
+        const pre = document.getElementById('sw-log-pre');
+        if (!pre) return;
+        // Only re-render if the section is currently visible.
+        if (document.getElementById('sw-log-section')?.classList.contains('hidden')) return;
+        pre.textContent = this._swLog.join('\n');
+        pre.scrollTop = pre.scrollHeight;
     },
 
     applyTabVisibility() {
@@ -235,6 +250,33 @@ const App = {
         document.getElementById('setting-sw-experimental').addEventListener('change', e => {
             localStorage.setItem('pholia_sw_experimental', e.target.checked ? 'true' : 'false');
             this.sendSwConfig();
+            document.getElementById('sw-log-section')?.classList.toggle('hidden', !e.target.checked);
+            this._renderSwLog();
+        });
+        document.getElementById('sw-log-copy').addEventListener('click', async (e) => {
+            const text = this._swLog.join('\n') || '(empty)';
+            const btn = e.currentTarget;
+            const orig = btn.textContent;
+            try {
+                await navigator.clipboard.writeText(text);
+                btn.textContent = 'Copied';
+            } catch {
+                // Fallback: select text in the <pre> so the user can long-press → copy.
+                const pre = document.getElementById('sw-log-pre');
+                if (pre) {
+                    const range = document.createRange();
+                    range.selectNodeContents(pre);
+                    const sel = window.getSelection();
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                }
+                btn.textContent = 'Select → Copy';
+            }
+            setTimeout(() => { btn.textContent = orig; }, 2500);
+        });
+        document.getElementById('sw-log-clear').addEventListener('click', () => {
+            this._swLog.length = 0;
+            this._renderSwLog();
         });
         // Apply saved theme
         const savedTheme = localStorage.getItem('pholia_theme') || 'dark';
@@ -1759,8 +1801,11 @@ const App = {
         document.getElementById('setting-theme').value = localStorage.getItem('pholia_theme') || 'dark';
         document.getElementById('setting-auto-cache').checked = localStorage.getItem('pholia_auto_cache') === 'true';
         document.getElementById('setting-hide-collections').checked = localStorage.getItem('pholia_hide_collections') === 'true';
-        document.getElementById('setting-sw-experimental').checked = localStorage.getItem('pholia_sw_experimental') === 'true';
+        const swExp = localStorage.getItem('pholia_sw_experimental') === 'true';
+        document.getElementById('setting-sw-experimental').checked = swExp;
+        document.getElementById('sw-log-section').classList.toggle('hidden', !swExp);
         document.getElementById('settings-modal').classList.remove('hidden');
+        this._renderSwLog();
         this.renderDownloadsList();
         this.renderAccountSection();
     },
