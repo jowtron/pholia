@@ -2113,6 +2113,18 @@ const Offline = {
         try { navigator.serviceWorker?.controller?.postMessage({ type: 'CACHE_CHANGED' }); } catch {}
     },
 
+    // Debounced variant — call after individual chunk writes so the SW's
+    // chunk-coverage map gets refreshed without spamming it with a message
+    // (and full cache.keys() walk) per chunk during a long auto-cache run.
+    _pendingSwNotify: null,
+    notifySwCacheChangedSoon() {
+        if (this._pendingSwNotify) return;
+        this._pendingSwNotify = setTimeout(() => {
+            this._pendingSwNotify = null;
+            this.notifySwCacheChanged();
+        }, 1000);
+    },
+
     metaKey(itemId) { return `https://pholia.local/meta/${itemId}`; },
 
     trackUrls(item) {
@@ -2285,6 +2297,12 @@ const Offline = {
                 headers: { 'Content-Type': contentType, 'Content-Length': String(blob.size) },
             }));
             this._invalidateCoverage();
+            // Tell the SW its chunk-coverage map has a new entry. Debounced
+            // so a tight chunk loop doesn't make the SW re-walk cache.keys()
+            // hundreds of times. Without this, the SW's view of sliding-window
+            // chunks would only refresh when the __complete sentinel changes
+            // (i.e. never, for partial caches).
+            this.notifySwCacheChangedSoon();
             received += blob.size;
             try { onChunk?.(received, total); } catch {}
         }

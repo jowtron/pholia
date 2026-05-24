@@ -155,6 +155,8 @@ const Player = {
                     if (cutoff <= trackStart) return;
                     let evictedAny = false;
                     for (let ci = 0; ci < m.numChunks; ci++) {
+                        // Pin head + tail — codec/duration probes depend on them.
+                        if (ci === 0 || ci === m.numChunks - 1) continue;
                         const chunkEndByte = Math.min((ci + 1) * m.chunkSize - 1, m.totalSize - 1);
                         const chunkEndTime = trackStart + (chunkEndByte / m.totalSize) * trackDuration;
                         if (chunkEndTime < cutoff) {
@@ -177,6 +179,14 @@ const Player = {
                 // we only want to cache around where the listener is, not
                 // from the start of the book.
                 shouldCache: (byteOffset, totalSize) => {
+                    // Always cache the head and tail of every track. The head
+                    // (chunk 0) carries the codec/container metadata that the
+                    // audio element probes on every play start; the tail
+                    // (last chunk) often answers the duration probe. Without
+                    // these pinned, both probes leak to network even when the
+                    // playhead-area chunks are present.
+                    if (byteOffset === 0) return true;
+                    if (totalSize > 0 && byteOffset + Offline.CHUNK_SIZE >= totalSize) return true;
                     if (totalSize <= 0 || trackDuration <= 0) return true;
                     const chunkTime = trackStart + (byteOffset / totalSize) * trackDuration;
                     return chunkTime >= this.getGlobalTime() - 1800;
@@ -299,6 +309,19 @@ const Player = {
             }
         }
         if (!url) return;
+        // Diagnostic: if the session's contentUrl path doesn't match what
+        // ABS.trackUrl produces (which is the key the offline cache stores
+        // under), every audio Range will SW-miss regardless of cache state.
+        try {
+            const t = this.tracks?.[this.currentTrackIndex];
+            if (t?.ino) {
+                const expected = Offline.keyFor(ABS.trackUrl(this.item.id, t.ino));
+                const actual = Offline.keyFor(url);
+                if (expected && expected !== actual) {
+                    console.warn('[Pholia] audio URL ≠ cache key — SW will miss', { expected, actual });
+                }
+            }
+        } catch {}
         if (this.audio.src !== url) this.audio.src = url;
         this.audio.currentTime = offset;
         // Play immediately; if it fails (slow connection), retry when audio is ready

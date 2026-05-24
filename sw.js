@@ -85,21 +85,69 @@ self.addEventListener('message', e => {
     if (e.data?.type === 'CACHE_CHANGED') loadCachedKeys();
 });
 
-// Synchronously available set of URLs known to be in OFFLINE_AUDIO_CACHE.
-// Critical for the fetch handler to decide whether to intercept at all: if
-// we don't intercept (don't call respondWith), the browser handles the
-// request natively with no SW overhead. iOS WebKit has measurable per-request
-// latency for SW-intercepted media fetches, so passthrough must be skipped
-// for uncached URLs to keep streaming smooth.
+// Synchronously available state for fetch-handler decisions. Populated at
+// boot and refreshed on CACHE_CHANGED. Stale = miss intercept opportunities
+// (safe regression), never wrong content.
+//   cachedKeys      — Set<url> of every entry in OFFLINE_AUDIO_CACHE
+//   cachedMetas     — Map<baseKey, {chunkSize, numChunks, totalSize}>
+//   cachedChunks    — Map<baseKey, Set<chunkIndex>> of which chunks are cached
 let cachedKeys = null;
+let cachedMetas = null;
+let cachedChunks = null;
+
+function baseKeyFromMarker(url, marker) {
+    const q = url.indexOf('?' + marker);
+    if (q !== -1) return url.substring(0, q);
+    const a = url.indexOf('&' + marker);
+    if (a !== -1) return url.substring(0, a);
+    return null;
+}
+
 async function loadCachedKeys() {
     const set = new Set();
+    const metas = new Map();
+    const chunks = new Map();
     try {
         const cache = await caches.open(OFFLINE_AUDIO_CACHE);
         const keys = await cache.keys();
-        for (const req of keys) set.add(req.url);
+        const metaReqs = [];
+        for (const req of keys) {
+            set.add(req.url);
+            const url = req.url;
+            if (/[?&]__meta=1$/.test(url)) {
+                const baseKey = baseKeyFromMarker(url, '__meta=1');
+                if (baseKey) metaReqs.push({ req, baseKey });
+                continue;
+            }
+            const chunkBase = baseKeyFromMarker(url, '__chunk=');
+            if (chunkBase) {
+                const idx = url.indexOf('__chunk=');
+                const n = parseInt(url.substring(idx + '__chunk='.length), 10);
+                if (!isNaN(n)) {
+                    let s = chunks.get(chunkBase);
+                    if (!s) { s = new Set(); chunks.set(chunkBase, s); }
+                    s.add(n);
+                }
+            }
+        }
+        await Promise.all(metaReqs.map(async ({ req, baseKey }) => {
+            try {
+                const res = await cache.match(req);
+                if (!res) return;
+                const m = await res.json();
+                if (m && m.chunkSize && m.numChunks && m.totalSize) {
+                    metas.set(baseKey, {
+                        chunkSize: m.chunkSize,
+                        numChunks: m.numChunks,
+                        totalSize: m.totalSize,
+                    });
+                }
+            } catch {}
+        }));
     } catch {}
     cachedKeys = set;
+    cachedMetas = metas;
+    cachedChunks = chunks;
 }
 
 self.addEventListener('fetch', e => {
@@ -147,28 +195,61 @@ self.addEventListener('fetch', e => {
         return;
     }
 
-    // Cross-origin: only intercept if we know something is cached for this
-    // URL. Otherwise return without calling respondWith so the browser
-    // handles the request natively (no SW round-trip overhead).
+    // Cross-origin: intercept only if the specific byte range requested is
+    // fully cached. Sliding-window caches around the playhead would
+    // previously passthrough every request (codec probes hit the network
+    // even when the chunks were present); now we serve them.
+    //
+    // The synchronous decision uses in-memory cachedMetas/cachedChunks
+    // populated at boot and refreshed on CACHE_CHANGED. If we can't satisfy
+    // the request from cache, we still passthrough natively (preserves the
+    // "no SW latency on uncached audio" property that matters for slow links).
     if (cachedKeys === null) {
-        // Keys not yet loaded — kick off load and bail. The browser will
-        // handle this request natively. Subsequent requests will use the
-        // populated set.
         loadCachedKeys();
         return;
     }
     const baseKey = offlineKey(url.toString());
-    // Intercept only when the entry is fully cached: the __complete sentinel
-    // is present (chunked) or the legacy whole-file entry exists. Partial
-    // sliding-window caches (meta exists but chunks incomplete) are passed
-    // through to native fetch — falling through to fetch() inside the SW
-    // would re-issue every Range with iOS WebKit's media-fetch latency
-    // penalty stacked on top.
-    if (!cachedKeys.has(completeKeyOf(baseKey)) && !cachedKeys.has(baseKey)) {
-        return; // not complete — let browser fetch natively
+
+    const meta = cachedMetas?.get(baseKey);
+    if (meta) {
+        const chunkSet = cachedChunks?.get(baseKey);
+        if (rangeFullyCached(e.request.headers.get('range'), meta, chunkSet)) {
+            e.respondWith(handleCrossOrigin(e.request));
+        }
+        return;
     }
-    e.respondWith(handleCrossOrigin(e.request));
+
+    // Legacy whole-file entry (covers, pre-chunked-format downloads).
+    if (cachedKeys.has(baseKey)) {
+        e.respondWith(handleCrossOrigin(e.request));
+    }
 });
+
+// True if every chunk overlapping the requested byte range is in chunkSet.
+// MAX_RANGE_SLICE cap is mirrored from serveChunked so this decision matches
+// what the handler will actually try to serve — without the cap, open-ended
+// `bytes=N-` requests would falsely return "missing" because they nominally
+// span every chunk to EOF.
+function rangeFullyCached(rangeHeader, meta, chunkSet) {
+    if (!chunkSet || !chunkSet.size) return false;
+    const { chunkSize, numChunks, totalSize } = meta;
+    if (!rangeHeader) {
+        // No Range: serveChunked's full-stream path needs every chunk.
+        return chunkSet.size === numChunks;
+    }
+    const m = /bytes=(\d+)-(\d*)/.exec(rangeHeader);
+    if (!m) return false;
+    const start = parseInt(m[1], 10);
+    let end = m[2] ? Math.min(parseInt(m[2], 10), totalSize - 1) : totalSize - 1;
+    if (start > end || start >= totalSize) return false;
+    if (end - start + 1 > MAX_RANGE_SLICE) end = start + MAX_RANGE_SLICE - 1;
+    const startChunk = Math.floor(start / chunkSize);
+    const endChunk = Math.floor(end / chunkSize);
+    for (let i = startChunk; i <= endChunk; i++) {
+        if (!chunkSet.has(i)) return false;
+    }
+    return true;
+}
 
 // Cache key with auth token stripped so URLs match across token rotations.
 function offlineKey(url) {
@@ -219,9 +300,6 @@ function chunkKey(baseKey, i) {
 }
 function metaKeyOf(baseKey) {
     return baseKey + (baseKey.includes('?') ? '&' : '?') + '__meta=1';
-}
-function completeKeyOf(baseKey) {
-    return baseKey + (baseKey.includes('?') ? '&' : '?') + '__complete=1';
 }
 
 async function handleCrossOrigin(request) {
