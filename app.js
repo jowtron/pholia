@@ -905,9 +905,12 @@ const App = {
         if (!this.currentLibraryId) { this.showLoading(); return; }
         const targetLib = this.currentLibraryId;
         return this._renderTab('home', async () => {
+            // Kick off /personalized in parallel with the offline-cache scan —
+            // they're independent and the scan used to dominate cold-open time.
+            const personalizedP = ABS.request(`/api/libraries/${targetLib}/personalized`);
             const downloadedItems = await Offline.fullyDownloaded();
             const offlineHtml = this.renderOfflineSection(downloadedItems);
-            const sections = await ABS.request(`/api/libraries/${targetLib}/personalized`);
+            const sections = await personalizedP;
             if (targetLib !== this.currentLibraryId) throw new Error('library switched');
             let html = offlineHtml;
             for (const section of sections) {
@@ -2336,6 +2339,73 @@ const Offline = {
         return coverage;
     },
 
+    // Compute coverage for many items in one cache.keys() walk. The per-item
+    // path walks the entire audio cache *per book*; on a fully-downloaded
+    // library that's the dominant cost of cold-open home render. This batch
+    // walks once, pre-buckets chunk URLs by their prefix, and looks up each
+    // track in O(1). Populates the per-item memo as a side effect so later
+    // chunkCoverage(item) callers hit the cache.
+    async _coverageBatch(items) {
+        const out = new Map();
+        if (!items.length) return out;
+        try {
+            const cache = await caches.open(this.AUDIO_CACHE);
+            const allUrls = (await cache.keys()).map(r => r.url);
+            const urlSet = new Set(allUrls);
+
+            const chunksByPrefix = new Map();
+            for (const u of allUrls) {
+                const idx = u.indexOf('__chunk=');
+                if (idx === -1) continue;
+                const prefix = u.substring(0, idx + '__chunk='.length);
+                const n = parseInt(u.substring(idx + '__chunk='.length), 10);
+                if (isNaN(n)) continue;
+                let set = chunksByPrefix.get(prefix);
+                if (!set) { set = new Set(); chunksByPrefix.set(prefix, set); }
+                set.add(n);
+            }
+
+            const ver = this._coverageVersion;
+            for (const item of items) {
+                const tracks = item.media?.audioFiles || [];
+                const coverage = await Promise.all(tracks.map(async (t) => {
+                    const key = this.keyFor(ABS.trackUrl(item.id, t.ino));
+                    const metaUrl = this.chunkMetaKey(key);
+                    if (urlSet.has(metaUrl)) {
+                        try {
+                            const metaRes = await cache.match(metaUrl);
+                            const meta = await metaRes.json();
+                            const chunkPrefix = key + (key.includes('?') ? '&' : '?') + '__chunk=';
+                            const cached = chunksByPrefix.get(chunkPrefix) || new Set();
+                            return { totalSize: meta.totalSize, chunkSize: meta.chunkSize, numChunks: meta.numChunks, cached };
+                        } catch { return null; }
+                    }
+                    if (urlSet.has(key)) return { legacy: true };
+                    return null;
+                }));
+                out.set(item.id, coverage);
+                if (this._coverageVersion === ver) {
+                    this._coverageCache.set(item.id, { coverage, version: ver });
+                }
+            }
+            return out;
+        } catch {
+            return out;
+        }
+    },
+
+    _isFullyDownloadedFromCoverage(item, coverage) {
+        const tracks = item.media?.audioFiles || [];
+        if (!tracks.length || !coverage) return false;
+        for (let i = 0; i < tracks.length; i++) {
+            const cov = coverage[i];
+            if (!cov) return false;
+            if (cov.legacy) continue;
+            if (cov.cached.size !== cov.numChunks) return false;
+        }
+        return true;
+    },
+
     async _computeChunkCoverage(item) {
         const tracks = item.media?.audioFiles || [];
         if (!tracks.length) return [];
@@ -2448,13 +2518,16 @@ const Offline = {
     },
 
     // IDs of books where every audio file is fully cached (every chunk present
-    // for chunked entries, or the whole-file legacy entry exists).
+    // for chunked entries, or the whole-file legacy entry exists). Uses the
+    // batch coverage walk to avoid per-book cache.keys() scans.
     async fullyDownloadedIds() {
         try {
             const items = await this.listDownloaded();
+            if (!items.length) return new Set();
+            const coverages = await this._coverageBatch(items);
             const ids = new Set();
             for (const item of items) {
-                if (await this.isDownloaded(item)) ids.add(item.id);
+                if (this._isFullyDownloadedFromCoverage(item, coverages.get(item.id))) ids.add(item.id);
             }
             return ids;
         } catch { return new Set(); }
@@ -2462,8 +2535,9 @@ const Offline = {
 
     async fullyDownloaded() {
         const all = await this.listDownloaded();
-        const ids = await this.fullyDownloadedIds();
-        return all.filter(i => ids.has(i.id));
+        if (!all.length) return [];
+        const coverages = await this._coverageBatch(all);
+        return all.filter(item => this._isFullyDownloadedFromCoverage(item, coverages.get(item.id)));
     },
 
     // Drops meta entries (and the cover) for books where no audio is cached.
