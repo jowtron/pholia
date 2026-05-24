@@ -8,12 +8,20 @@ const App = {
     init() {
         Player.init();
         this.bindEvents();
+        this.applyTabVisibility();
         this.tryAutoLogin();
         this.setupSwUpdate();
         document.addEventListener('cacheprogress', (e) => this.onCacheProgress(e.detail));
         // Clear phantom downloads (meta entries with no audio) left behind
         // by SW cleanups of legacy oversized cache entries.
         Offline.cleanupPhantoms();
+    },
+
+    applyTabVisibility() {
+        const hideCollections = localStorage.getItem('pholia_hide_collections') === 'true';
+        const tab = document.querySelector('.tab[data-tab="collections"]');
+        if (tab) tab.style.display = hideCollections ? 'none' : '';
+        if (hideCollections && this.currentTab === 'collections') this.switchTab('home');
     },
 
     _updateBannerShown: false,
@@ -197,6 +205,10 @@ const App = {
                 Player._autoCacheController.abort();
                 Player._autoCacheController = null;
             }
+        });
+        document.getElementById('setting-hide-collections').addEventListener('change', e => {
+            localStorage.setItem('pholia_hide_collections', e.target.checked ? 'true' : 'false');
+            this.applyTabVisibility();
         });
         // Apply saved theme
         const savedTheme = localStorage.getItem('pholia_theme') || 'dark';
@@ -1717,6 +1729,7 @@ const App = {
         document.getElementById('setting-skip').value = Player.skipDuration;
         document.getElementById('setting-theme').value = localStorage.getItem('pholia_theme') || 'dark';
         document.getElementById('setting-auto-cache').checked = localStorage.getItem('pholia_auto_cache') === 'true';
+        document.getElementById('setting-hide-collections').checked = localStorage.getItem('pholia_hide_collections') === 'true';
         document.getElementById('settings-modal').classList.remove('hidden');
         this.renderDownloadsList();
         this.renderAccountSection();

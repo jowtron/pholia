@@ -12,7 +12,7 @@
     --card-bg: #22223a;
     --danger: #ff4757;
     --radius: 8px;
-    --tab-height: 52px;
+    --tab-height: 60px;
     --player-height: 62px;
     --safe-bottom: 0px;
 }
@@ -447,11 +447,11 @@ main {
 /* In standalone PWA mode, no browser chrome = no need for safe area */
 .tab {
     flex: 1; display: flex; flex-direction: column; align-items: center;
-    justify-content: center; gap: 1px; background: none; border: none;
-    color: var(--text-muted); font-size: 0.6rem; cursor: pointer; padding: 2px 0;
+    justify-content: center; gap: 2px; background: none; border: none;
+    color: var(--text-muted); font-size: 0.69rem; cursor: pointer; padding: 2px 0;
     height: var(--tab-height);
 }
-.tab svg { stroke: var(--text-muted); }
+.tab svg { stroke: var(--text-muted); width: 30px; height: 30px; }
 .tab.active { color: var(--accent); }
 .tab.active svg { stroke: var(--accent); }
 .tab:hover { color: var(--text); }
