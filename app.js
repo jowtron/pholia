@@ -19,8 +19,7 @@ const App = {
 
     applyTabVisibility() {
         const hideCollections = localStorage.getItem('pholia_hide_collections') === 'true';
-        const tab = document.querySelector('.tab[data-tab="collections"]');
-        if (tab) tab.style.display = hideCollections ? 'none' : '';
+        document.documentElement.classList.toggle('hide-collections', hideCollections);
         if (hideCollections && this.currentTab === 'collections') this.switchTab('home');
     },
 

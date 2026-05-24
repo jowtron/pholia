@@ -12,6 +12,12 @@
     <link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16x16.png">
     <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
     <link rel="stylesheet" href="style.css?v=dev">
+    <script>
+        // Apply hide-Collections-tab setting before paint to avoid flash.
+        if (localStorage.getItem('pholia_hide_collections') === 'true') {
+            document.documentElement.classList.add('hide-collections');
+        }
+    </script>
 </head>
 <body>
     <div id="app">

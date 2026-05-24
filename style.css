@@ -451,7 +451,8 @@ main {
     color: var(--text-muted); font-size: 0.8rem; cursor: pointer; padding: 4px 0;
     height: var(--tab-height);
 }
-.tab svg { stroke: var(--text-muted); width: 42px; height: 42px; }
+.tab svg { stroke: var(--text-muted); width: 48px; height: 48px; }
+html.hide-collections .tab[data-tab="collections"] { display: none; }
 .tab.active { color: var(--accent); }
 .tab.active svg { stroke: var(--accent); }
 .tab:hover { color: var(--text); }
