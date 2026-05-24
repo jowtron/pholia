@@ -195,60 +195,28 @@ self.addEventListener('fetch', e => {
         return;
     }
 
-    // Cross-origin: intercept only if the specific byte range requested is
-    // fully cached. Sliding-window caches around the playhead would
-    // previously passthrough every request (codec probes hit the network
-    // even when the chunks were present); now we serve them.
+    // Cross-origin: only intercept if we know something is cached for this
+    // URL. Otherwise return without calling respondWith so the browser
+    // handles the request natively (no SW round-trip overhead).
     //
-    // The synchronous decision uses in-memory cachedMetas/cachedChunks
-    // populated at boot and refreshed on CACHE_CHANGED. If we can't satisfy
-    // the request from cache, we still passthrough natively (preserves the
-    // "no SW latency on uncached audio" property that matters for slow links).
+    // REVERTED: the earlier "intercept partial caches when the Range fits"
+    // change broke playback for partially-cached books (audio element fired
+    // gap-region Ranges, canceled them, never recovered). The in-memory
+    // cachedMetas/cachedChunks maps are still populated for diagnostics, but
+    // the fetch handler is back to the conservative __complete-only gate.
     if (cachedKeys === null) {
         loadCachedKeys();
         return;
     }
     const baseKey = offlineKey(url.toString());
-
-    const meta = cachedMetas?.get(baseKey);
-    if (meta) {
-        const chunkSet = cachedChunks?.get(baseKey);
-        if (rangeFullyCached(e.request.headers.get('range'), meta, chunkSet)) {
-            e.respondWith(handleCrossOrigin(e.request));
-        }
+    if (!cachedKeys.has(completeKeyOf(baseKey)) && !cachedKeys.has(baseKey)) {
         return;
     }
-
-    // Legacy whole-file entry (covers, pre-chunked-format downloads).
-    if (cachedKeys.has(baseKey)) {
-        e.respondWith(handleCrossOrigin(e.request));
-    }
+    e.respondWith(handleCrossOrigin(e.request));
 });
 
-// True if every chunk overlapping the requested byte range is in chunkSet.
-// MAX_RANGE_SLICE cap is mirrored from serveChunked so this decision matches
-// what the handler will actually try to serve — without the cap, open-ended
-// `bytes=N-` requests would falsely return "missing" because they nominally
-// span every chunk to EOF.
-function rangeFullyCached(rangeHeader, meta, chunkSet) {
-    if (!chunkSet || !chunkSet.size) return false;
-    const { chunkSize, numChunks, totalSize } = meta;
-    if (!rangeHeader) {
-        // No Range: serveChunked's full-stream path needs every chunk.
-        return chunkSet.size === numChunks;
-    }
-    const m = /bytes=(\d+)-(\d*)/.exec(rangeHeader);
-    if (!m) return false;
-    const start = parseInt(m[1], 10);
-    let end = m[2] ? Math.min(parseInt(m[2], 10), totalSize - 1) : totalSize - 1;
-    if (start > end || start >= totalSize) return false;
-    if (end - start + 1 > MAX_RANGE_SLICE) end = start + MAX_RANGE_SLICE - 1;
-    const startChunk = Math.floor(start / chunkSize);
-    const endChunk = Math.floor(end / chunkSize);
-    for (let i = startChunk; i <= endChunk; i++) {
-        if (!chunkSet.has(i)) return false;
-    }
-    return true;
+function completeKeyOf(baseKey) {
+    return baseKey + (baseKey.includes('?') ? '&' : '?') + '__complete=1';
 }
 
 // Cache key with auth token stripped so URLs match across token rotations.
