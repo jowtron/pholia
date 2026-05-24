@@ -451,7 +451,7 @@ main {
     color: var(--text-muted); font-size: 0.8rem; cursor: pointer; padding: 4px 0;
     height: var(--tab-height);
 }
-.tab svg { stroke: var(--text-muted); width: 36px; height: 36px; }
+.tab svg { stroke: var(--text-muted); width: 42px; height: 42px; }
 .tab.active { color: var(--accent); }
 .tab.active svg { stroke: var(--accent); }
 .tab:hover { color: var(--text); }
