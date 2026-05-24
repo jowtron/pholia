@@ -81,9 +81,27 @@ self.addEventListener('activate', e => {
 
 self.addEventListener('message', e => {
     if (e.data?.type === 'SKIP_WAITING') self.skipWaiting();
-    // Page tells us when it changed the cache — refresh the in-memory set.
     if (e.data?.type === 'CACHE_CHANGED') loadCachedKeys();
+    if (e.data?.type === 'SW_CONFIG') {
+        experimentalPartialCache = !!e.data.experimentalPartialCache;
+        debugLog('config', { experimentalPartialCache });
+    }
 });
+
+// Experimental: serve partial caches when the requested Range fits the
+// cached chunks. Off by default — last enable broke partial-cache playback
+// in ways we couldn't diagnose without per-request logs. Toggle from the
+// settings UI; SW also logs every cross-origin audio decision while on.
+let experimentalPartialCache = false;
+
+function debugLog(tag, data) {
+    if (!experimentalPartialCache) return;
+    try {
+        const msg = { type: 'SW_DEBUG', tag, t: Date.now(), data };
+        self.clients.matchAll().then(list => list.forEach(c => c.postMessage(msg)));
+        console.log('[sw]', tag, data);
+    } catch {}
+}
 
 // Synchronously available state for fetch-handler decisions. Populated at
 // boot and refreshed on CACHE_CHANGED. Stale = miss intercept opportunities
@@ -195,28 +213,92 @@ self.addEventListener('fetch', e => {
         return;
     }
 
-    // Cross-origin: only intercept if we know something is cached for this
-    // URL. Otherwise return without calling respondWith so the browser
-    // handles the request natively (no SW round-trip overhead).
-    //
-    // REVERTED: the earlier "intercept partial caches when the Range fits"
-    // change broke playback for partially-cached books (audio element fired
-    // gap-region Ranges, canceled them, never recovered). The in-memory
-    // cachedMetas/cachedChunks maps are still populated for diagnostics, but
-    // the fetch handler is back to the conservative __complete-only gate.
     if (cachedKeys === null) {
         loadCachedKeys();
         return;
     }
     const baseKey = offlineKey(url.toString());
-    if (!cachedKeys.has(completeKeyOf(baseKey)) && !cachedKeys.has(baseKey)) {
+    const range = e.request.headers.get('range');
+
+    // Conservative gate (default): only intercept fully-cached entries.
+    if (!experimentalPartialCache) {
+        if (!cachedKeys.has(completeKeyOf(baseKey)) && !cachedKeys.has(baseKey)) {
+            return;
+        }
+        e.respondWith(handleCrossOrigin(e.request));
         return;
     }
-    e.respondWith(handleCrossOrigin(e.request));
+
+    // Experimental gate: intercept partial caches when the requested Range
+    // is fully covered by cached chunks. Every decision is logged.
+    const meta = cachedMetas?.get(baseKey);
+    const chunkSet = cachedChunks?.get(baseKey);
+    if (meta) {
+        const fits = rangeFullyCached(range, meta, chunkSet);
+        debugLog('audio', {
+            url: baseKey,
+            range,
+            chunks: chunkSet ? chunkSet.size : 0,
+            numChunks: meta.numChunks,
+            totalSize: meta.totalSize,
+            decision: fits ? 'intercept' : 'passthrough',
+        });
+        if (fits) e.respondWith(handleCrossOriginLogged(e.request, baseKey, range));
+        return;
+    }
+    if (cachedKeys.has(baseKey)) {
+        debugLog('audio', { url: baseKey, range, decision: 'intercept-legacy' });
+        e.respondWith(handleCrossOriginLogged(e.request, baseKey, range));
+        return;
+    }
+    debugLog('audio', { url: baseKey, range, decision: 'passthrough-no-meta' });
 });
+
+// Wraps handleCrossOrigin to log what was returned. Helps spot
+// Content-Range/Content-Length/Content-Type mismatches between cache-served
+// and network-served responses, which is the leading hypothesis for the
+// iOS audio-element cancel behavior under the experimental gate.
+async function handleCrossOriginLogged(request, baseKey, range) {
+    try {
+        const res = await handleCrossOrigin(request);
+        debugLog('served', {
+            url: baseKey,
+            range,
+            status: res.status,
+            contentType: res.headers.get('content-type'),
+            contentRange: res.headers.get('content-range'),
+            contentLength: res.headers.get('content-length'),
+        });
+        return res;
+    } catch (err) {
+        debugLog('serve-error', { url: baseKey, range, err: String(err) });
+        throw err;
+    }
+}
 
 function completeKeyOf(baseKey) {
     return baseKey + (baseKey.includes('?') ? '&' : '?') + '__complete=1';
+}
+
+// True if every chunk overlapping the requested byte range is in chunkSet.
+// MAX_RANGE_SLICE cap mirrors serveChunked so this matches what would
+// actually be served, not the nominal request size.
+function rangeFullyCached(rangeHeader, meta, chunkSet) {
+    if (!chunkSet || !chunkSet.size) return false;
+    const { chunkSize, numChunks, totalSize } = meta;
+    if (!rangeHeader) return chunkSet.size === numChunks;
+    const m = /bytes=(\d+)-(\d*)/.exec(rangeHeader);
+    if (!m) return false;
+    const start = parseInt(m[1], 10);
+    let end = m[2] ? Math.min(parseInt(m[2], 10), totalSize - 1) : totalSize - 1;
+    if (start > end || start >= totalSize) return false;
+    if (end - start + 1 > MAX_RANGE_SLICE) end = start + MAX_RANGE_SLICE - 1;
+    const startChunk = Math.floor(start / chunkSize);
+    const endChunk = Math.floor(end / chunkSize);
+    for (let i = startChunk; i <= endChunk; i++) {
+        if (!chunkSet.has(i)) return false;
+    }
+    return true;
 }
 
 // Cache key with auth token stripped so URLs match across token rotations.

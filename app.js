@@ -11,10 +11,33 @@ const App = {
         this.applyTabVisibility();
         this.tryAutoLogin();
         this.setupSwUpdate();
+        this.setupSwDebugBridge();
         document.addEventListener('cacheprogress', (e) => this.onCacheProgress(e.detail));
         // Clear phantom downloads (meta entries with no audio) left behind
         // by SW cleanups of legacy oversized cache entries.
         Offline.cleanupPhantoms();
+    },
+
+    sendSwConfig() {
+        const experimentalPartialCache = localStorage.getItem('pholia_sw_experimental') === 'true';
+        try {
+            navigator.serviceWorker?.controller?.postMessage({
+                type: 'SW_CONFIG',
+                experimentalPartialCache,
+            });
+        } catch {}
+    },
+
+    setupSwDebugBridge() {
+        if (!('serviceWorker' in navigator)) return;
+        // Send config now and on every controllerchange (new SW = needs the flag again).
+        this.sendSwConfig();
+        navigator.serviceWorker.addEventListener('controllerchange', () => this.sendSwConfig());
+        navigator.serviceWorker.addEventListener('message', (e) => {
+            if (e.data?.type === 'SW_DEBUG') {
+                console.log('[sw]', e.data.tag, e.data.data);
+            }
+        });
     },
 
     applyTabVisibility() {
@@ -208,6 +231,10 @@ const App = {
         document.getElementById('setting-hide-collections').addEventListener('change', e => {
             localStorage.setItem('pholia_hide_collections', e.target.checked ? 'true' : 'false');
             this.applyTabVisibility();
+        });
+        document.getElementById('setting-sw-experimental').addEventListener('change', e => {
+            localStorage.setItem('pholia_sw_experimental', e.target.checked ? 'true' : 'false');
+            this.sendSwConfig();
         });
         // Apply saved theme
         const savedTheme = localStorage.getItem('pholia_theme') || 'dark';
@@ -1732,6 +1759,7 @@ const App = {
         document.getElementById('setting-theme').value = localStorage.getItem('pholia_theme') || 'dark';
         document.getElementById('setting-auto-cache').checked = localStorage.getItem('pholia_auto_cache') === 'true';
         document.getElementById('setting-hide-collections').checked = localStorage.getItem('pholia_hide_collections') === 'true';
+        document.getElementById('setting-sw-experimental').checked = localStorage.getItem('pholia_sw_experimental') === 'true';
         document.getElementById('settings-modal').classList.remove('hidden');
         this.renderDownloadsList();
         this.renderAccountSection();
