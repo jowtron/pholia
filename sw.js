@@ -234,7 +234,7 @@ self.addEventListener('fetch', e => {
     const meta = cachedMetas?.get(baseKey);
     const chunkSet = cachedChunks?.get(baseKey);
     if (meta) {
-        const fits = rangeFullyCached(range, meta, chunkSet);
+        const fits = rangeStartCached(range, meta, chunkSet);
         debugLog('audio', {
             url: baseKey,
             range,
@@ -280,25 +280,20 @@ function completeKeyOf(baseKey) {
     return baseKey + (baseKey.includes('?') ? '&' : '?') + '__complete=1';
 }
 
-// True if every chunk overlapping the requested byte range is in chunkSet.
-// MAX_RANGE_SLICE cap mirrors serveChunked so this matches what would
-// actually be served, not the nominal request size.
-function rangeFullyCached(rangeHeader, meta, chunkSet) {
+// Synchronously decide whether to intercept. Only requires the *first*
+// chunk overlapping the request to be cached — serveChunked then streams
+// as many contiguous cached chunks as it can. The audio element will issue
+// one further Range request for the gap, which the SW passes through.
+function rangeStartCached(rangeHeader, meta, chunkSet) {
     if (!chunkSet || !chunkSet.size) return false;
     const { chunkSize, numChunks, totalSize } = meta;
-    if (!rangeHeader) return chunkSet.size === numChunks;
+    if (!rangeHeader) return chunkSet.size === numChunks; // no-Range path needs everything
     const m = /bytes=(\d+)-(\d*)/.exec(rangeHeader);
     if (!m) return false;
     const start = parseInt(m[1], 10);
-    let end = m[2] ? Math.min(parseInt(m[2], 10), totalSize - 1) : totalSize - 1;
-    if (start > end || start >= totalSize) return false;
-    if (end - start + 1 > MAX_RANGE_SLICE) end = start + MAX_RANGE_SLICE - 1;
+    if (start >= totalSize) return false;
     const startChunk = Math.floor(start / chunkSize);
-    const endChunk = Math.floor(end / chunkSize);
-    for (let i = startChunk; i <= endChunk; i++) {
-        if (!chunkSet.has(i)) return false;
-    }
-    return true;
+    return chunkSet.has(startChunk);
 }
 
 // Cache key with auth token stripped so URLs match across token rotations.
@@ -451,32 +446,61 @@ async function serveChunked(request, cache, baseKey, meta) {
     const m = /bytes=(\d+)-(\d*)/.exec(range);
     if (!m) return new Response(null, { status: 416 });
     const start = parseInt(m[1], 10);
-    let end = m[2] ? Math.min(parseInt(m[2], 10), totalSize - 1) : totalSize - 1;
+    const end = m[2] ? Math.min(parseInt(m[2], 10), totalSize - 1) : totalSize - 1;
     if (start > end || start >= totalSize) return new Response(null, { status: 416 });
-    if (end - start + 1 > MAX_RANGE_SLICE) end = start + MAX_RANGE_SLICE - 1;
 
     const startChunk = Math.floor(start / chunkSize);
-    const endChunk = Math.floor(end / chunkSize);
-    const parts = [];
-    for (let i = startChunk; i <= endChunk; i++) {
-        const c = await cache.match(chunkKey(baseKey, i));
-        // Missing chunk (likely evicted): fall through to network for the
-        // whole Range request rather than returning a partial/error response.
-        if (!c) return fetch(request);
-        const buf = await c.arrayBuffer();
-        const chunkStart = i * chunkSize;
-        const localStart = Math.max(0, start - chunkStart);
-        const localEnd = Math.min(buf.byteLength, end - chunkStart + 1);
-        parts.push(buf.slice(localStart, localEnd));
+    const requestEndChunk = Math.min(Math.floor(end / chunkSize), numChunks - 1);
+
+    // For partial caches, only return data up to the first missing chunk so
+    // the audio element gets one continuous stream then makes one more Range
+    // request for the rest (which the SW will passthrough). Avoids the
+    // fast-cache / slow-network alternating pattern that broke iOS playback.
+    // Walk the in-memory chunkSet (cheap) instead of awaiting cache.match.
+    const chunkSet = cachedChunks?.get(baseKey) || new Set();
+    let lastContiguousChunk = startChunk;
+    for (let i = startChunk + 1; i <= requestEndChunk; i++) {
+        if (!chunkSet.has(i)) break;
+        lastContiguousChunk = i;
     }
-    const blob = new Blob(parts, { type: contentType || 'audio/mpeg' });
-    return new Response(blob, {
+    const effectiveEnd = Math.min(end, (lastContiguousChunk + 1) * chunkSize - 1, totalSize - 1);
+    const contentLength = effectiveEnd - start + 1;
+
+    // ReadableStream with default queueing: one chunk enqueued at a time.
+    // Memory peak ≈ one chunkSize (10 MB), well under the iOS PWA budget.
+    let cur = startChunk;
+    const stream = new ReadableStream({
+        async pull(controller) {
+            if (cur > lastContiguousChunk) {
+                controller.close();
+                return;
+            }
+            try {
+                const c = await cache.match(chunkKey(baseKey, cur));
+                if (!c) {
+                    // Evicted mid-stream — error so the audio element retries.
+                    controller.error(new Error('chunk evicted: ' + cur));
+                    return;
+                }
+                const buf = await c.arrayBuffer();
+                const chunkStartByte = cur * chunkSize;
+                const sliceStart = Math.max(0, start - chunkStartByte);
+                const sliceEnd = Math.min(buf.byteLength, effectiveEnd - chunkStartByte + 1);
+                controller.enqueue(new Uint8Array(buf, sliceStart, sliceEnd - sliceStart));
+                cur++;
+            } catch (err) {
+                controller.error(err);
+            }
+        },
+    });
+
+    return new Response(stream, {
         status: 206,
         statusText: 'Partial Content',
         headers: {
             'Content-Type': contentType || 'audio/mpeg',
-            'Content-Length': String(end - start + 1),
-            'Content-Range': `bytes ${start}-${end}/${totalSize}`,
+            'Content-Length': String(contentLength),
+            'Content-Range': `bytes ${start}-${effectiveEnd}/${totalSize}`,
             'Accept-Ranges': 'bytes',
             'Access-Control-Allow-Origin': '*',
         },
