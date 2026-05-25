@@ -29,6 +29,16 @@ const Player = {
         // over a long listening session don't exhaust 3 attempts forever.
         this.audio.addEventListener('playing', () => { this._audioRecoveryAttempts = 0; });
 
+        // Instrumentation: log every diagnostic-relevant audio-element event to
+        // the existing SW debug ring buffer. Only renders when the in-Settings
+        // log panel is open (experimentalPartialCache toggle), so zero cost in
+        // normal playback. Skip timeupdate / play / pause — too noisy.
+        ['loadstart','loadedmetadata','loadeddata','canplay','canplaythrough',
+         'progress','playing','waiting','stalled','seeking','seeked','abort',
+         'emptied','suspend','durationchange','error'].forEach(ev => {
+            this.audio.addEventListener(ev, () => this._logAudioEvent(ev));
+        });
+
         const speed = localStorage.getItem('pholia_speed');
         if (speed) this.audio.playbackRate = parseFloat(speed);
 
@@ -62,6 +72,28 @@ const Player = {
                 this.loadTime(target);
             });
         } catch (e) { /* not supported on this browser */ }
+    },
+
+    _logAudioEvent(name) {
+        try {
+            const a = this.audio;
+            const data = {
+                ev: name,
+                net: a.networkState,
+                rdy: a.readyState,
+                t: Number((a.currentTime || 0).toFixed(2)),
+                err: a.error?.code ?? null,
+                paused: a.paused,
+                src: a.currentSrc ? a.currentSrc.split('/').pop()?.split('?')[0] : null,
+            };
+            console.log('[audio]', data);
+            if (typeof App !== 'undefined' && App?._swLog) {
+                const ts = new Date().toISOString().substring(11, 23);
+                App._swLog.push(`${ts} audio ${JSON.stringify(data)}`);
+                if (App._swLog.length > (App._swLogMax || 200)) App._swLog.shift();
+                App._renderSwLog?.();
+            }
+        } catch {}
     },
 
     // iOS Safari can permanently abandon a stream after its ~1 s Range-stall
