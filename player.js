@@ -35,10 +35,13 @@ const Player = {
             this._audioRecoveryAttempts = 0;
             this._clearStallWatchdog();
         });
-        // iOS can park silently at net=2/rdy=2/err=null after a Range
-        // cancel-retry burst — no error event fires. The only signal is a
-        // 'waiting' that never resolves. Watchdog forces recovery.
+        // iOS can park silently at net=2/rdy>=2/err=null after a Range
+        // cancel-retry burst — no error event fires. Arm on both 'waiting'
+        // (rdy drops) and 'stalled' (rdy can stay high but playback head
+        // doesn't advance — empirically rdy=3 with stalled but no waiting
+        // is a real silent-park path on iOS).
         this.audio.addEventListener('waiting', () => this._armStallWatchdog());
+        this.audio.addEventListener('stalled', () => this._armStallWatchdog());
         this.audio.addEventListener('seeking', () => this._clearStallWatchdog());
 
         // Instrumentation: log every diagnostic-relevant audio-element event to
