@@ -18,10 +18,24 @@ const Player = {
 
     _audioRecoveryAttempts: 0,
     _stallWatchdogId: null,
+    _lastRecoveryAtTime: null,
 
     init() {
         this.audio.preload = 'auto';
-        this.audio.addEventListener('timeupdate', () => this.onTimeUpdate());
+        this.audio.addEventListener('timeupdate', () => {
+            this.onTimeUpdate();
+            // Reset the recovery budget only after SUSTAINED forward progress
+            // past the last recovery point. 'playing' alone fires after
+            // audio.load() even when the seek-target chunk hasn't actually
+            // loaded (the cached prefix is enough to satisfy HAVE_FUTURE_DATA);
+            // using 'playing' to reset the budget creates an infinite
+            // load → playing → stall → load loop with the same currentTime.
+            if (this._lastRecoveryAtTime != null
+                && this.audio.currentTime - this._lastRecoveryAtTime > 5) {
+                this._audioRecoveryAttempts = 0;
+                this._lastRecoveryAtTime = null;
+            }
+        });
         this.audio.addEventListener('ended', () => this.onTrackEnded());
         this.audio.addEventListener('play', () => this.setPlaying(true));
         this.audio.addEventListener('pause', () => this.setPlaying(false));
@@ -29,12 +43,7 @@ const Player = {
             this._clearStallWatchdog();
             this._recoverFromAudioError();
         });
-        // Sustained playback clears the recovery budget so transient stalls
-        // over a long listening session don't exhaust 3 attempts forever.
-        this.audio.addEventListener('playing', () => {
-            this._audioRecoveryAttempts = 0;
-            this._clearStallWatchdog();
-        });
+        this.audio.addEventListener('playing', () => this._clearStallWatchdog());
         // iOS can park silently at net=2/rdy>=2/err=null after a Range
         // cancel-retry burst — no error event fires. Arm on both 'waiting'
         // (rdy drops) and 'stalled' (rdy can stay high but playback head
@@ -42,7 +51,11 @@ const Player = {
         // is a real silent-park path on iOS).
         this.audio.addEventListener('waiting', () => this._armStallWatchdog());
         this.audio.addEventListener('stalled', () => this._armStallWatchdog());
-        this.audio.addEventListener('seeking', () => this._clearStallWatchdog());
+        this.audio.addEventListener('seeking', () => {
+            this._clearStallWatchdog();
+            // Seek invalidates the post-recovery progress window.
+            this._lastRecoveryAtTime = null;
+        });
 
         // Instrumentation: log every diagnostic-relevant audio-element event to
         // the existing SW debug ring buffer. Only renders when the in-Settings
@@ -146,10 +159,15 @@ const Player = {
     _performAudioRecovery(reason) {
         if (!this.audio.src) return;
         if (this._audioRecoveryAttempts >= 3) {
-            console.warn('Audio recovery budget exhausted; tap play to retry');
+            console.warn('Audio recovery budget exhausted; pausing — tap play to retry');
+            // Stop the watchdog cycle: paused element doesn't fire stalled/waiting.
+            try { this.audio.pause(); } catch {}
             return;
         }
         this._audioRecoveryAttempts++;
+        // Anchor the budget-reset check at the position we're recovering from.
+        // Real forward progress past this + 5 s clears the budget.
+        this._lastRecoveryAtTime = this.audio.currentTime || 0;
         const attempt = this._audioRecoveryAttempts;
         const delay = 250 * Math.pow(2, attempt - 1); // 250, 500, 1000 ms
         const savedTime = this.audio.currentTime || 0;
@@ -190,6 +208,7 @@ const Player = {
         if (this.session) await this.closeCurrentSession();
         if (this._autoCacheController) { this._autoCacheController.abort(); this._autoCacheController = null; }
         this._audioRecoveryAttempts = 0;
+        this._lastRecoveryAtTime = null;
         this._clearStallWatchdog();
 
         this.item = item;
