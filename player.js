@@ -17,6 +17,7 @@ const Player = {
     skipDuration: 30,
 
     _audioRecoveryAttempts: 0,
+    _stallWatchdogId: null,
 
     init() {
         this.audio.preload = 'auto';
@@ -24,10 +25,21 @@ const Player = {
         this.audio.addEventListener('ended', () => this.onTrackEnded());
         this.audio.addEventListener('play', () => this.setPlaying(true));
         this.audio.addEventListener('pause', () => this.setPlaying(false));
-        this.audio.addEventListener('error', () => this._recoverFromAudioError());
+        this.audio.addEventListener('error', () => {
+            this._clearStallWatchdog();
+            this._recoverFromAudioError();
+        });
         // Sustained playback clears the recovery budget so transient stalls
         // over a long listening session don't exhaust 3 attempts forever.
-        this.audio.addEventListener('playing', () => { this._audioRecoveryAttempts = 0; });
+        this.audio.addEventListener('playing', () => {
+            this._audioRecoveryAttempts = 0;
+            this._clearStallWatchdog();
+        });
+        // iOS can park silently at net=2/rdy=2/err=null after a Range
+        // cancel-retry burst — no error event fires. The only signal is a
+        // 'waiting' that never resolves. Watchdog forces recovery.
+        this.audio.addEventListener('waiting', () => this._armStallWatchdog());
+        this.audio.addEventListener('seeking', () => this._clearStallWatchdog());
 
         // Instrumentation: log every diagnostic-relevant audio-element event to
         // the existing SW debug ring buffer. Only renders when the in-Settings
@@ -96,16 +108,40 @@ const Player = {
         } catch {}
     },
 
+    _armStallWatchdog() {
+        // Debounce: a fresh 'waiting' resets the timer rather than stacking.
+        this._clearStallWatchdog();
+        this._stallWatchdogId = setTimeout(() => {
+            this._stallWatchdogId = null;
+            console.warn('Stall watchdog fired (3s of unresolved waiting)');
+            this._performAudioRecovery('stall');
+        }, 3000);
+    },
+
+    _clearStallWatchdog() {
+        if (this._stallWatchdogId != null) {
+            clearTimeout(this._stallWatchdogId);
+            this._stallWatchdogId = null;
+        }
+    },
+
     // iOS Safari can permanently abandon a stream after its ~1 s Range-stall
     // budget expires (pCloud-backed Ranges via the shim regularly exceed it).
-    // Reload the same src and restore playhead; cap at 3 attempts so a
-    // genuinely broken stream doesn't infinite-loop.
+    // Error-event path: gated on MEDIA_ERR_NETWORK / MEDIA_ERR_DECODE.
     _recoverFromAudioError() {
         const err = this.audio.error;
         const code = err?.code;
         console.error('Audio error', { code, message: err?.message });
         const recoverable = code === 2 /* MEDIA_ERR_NETWORK */ || code === 3 /* MEDIA_ERR_DECODE */;
-        if (!recoverable || !this.audio.src) return;
+        if (!recoverable) return;
+        this._performAudioRecovery('error');
+    },
+
+    // Shared recovery body. Reused by the error handler and the stall watchdog
+    // so they share one 3-attempt budget — a flaky stream can't blow through
+    // 3+3=6 attempts by alternating triggers.
+    _performAudioRecovery(reason) {
+        if (!this.audio.src) return;
         if (this._audioRecoveryAttempts >= 3) {
             console.warn('Audio recovery budget exhausted; tap play to retry');
             return;
@@ -115,7 +151,7 @@ const Player = {
         const delay = 250 * Math.pow(2, attempt - 1); // 250, 500, 1000 ms
         const savedTime = this.audio.currentTime || 0;
         const wasPlaying = this.isPlaying;
-        console.warn(`Recovering audio (attempt ${attempt}/3, resume at ${savedTime.toFixed(1)}s)`);
+        console.warn(`Recovering audio (${reason}, attempt ${attempt}/3, resume at ${savedTime.toFixed(1)}s)`);
         setTimeout(() => {
             try {
                 this.audio.addEventListener('loadedmetadata', () => {
@@ -151,6 +187,7 @@ const Player = {
         if (this.session) await this.closeCurrentSession();
         if (this._autoCacheController) { this._autoCacheController.abort(); this._autoCacheController = null; }
         this._audioRecoveryAttempts = 0;
+        this._clearStallWatchdog();
 
         this.item = item;
         this.chapters = item.media?.chapters || [];
