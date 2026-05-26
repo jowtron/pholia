@@ -270,7 +270,12 @@ const Player = {
         const trackDuration = tracks[trackIndex]?.duration || 0;
         const TARGET_AHEAD = 3600;
 
-        const KEEP_BEHIND = 1800; // 30 min
+        // Small grace window so a short scrub-back stays on local cache.
+        // Anything older than this is evicted — we no longer maintain a
+        // 30 min rear cache (it caused bandwidth contention with the active
+        // playhead Ranges; the shim's R2 chunk cache covers re-listens of
+        // older positions).
+        const KEEP_BEHIND = 60;
         await Offline._streamFetchToCache(cache, url, key,
             async (received, total) => {
                 document.dispatchEvent(new CustomEvent('cacheprogress', {
@@ -309,9 +314,11 @@ const Player = {
             },
             {
                 priority: 'low',
-                // Skip chunks more than 30 min behind the current playhead —
-                // we only want to cache around where the listener is, not
-                // from the start of the book.
+                // Forward-only auto-cache: only fetch chunks at or ahead of
+                // the playhead. The rear 30 min window was eating bandwidth
+                // that the current playhead Ranges needed, and the shim's
+                // R2 chunk cache already covers any re-listen of older
+                // positions cheaply.
                 shouldCache: (byteOffset, totalSize) => {
                     // Always cache the head and tail of every track. The head
                     // (chunk 0) carries the codec/container metadata that the
@@ -323,7 +330,7 @@ const Player = {
                     if (totalSize > 0 && byteOffset + Offline.CHUNK_SIZE >= totalSize) return true;
                     if (totalSize <= 0 || trackDuration <= 0) return true;
                     const chunkTime = trackStart + (byteOffset / totalSize) * trackDuration;
-                    return chunkTime >= this.getGlobalTime() - 1800;
+                    return chunkTime >= this.getGlobalTime();
                 },
                 beforeChunk: async (byteOffset, totalSize) => {
                     if (signal.aborted) throw new Error('aborted');
@@ -388,7 +395,6 @@ const Player = {
             await Offline.saveMeta(this.item);
         } catch {}
 
-        const KEEP_BEHIND_SEC = 1800; // mirror the per-chunk shouldCache cutoff
         let elapsed = 0;
         for (let i = 0; i < tracks.length; i++) {
             const trackEnd = elapsed + (tracks[i].duration || 0);
@@ -397,11 +403,9 @@ const Player = {
             const key = Offline.keyFor(url);
 
             if (signal.aborted) return;
-            // Skip tracks ending more than 30 min before the playhead — the
-            // shouldCache filter would skip every chunk anyway. Tracks that
-            // end within the behind-window still get processed so their
-            // chunks within [playhead-30min, trackEnd] are cached.
-            if (trackEnd <= currentTime - KEEP_BEHIND_SEC) { elapsed = trackEnd; continue; }
+            // Skip tracks that end before the playhead — forward-only cache,
+            // nothing in them would pass shouldCache.
+            if (trackEnd <= currentTime) { elapsed = trackEnd; continue; }
             // Stop once we have ~1 hour cached ahead of the listener. For
             // single-file books this still lets the whole file cache (since
             // 1 hour of book is well past the start).
