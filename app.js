@@ -19,11 +19,17 @@ const App = {
     },
 
     sendSwConfig() {
-        const experimentalPartialCache = localStorage.getItem('pholia_sw_experimental') === 'true';
+        // The visible 'pholia_sw_experimental' toggle now only controls the
+        // audio-event debug log; the partial-cache intercept is a separate
+        // (default off, no UI) flag because it's known to break iOS playback
+        // when cached regions have gaps.
+        const swDebugLog = localStorage.getItem('pholia_sw_experimental') === 'true';
+        const experimentalPartialCache = localStorage.getItem('pholia_sw_partial_intercept') === 'true';
         try {
             navigator.serviceWorker?.controller?.postMessage({
                 type: 'SW_CONFIG',
                 experimentalPartialCache,
+                swDebugLog,
             });
         } catch {}
     },

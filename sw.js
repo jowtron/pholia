@@ -84,18 +84,22 @@ self.addEventListener('message', e => {
     if (e.data?.type === 'CACHE_CHANGED') loadCachedKeys();
     if (e.data?.type === 'SW_CONFIG') {
         experimentalPartialCache = !!e.data.experimentalPartialCache;
-        debugLog('config', { experimentalPartialCache });
+        swDebugLog = !!e.data.swDebugLog;
+        debugLog('config', { experimentalPartialCache, swDebugLog });
     }
 });
 
 // Experimental: serve partial caches when the requested Range fits the
-// cached chunks. Off by default — last enable broke partial-cache playback
-// in ways we couldn't diagnose without per-request logs. Toggle from the
-// settings UI; SW also logs every cross-origin audio decision while on.
+// cached chunks. Off by default and has no UI toggle — known to break
+// iOS playback when the cached region has gaps. Set
+// localStorage.pholia_sw_partial_intercept = 'true' to test.
 let experimentalPartialCache = false;
+// Separate flag for the debug log so instrumentation can stay on while
+// the (broken) partial intercept stays off.
+let swDebugLog = false;
 
 function debugLog(tag, data) {
-    if (!experimentalPartialCache) return;
+    if (!swDebugLog) return;
     try {
         const msg = { type: 'SW_DEBUG', tag, t: Date.now(), data };
         self.clients.matchAll().then(list => list.forEach(c => c.postMessage(msg)));
