@@ -476,7 +476,12 @@ async function serveChunked(request, cache, baseKey, meta) {
 
     const stream = new ReadableStream({
         async pull(controller) {
-            // Cache phase.
+            // Cache phase. Enqueue in 256 KB pieces (not the whole 10 MB
+            // slice at once): iOS's media decoder treats SW-served streams
+            // with bursty 10 MB enqueues as stalled after only a few seconds
+            // of playback, even though the runtime buffer has more bytes
+            // ready. Many small enqueues give iOS a smoother flow and let
+            // its internal decoder keep up.
             if (cur <= lastContiguousChunk) {
                 try {
                     const c = await cache.match(chunkKey(baseKey, cur));
@@ -485,7 +490,10 @@ async function serveChunked(request, cache, baseKey, meta) {
                     const chunkStartByte = cur * chunkSize;
                     const sliceStart = Math.max(0, start - chunkStartByte);
                     const sliceEnd = Math.min(buf.byteLength, cacheEnd - chunkStartByte + 1);
-                    controller.enqueue(new Uint8Array(buf, sliceStart, sliceEnd - sliceStart));
+                    const PIECE = 256 * 1024;
+                    for (let off = sliceStart; off < sliceEnd; off += PIECE) {
+                        controller.enqueue(new Uint8Array(buf, off, Math.min(PIECE, sliceEnd - off)));
+                    }
                     cur++;
                 } catch (err) { controller.error(err); }
                 return;
