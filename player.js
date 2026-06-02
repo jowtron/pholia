@@ -104,6 +104,8 @@ const Player = {
         const err = this.audio.error;
         const code = err?.code;
         console.error('Audio error', { code, message: err?.message });
+        // Ship the audio event tail to the server for after-the-fact analysis.
+        try { App?.shipCrashLog?.(`audio-error-${code ?? 'x'}`); } catch {}
         const recoverable = code === 2 /* MEDIA_ERR_NETWORK */ || code === 3 /* MEDIA_ERR_DECODE */;
         if (!recoverable || !this.audio.src) return;
         if (this._audioRecoveryAttempts >= 3) {

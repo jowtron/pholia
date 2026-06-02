@@ -6,6 +6,7 @@ const App = {
     navStack: [],
 
     init() {
+        this.setupCrashLog();
         Player.init();
         this.bindEvents();
         this.applyTabVisibility();
@@ -16,6 +17,125 @@ const App = {
         // Clear phantom downloads (meta entries with no audio) left behind
         // by SW cleanups of legacy oversized cache entries.
         Offline.cleanupPhantoms();
+    },
+
+    // ── Crash log shipping ────────────────────────────────────────────────
+    // Pholia is a PWA; iOS can kill the tab or silently park the audio
+    // element without any error event we'd otherwise see. We periodically
+    // snapshot the audio event ring buffer to localStorage so the next launch
+    // can ship the previous (likely-crashed) session's tail to a Pages
+    // function backed by D1. Server-side endpoint: /api/log
+    _sessionId: null,
+    _crashLogShipThrottle: 0,
+
+    setupCrashLog() {
+        try {
+            // New session id for this launch. The previous launch's id is
+            // still in localStorage at this point so we can ship its tail.
+            const newId = (crypto.randomUUID?.() || Math.random().toString(36).slice(2));
+
+            // If a previous session left a buffer behind without a clean
+            // shutdown flag, ship it now. Async — don't block init.
+            const prevId = localStorage.getItem('pholia_session_id');
+            const prevBuf = localStorage.getItem('pholia_session_buffer');
+            const wasClean = localStorage.getItem('pholia_session_clean') === 'true';
+            if (prevId && prevBuf && !wasClean) {
+                try {
+                    const events = JSON.parse(prevBuf);
+                    if (Array.isArray(events) && events.length) {
+                        this._postCrashLog({
+                            session_id: prevId,
+                            reason: 'prior-session-tail',
+                            events,
+                        });
+                    }
+                } catch {}
+            }
+
+            // Reset for this session.
+            localStorage.setItem('pholia_session_id', newId);
+            localStorage.removeItem('pholia_session_buffer');
+            localStorage.removeItem('pholia_session_clean');
+            this._sessionId = newId;
+
+            // Periodic backup of the in-memory ring buffer.
+            setInterval(() => this._snapshotCrashLog(), 10000);
+
+            // Also snapshot when the tab is hidden — iOS may kill us soon.
+            document.addEventListener('visibilitychange', () => {
+                if (document.visibilityState === 'hidden') this._snapshotCrashLog();
+            });
+
+            // On a clean unload, mark clean so the next launch doesn't
+            // re-ship the buffer.
+            window.addEventListener('pagehide', () => {
+                try {
+                    this._snapshotCrashLog();
+                    localStorage.setItem('pholia_session_clean', 'true');
+                } catch {}
+            });
+        } catch {}
+    },
+
+    _snapshotCrashLog() {
+        try {
+            if (!this._swLog?.length) return;
+            localStorage.setItem('pholia_session_buffer', JSON.stringify(this._swLog));
+        } catch {}
+    },
+
+    // Throttled to one ship every 30s per reason to keep a flapping error
+    // from spamming the table. prior-session-tail bypasses the throttle.
+    shipCrashLog(reason) {
+        const now = performance.now();
+        if (reason !== 'prior-session-tail' && now - this._crashLogShipThrottle < 30000) return;
+        this._crashLogShipThrottle = now;
+        try {
+            this._postCrashLog({
+                session_id: this._sessionId,
+                reason,
+                events: this._swLog ? this._swLog.slice() : [],
+                audio_state: this._currentAudioState(),
+            });
+        } catch {}
+    },
+
+    _currentAudioState() {
+        try {
+            const a = Player?.audio;
+            if (!a) return null;
+            return {
+                src: a.currentSrc ? a.currentSrc.split('/').pop()?.split('?')[0] : null,
+                t: Number((a.currentTime || 0).toFixed(2)),
+                net: a.networkState,
+                rdy: a.readyState,
+                err: a.error?.code ?? null,
+                paused: a.paused,
+                playing: Player.isPlaying,
+                item_id: Player.item?.id || null,
+            };
+        } catch { return null; }
+    },
+
+    _postCrashLog(payload) {
+        try {
+            const body = JSON.stringify({
+                ...payload,
+                app_version: document.getElementById('build-version')?.textContent || null,
+            });
+            // Prefer sendBeacon — survives pagehide / app kill.
+            if (navigator.sendBeacon) {
+                const blob = new Blob([body], { type: 'application/json' });
+                if (navigator.sendBeacon('/api/log', blob)) return;
+            }
+            // Fallback to fetch with keepalive so it can outlive the page.
+            fetch('/api/log', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body,
+                keepalive: true,
+            }).catch(() => {});
+        } catch {}
     },
 
     sendSwConfig() {
@@ -283,6 +403,15 @@ const App = {
         document.getElementById('sw-log-clear').addEventListener('click', () => {
             this._swLog.length = 0;
             this._renderSwLog();
+        });
+        document.getElementById('sw-log-send').addEventListener('click', (e) => {
+            const btn = e.currentTarget;
+            const orig = btn.textContent;
+            // Manual sends bypass the throttle so a user can ship twice in a row.
+            this._crashLogShipThrottle = 0;
+            this.shipCrashLog('manual');
+            btn.textContent = 'Sent';
+            setTimeout(() => { btn.textContent = orig; }, 2000);
         });
         // Apply saved theme
         const savedTheme = localStorage.getItem('pholia_theme') || 'dark';
