@@ -59,7 +59,8 @@ const App = {
             this._sessionId = newId;
 
             // Periodic backup of the in-memory ring buffer.
-            setInterval(() => this._snapshotCrashLog(), 10000);
+            this._refreshStorageEstimate();
+            setInterval(() => { this._snapshotCrashLog(); this._refreshStorageEstimate(); }, 10000);
 
             // Also snapshot when the tab is hidden — iOS may kill us soon.
             document.addEventListener('visibilitychange', () => {
@@ -104,6 +105,15 @@ const App = {
         try {
             const a = Player?.audio;
             if (!a) return null;
+            let buf = null;
+            try {
+                const b = a.buffered;
+                if (b && b.length) {
+                    let sec = 0;
+                    for (let i = 0; i < b.length; i++) sec += b.end(i) - b.start(i);
+                    buf = { n: b.length, sec: Number(sec.toFixed(1)) };
+                } else buf = { n: 0, sec: 0 };
+            } catch {}
             return {
                 src: a.currentSrc ? a.currentSrc.split('/').pop()?.split('?')[0] : null,
                 t: Number((a.currentTime || 0).toFixed(2)),
@@ -113,8 +123,21 @@ const App = {
                 paused: a.paused,
                 playing: Player.isPlaying,
                 item_id: Player.item?.id || null,
+                buf,
+                storage: this._lastStorageEstimate || null,
             };
         } catch { return null; }
+    },
+
+    _refreshStorageEstimate() {
+        try {
+            navigator.storage?.estimate?.().then(e => {
+                this._lastStorageEstimate = {
+                    usage_mb: e?.usage ? Math.round(e.usage / 1048576) : null,
+                    quota_mb: e?.quota ? Math.round(e.quota / 1048576) : null,
+                };
+            }).catch(() => {});
+        } catch {}
     },
 
     _postCrashLog(payload) {
@@ -466,8 +489,8 @@ const App = {
         // Fullscreen player
         document.getElementById('fs-close').addEventListener('click', () => this.closeFullscreen());
         document.getElementById('fs-play').addEventListener('click', () => Player.toggle());
-        document.getElementById('fs-rewind').addEventListener('click', () => Player.skip(-Player.skipDuration));
-        document.getElementById('fs-forward').addEventListener('click', () => Player.skip(Player.skipDuration));
+        document.getElementById('fs-rewind').addEventListener('click', () => Player.skip(-Player.skipDuration, 'fs-rewind-btn'));
+        document.getElementById('fs-forward').addEventListener('click', () => Player.skip(Player.skipDuration, 'fs-forward-btn'));
         document.getElementById('fs-prev-ch').addEventListener('click', () => Player.prevChapter());
         document.getElementById('fs-next-ch').addEventListener('click', () => Player.nextChapter());
 

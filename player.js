@@ -57,10 +57,10 @@ const Player = {
         navigator.mediaSession.setActionHandler('nexttrack', () => this.nextChapter());
         // Use seekbackward/seekforward with seekOffset to control displayed duration
         navigator.mediaSession.setActionHandler('seekbackward', (details) => {
-            this.skip(-(details?.seekOffset || this.skipDuration));
+            this.skip(-(details?.seekOffset || this.skipDuration), 'ms-seekbackward');
         });
         navigator.mediaSession.setActionHandler('seekforward', (details) => {
-            this.skip(details?.seekOffset || this.skipDuration);
+            this.skip(details?.seekOffset || this.skipDuration, 'ms-seekforward');
         });
         // seekTime is in the same frame of reference we publish via
         // setPositionState — chapter-relative when chapters exist.
@@ -69,9 +69,32 @@ const Player = {
                 if (details?.seekTime == null) return;
                 const ch = this.getCurrentChapter();
                 const target = ch ? ch.start + details.seekTime : details.seekTime;
-                this.loadTime(target);
+                this.loadTime(target, 'ms-seekto');
             });
         } catch (e) { /* not supported on this browser */ }
+    },
+
+    _bufferedSummary() {
+        try {
+            const b = this.audio.buffered;
+            if (!b || !b.length) return { n: 0, sec: 0 };
+            let sec = 0;
+            for (let i = 0; i < b.length; i++) sec += b.end(i) - b.start(i);
+            return { n: b.length, sec: Number(sec.toFixed(1)) };
+        } catch { return null; }
+    },
+
+    _logSeekCall(source, target) {
+        try {
+            const from = Number((this.audio.currentTime || 0).toFixed(2));
+            const data = { ev: 'seek-call', source, from, to: Number(target.toFixed(2)) };
+            if (typeof App !== 'undefined' && App?._swLog) {
+                const ts = new Date().toISOString().substring(11, 23);
+                App._swLog.push(`${ts} audio ${JSON.stringify(data)}`);
+                if (App._swLog.length > (App._swLogMax || 200)) App._swLog.shift();
+                App._renderSwLog?.();
+            }
+        } catch {}
     },
 
     _logAudioEvent(name) {
@@ -84,6 +107,7 @@ const Player = {
                 t: Number((a.currentTime || 0).toFixed(2)),
                 err: a.error?.code ?? null,
                 paused: a.paused,
+                buf: this._bufferedSummary(),
                 src: a.currentSrc ? a.currentSrc.split('/').pop()?.split('?')[0] : null,
             };
             console.log('[audio]', data);
@@ -121,7 +145,7 @@ const Player = {
         setTimeout(() => {
             try {
                 this.audio.addEventListener('loadedmetadata', () => {
-                    try { this.audio.currentTime = savedTime; } catch {}
+                    try { this._logSeekCall('error-recover', savedTime); this.audio.currentTime = savedTime; } catch {}
                     if (wasPlaying) {
                         this.audio.play().catch(() => {
                             this.audio.addEventListener('canplay', () => this.audio.play().catch(() => {}), { once: true });
@@ -359,7 +383,8 @@ const Player = {
         }
     },
 
-    loadTime(globalTime) {
+    loadTime(globalTime, source = 'loadTime') {
+        this._logSeekCall(source, globalTime);
         const prevTime = this.getGlobalTime();
         let url, offset = 0;
         if (this.session && this.session.audioTracks?.length) {
@@ -477,9 +502,9 @@ const Player = {
     pause() { this.audio.pause(); this._updatePositionState(); },
     toggle() { this.audio.paused ? this.play() : this.pause(); },
 
-    skip(seconds) {
+    skip(seconds, source = 'skip-btn') {
         const t = Math.max(0, Math.min(this.getGlobalTime() + seconds, this.getTotalDuration()));
-        this.loadTime(t);
+        this.loadTime(t, source);
     },
 
     seekToChapterPercent(pct) {
@@ -542,7 +567,9 @@ const Player = {
 
     _finishSleep() {
         this.pause();
-        this.audio.currentTime = Math.max(0, this.audio.currentTime - this.SLEEP_REWIND_S);
+        const target = Math.max(0, this.audio.currentTime - this.SLEEP_REWIND_S);
+        this._logSeekCall('sleep-rewind', target);
+        this.audio.currentTime = target;
         this.clearSleep();
     },
 
@@ -638,6 +665,7 @@ const Player = {
             } else {
                 this.audio.src = ABS.trackUrl(this.item.id, this.tracks[this.currentTrackIndex].ino);
             }
+            this._logSeekCall('next-track', 0);
             this.audio.currentTime = 0;
             this.audio.play().catch(() => {
                 this.audio.addEventListener('canplay', () => this.audio.play().catch(() => {}), { once: true });
