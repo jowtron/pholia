@@ -329,6 +329,15 @@ const Player = {
         const tracks = this.item?.media?.audioFiles || [];
         if (!tracks.length) return;
 
+        // Abort any loop already running — without this, startItem's
+        // loadTime() can trigger _restartAutoCache and then startItem's own
+        // _startAutoCache overwrites the controller, leaving the first loop
+        // running forever with no way to abort it.
+        if (this._autoCacheController) {
+            this._autoCacheController.abort();
+            this._autoCacheController = null;
+        }
+
         const controller = new AbortController();
         this._autoCacheController = controller;
         const signal = controller.signal;
@@ -391,11 +400,22 @@ const Player = {
             const tracks = this.session.audioTracks;
             let track = tracks[0];
             offset = globalTime;
+            let matched = false;
             for (let i = 0; i < tracks.length; i++) {
                 if (globalTime >= tracks[i].startOffset && globalTime < tracks[i].startOffset + tracks[i].duration) {
                     track = tracks[i]; offset = globalTime - tracks[i].startOffset;
-                    this.currentTrackIndex = i; break;
+                    this.currentTrackIndex = i; matched = true; break;
                 }
+            }
+            if (!matched) {
+                // Target at/past the book end (skip() clamps to total
+                // duration, which the strict < above never matches). Without
+                // this, the tracks[0] default loads the FIRST track with a
+                // whole-book offset and currentTrackIndex goes stale.
+                const last = tracks.length - 1;
+                track = tracks[last];
+                this.currentTrackIndex = last;
+                offset = Math.max(0, Math.min(globalTime - track.startOffset, track.duration - 0.1));
             }
             url = track.contentUrl.startsWith('http')
                 ? track.contentUrl : `${ABS.serverUrl}${track.contentUrl}?token=${ABS.token}`;
@@ -408,6 +428,13 @@ const Player = {
                     offset = globalTime - elapsed; break;
                 }
                 elapsed += this.tracks[i].duration;
+            }
+            if (!url) {
+                // Same past-the-end case as the session branch above.
+                const last = this.tracks.length - 1;
+                this.currentTrackIndex = last;
+                url = ABS.trackUrl(this.item.id, this.tracks[last].ino);
+                offset = Math.max(0, this.tracks[last].duration - 0.1);
             }
         }
         if (!url) return;

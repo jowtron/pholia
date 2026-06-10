@@ -8,6 +8,7 @@ const APP_SHELL = [
     './index.html',
     './style.css',
     './api.js',
+    './account.js',
     './app.js',
     './player.js',
     './manifest.json',
@@ -31,6 +32,14 @@ self.addEventListener('activate', e => {
     e.waitUntil((async () => {
         const keys = await caches.keys();
         await Promise.all(keys.filter(k => !KEEP_CACHES.has(k)).map(k => caches.delete(k)));
+        // Purge /api/ entries cached before the fetch handler excluded them —
+        // they can contain decrypted server credentials and session tokens.
+        try {
+            const shell = await caches.open(CACHE_NAME);
+            for (const req of await shell.keys()) {
+                if (new URL(req.url).pathname.startsWith('/api/')) await shell.delete(req);
+            }
+        } catch (e) { /* best effort */ }
         // Purge legacy whole-file entries larger than 50 MB. They OOM the tab
         // when the SW tries to slice them in serveCached.
         try {
@@ -185,6 +194,10 @@ self.addEventListener('fetch', e => {
     if (e.request.method === 'HEAD') return;
 
     if (url.origin === self.location.origin) {
+        // Never intercept account/Pages-Functions API calls: responses carry
+        // decrypted server credentials and session tokens, which must not be
+        // persisted into Cache Storage (or replayed by the offline fallback).
+        if (e.request.method !== 'GET' || url.pathname.startsWith('/api/')) return;
         // App shell: network-first, cache fallback when offline.
         // Strip the ?v= cache-bust param so different deploys collapse to one
         // cache entry per logical file. APP_SHELL preloads use canonical URLs
@@ -319,7 +332,10 @@ async function handleCover(request) {
     if (cached) return cached;
     try {
         const res = await fetch(request);
-        if (res.ok) {
+        // <img>-initiated requests are no-cors, so the response is opaque and
+        // res.ok is false even on success — cache those too or the cover cache
+        // never populates from normal UI loads.
+        if (res.ok || res.type === 'opaque') {
             cache.put(key, res.clone()).then(() => evictCovers(cache)).catch(() => {});
         }
         return res;
@@ -374,10 +390,12 @@ async function handleCrossOrigin(request) {
 }
 
 const SAFE_SLICE_LIMIT = 50 * 1024 * 1024;
-// Maximum bytes returned per 206 from serveChunked. Wide Ranges (e.g.
-// "bytes=N-") would otherwise pull every overlapping chunk's arrayBuffer
-// into the JS heap at once and OOM iOS PWA (~50 MB budget). iOS re-issues
-// a fresh Range for the next slice when it sees a partial 206.
+// Historical cap on bytes per 206 from serveChunked, from when wide Ranges
+// (e.g. "bytes=N-") eagerly concatenated every overlapping chunk into the JS
+// heap and OOMed iOS PWA (~50 MB budget). The pull-based ReadableStream in
+// serveChunked now bounds memory via backpressure (~one 10 MB chunk in
+// flight), so this cap is no longer enforced. Kept for reference; if
+// serveChunked ever returns to eager assembly, re-wire this cap first.
 const MAX_RANGE_SLICE = 4 * 1024 * 1024;
 
 // Serve a cached full-body response, slicing into a 206 if the request has
@@ -447,11 +465,17 @@ async function serveChunked(request, cache, baseKey, meta) {
         });
     }
 
+    // Content-Range "bytes */<total>" on 416 lets the client learn the real
+    // size after probing with a stale range (e.g. post-eviction).
+    const unsatisfiable = () => new Response(null, {
+        status: 416,
+        headers: { 'Content-Range': `bytes */${totalSize}` },
+    });
     const m = /bytes=(\d+)-(\d*)/.exec(range);
-    if (!m) return new Response(null, { status: 416 });
+    if (!m) return unsatisfiable();
     const start = parseInt(m[1], 10);
     const end = m[2] ? Math.min(parseInt(m[2], 10), totalSize - 1) : totalSize - 1;
-    if (start > end || start >= totalSize) return new Response(null, { status: 416 });
+    if (start > end || start >= totalSize) return unsatisfiable();
 
     const startChunk = Math.floor(start / chunkSize);
     const requestEndChunk = Math.min(Math.floor(end / chunkSize), numChunks - 1);

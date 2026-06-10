@@ -8,6 +8,10 @@
   Cache-Control: public, max-age=86400, s-maxage=300
   Content-Type: application/javascript
 
+/account.js
+  Cache-Control: public, max-age=86400, s-maxage=300
+  Content-Type: application/javascript
+
 /app.js
   Cache-Control: public, max-age=86400, s-maxage=300
   Content-Type: application/javascript

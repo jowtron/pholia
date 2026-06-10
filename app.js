@@ -1306,6 +1306,12 @@ const App = {
                 },
             };
             if (Player.session) await Player.closeCurrentSession();
+            // Mirror startItem's teardown: kill any auto-cache loop still
+            // running against the previous book (its sliding-window math would
+            // otherwise track the podcast's timeline) and reset recovery state.
+            if (Player._autoCacheController) { Player._autoCacheController.abort(); Player._autoCacheController = null; }
+            Player._audioRecoveryAttempts = 0;
+            Player._prewarmedFromTrackIndex = -1;
             Player.item = pseudoItem;
             Player.chapters = episode.chapters || [];
             Player.tracks = [];
