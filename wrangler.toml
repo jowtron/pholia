@@ -5,7 +5,7 @@ compatibility_date = "2025-05-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "pholia-accounts"
-database_id = "4e7f434d-2f39-484e-bbb8-f480b33ca8a6"
+database_id = "ea77504b-abb9-470e-9638-a4db6d253832"
 
 # ENCRYPTION_KEY is set as a Pages secret via:
 #   wrangler pages secret put ENCRYPTION_KEY --project-name=pholia

@@ -4,7 +4,7 @@ Static HTML/CSS/JS web app — an Audiobookshelf client with full offline playba
 
 - Deployed to **Cloudflare Pages** (project: `pholia`, URL: `pholia.pages.dev` — older URL `cadence-6re.pages.dev` still resolves)
 - GitHub repo: hosted on GitHub
-- Go proxy (`main.go`) kept as fallback but not currently used
+- Go proxy (`main.go`) was a local CORS-bypass fallback (pre `?token=` auth); **archived out of this repo** to `~/Claude_Code/isub/go-proxy/` (2026-06-22), no longer deployed
 - LocalStorage keys are now all `pholia_*`. A one-time migration block at the top of `api.js` copies any pre-existing `cadence_*` values across (the app was originally called Cadence). Pholia-account session bearer is `pholia_session`; the ABS JWT is `pholia_token`.
 
 ## Architecture
