@@ -10,6 +10,7 @@ const App = {
         Player.init();
         this.bindEvents();
         this.applyTabVisibility();
+        this._consumePholiaHandoff();
         this.tryAutoLogin();
         this.setupSwUpdate();
         this.setupSwDebugBridge();
@@ -580,6 +581,33 @@ const App = {
 
     // ── Auth ──
     _offlineMode: false,
+
+    // Single sign-on hand-off from the ABS_shim account/admin page. That page
+    // opens Pholia with `#connect=<base64url JSON {s:server, u:username, t:token}>`
+    // where the token is the member's ABS access token — the shim IS the ABS
+    // server Pholia talks to, so its token is exactly our `pholia_token`. We
+    // adopt those credentials and strip the fragment immediately so the token
+    // doesn't linger in the address bar / history. tryAutoLogin() (called right
+    // after) then finds the saved creds and signs in through the normal path,
+    // replacing whatever server was previously active. A saved Pholia-account
+    // vault, if any, is untouched. Returns true if a hand-off was consumed.
+    _consumePholiaHandoff() {
+        const m = (location.hash || '').match(/[#&]connect=([^&]+)/);
+        if (!m) return false;
+        let data = null;
+        try {
+            let s = m[1].replace(/-/g, '+').replace(/_/g, '/');
+            while (s.length % 4) s += '=';
+            data = JSON.parse(decodeURIComponent(escape(atob(s))));
+        } catch (e) { data = null; }
+        // Always clear the fragment, even if the payload was malformed.
+        try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {}
+        if (!data || !data.s || !data.t) return false;
+        const server = String(data.s).replace(/\/+$/, '');
+        ABS.saveCredentials(server, data.u || '', data.t);
+        ABS.init(server, data.t);
+        return true;
+    },
 
     async tryAutoLogin() {
         const savedServer = localStorage.getItem('pholia_server');
