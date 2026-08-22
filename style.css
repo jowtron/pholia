@@ -200,6 +200,8 @@ header h2 { font-size: 1.125rem; font-weight: 600; }
     display: flex; align-items: center; justify-content: center;
 }
 .icon-btn:hover { color: var(--text); background: var(--card-bg); }
+.icon-btn img { width: 22px; height: 22px; display: block; }
+#abb-btn.active { background: var(--card-bg); }
 .hidden { display: none !important; }
 
 /* ── Library selector ── */
@@ -228,6 +230,17 @@ header h2 { font-size: 1.125rem; font-weight: 600; }
     color: var(--text); outline: none;
 }
 .search-bar input:focus { border-color: var(--accent); }
+/* Input with an inline × clear button (shown only while there's text). */
+.search-wrap { position: relative; flex: 1; min-width: 0; display: flex; }
+.search-wrap input { flex: 1; min-width: 0; width: 100%; padding-right: 2.2rem; }
+.search-clear {
+    position: absolute; right: 0.3rem; top: 50%; transform: translateY(-50%);
+    width: 1.7rem; height: 1.7rem; padding: 0; border: 0; border-radius: 50%;
+    background: transparent; color: var(--text-muted, #888); font-size: 1.3rem; line-height: 1;
+    display: none; align-items: center; justify-content: center;
+}
+.search-wrap.has-value .search-clear { display: flex; }
+.search-clear:active { background: var(--border); }
 #search-results { flex: 1; overflow-y: auto; padding: 1rem; }
 
 /* ── Content ── */
@@ -769,6 +782,7 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
 /* ── Add audiobook (ABS_shim ABB → Real-Debrid) ── */
 .abb-search { display: flex; gap: 0.5rem; }
 .abb-search input { flex: 1; min-width: 0; }
+.abb-search .search-wrap input { font-size: 16px; }
 .abb-go { padding: 0 1rem; background: var(--accent); color: #fff; border-radius: var(--radius); }
 .abb-item { padding: 0.6rem 0.75rem; }
 .abb-main { display: flex; align-items: center; gap: 0.75rem; }

@@ -347,10 +347,12 @@ const App = {
         document.getElementById('back-btn').addEventListener('click', () => this.goBack());
         document.getElementById('settings-btn').addEventListener('click', () => this.showSettings());
         document.getElementById('search-btn').addEventListener('click', () => this.showSearch());
+        document.getElementById('abb-btn').addEventListener('click', () => this.toggleAdd());
 
         // Search
         document.getElementById('search-cancel').addEventListener('click', () => this.hideSearch());
         document.getElementById('search-input').addEventListener('input', debounce(e => this.doSearch(e.target.value), 300));
+        this._wireSearchClear(document.getElementById('search-input'), document.getElementById('search-clear'), () => this.doSearch(''));
 
         // Settings
         document.getElementById('settings-close').addEventListener('click', () => this.hideSettings());
@@ -1022,10 +1024,11 @@ const App = {
     // whenever the tab is shown; switching tabs mid-grab doesn't lose it.
     abbAvailable: false,
     abbFolderId: null,
+    abbLibraryId: null,
     _abbRoot: null,
 
     async checkAbbSupport() {
-        const tab = document.querySelector('[data-tab="add"]');
+        const btn = document.getElementById('abb-btn');
         let ok = false;
         try {
             const s = await ABS.request('/api/admin/abb/settings');
@@ -1033,12 +1036,23 @@ const App = {
                 const st = await ABS.request('/api/admin/storage/status');
                 const folders = (st?.folders || []).filter(f => f.provider === 'pcloud_oauth');
                 const mine = folders.find(f => f.libraryId === this.currentLibraryId) || folders[0];
-                if (mine) { ok = true; this.abbFolderId = mine.id; }
+                if (mine) { ok = true; this.abbFolderId = mine.id; this.abbLibraryId = mine.libraryId; }
             }
         } catch { /* not a shim, or no access */ }
         this.abbAvailable = ok;
-        if (tab) tab.style.display = ok ? '' : 'none';
+        btn.classList.toggle('hidden', !ok);
         if (!ok && this.currentTab === 'add') this.switchTab('home');
+    },
+
+    // The Add screen is reached from the header icon rather than a bottom
+    // tab, so it keeps 'add' as an internal tab state (cache keys, re-attach
+    // of _abbRoot) but shows a back arrow that returns to the tab it was
+    // opened from. Tapping the icon again also goes back.
+    _addReturnTab: 'home',
+    toggleAdd() {
+        if (this.currentTab === 'add') { this.switchTab(this._addReturnTab); return; }
+        this._addReturnTab = this.currentTab;
+        this.switchTab('add');
     },
 
     // Like ABS.request, but surfaces the shim's JSON {error} message on 4xx/5xx
@@ -1057,15 +1071,17 @@ const App = {
 
     showAdd() {
         document.getElementById('header-title').textContent = 'Add audiobook';
+        document.getElementById('back-btn').classList.remove('hidden');
         if (!this._abbRoot) {
             const root = document.createElement('div');
             root.className = 'abb-root';
             root.innerHTML =
-                '<div class="search-bar abb-search"><input type="text" id="abb-q" placeholder="Search AudioBookBay…" autocomplete="off"><button id="abb-go" class="abb-go">Search</button></div>' +
+                '<div class="search-bar abb-search"><span class="search-wrap"><input type="text" id="abb-q" placeholder="Search AudioBookBay…" autocomplete="off"><button type="button" class="search-clear" id="abb-clear" aria-label="Clear search">×</button></span><button id="abb-go" class="abb-go">Search</button></div>' +
                 '<div id="abb-results"></div>';
             const go = () => this.abbSearch(root.querySelector('#abb-q').value, root.querySelector('#abb-results'));
             root.querySelector('#abb-go').addEventListener('click', go);
             root.querySelector('#abb-q').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
+            this._wireSearchClear(root.querySelector('#abb-q'), root.querySelector('#abb-clear'), () => { root.querySelector('#abb-results').innerHTML = ''; });
             this._abbRoot = root;
         }
         const content = document.getElementById('content');
@@ -1094,7 +1110,7 @@ const App = {
         for (const res of r.results) {
             const li = document.createElement('li');
             li.className = 'tracklist-item abb-item';
-            const sub = [res.format ? res.format.toUpperCase() : null, res.bitrate, res.sizeBytes ? formatBytes(res.sizeBytes) : null, res.language].filter(Boolean).join(' • ');
+            const sub = [res.format ? res.format.toUpperCase() : null, res.bitrate, res.sizeBytes ? formatBytes(res.sizeBytes) : null, res.language, res.posted ? 'Posted ' + res.posted : null].filter(Boolean).join(' • ');
             li.innerHTML =
                 '<div class="abb-main">' +
                   '<img class="ep-cover abb-cover" alt="" loading="lazy" referrerpolicy="no-referrer">' +
@@ -1201,7 +1217,21 @@ const App = {
                 }
             }
             await Promise.all(fetches);
-            row.complete('Done');
+            // The shim's /fetch-url/finish only registers single m4b/m4a/aac
+            // files; mp3 releases are N chapter files that need a library scan
+            // once they've all landed. Without this the book only appeared
+            // after pressing "Scan now" in the shim's /admin.
+            if (this.abbLibraryId) {
+                row.setStatus('Scanning library…');
+                try {
+                    const report = await this._shimCall(`/api/admin/libraries/${encodeURIComponent(this.abbLibraryId)}/scan`, { method: 'POST' });
+                    row.complete(`Done — scan added ${report.added || 0} new book(s)`);
+                } catch (e) {
+                    row.complete('Done, but the library scan failed: ' + e.message);
+                }
+            } else {
+                row.complete('Done');
+            }
             return true;
         } catch (e) {
             row.fail(e.message || String(e));
@@ -1309,6 +1339,7 @@ const App = {
         this.currentTab = tab;
         this.navStack = [];
         document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+        document.getElementById('abb-btn').classList.toggle('active', tab === 'add');
         document.getElementById('back-btn').classList.add('hidden');
 
         switch (tab) {
@@ -1333,6 +1364,8 @@ const App = {
         if (this.navStack.length > 1) {
             this.navStack.pop();
             this.switchTab(this.currentTab);
+        } else if (this.currentTab === 'add') {
+            this.switchTab(this._addReturnTab);
         }
     },
 
@@ -1745,7 +1778,23 @@ const App = {
     hideSearch() {
         document.getElementById('search-overlay').classList.add('hidden');
         document.getElementById('search-input').value = '';
+        document.getElementById('search-input').dispatchEvent(new Event('input'));
         document.getElementById('search-results').innerHTML = '';
+    },
+
+    // × inside a search field: visible only while there's text; clears the
+    // field, runs onClear (so results empty too), and keeps the keyboard up.
+    _wireSearchClear(input, btn, onClear) {
+        const wrap = input.parentElement;
+        const sync = () => wrap.classList.toggle('has-value', input.value.length > 0);
+        input.addEventListener('input', sync);
+        btn.addEventListener('click', () => {
+            input.value = '';
+            sync();
+            onClear?.();
+            input.focus();
+        });
+        sync();
     },
 
     async doSearch(query) {
