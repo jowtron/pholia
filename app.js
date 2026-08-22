@@ -1008,6 +1008,264 @@ const App = {
         });
         const latestTab = document.querySelector('[data-tab="latest"]');
         if (latestTab) latestTab.style.display = isPodcast ? '' : 'none';
+        this.checkAbbSupport();
+    },
+
+    // ── Add audiobooks (ABS_shim only) ──
+    //
+    // The shim (github.com/jowtron/abs-shim) exposes /api/admin/abb/* for its
+    // AudioBookBay → Real-Debrid → pCloud pipeline. Stock Audiobookshelf
+    // 404s there, and a shim without a Real-Debrid token reports
+    // rdTokenSet:false — in both cases the tab stays hidden. The flow is
+    // browser-driven (resolve → add torrent(s) → poll → pCloud fetch), so
+    // the rendered progress lives in a detached element that is re-attached
+    // whenever the tab is shown; switching tabs mid-grab doesn't lose it.
+    abbAvailable: false,
+    abbFolderId: null,
+    _abbRoot: null,
+
+    async checkAbbSupport() {
+        const tab = document.querySelector('[data-tab="add"]');
+        let ok = false;
+        try {
+            const s = await ABS.request('/api/admin/abb/settings');
+            if (s && s.rdTokenSet) {
+                const st = await ABS.request('/api/admin/storage/status');
+                const folders = (st?.folders || []).filter(f => f.provider === 'pcloud_oauth');
+                const mine = folders.find(f => f.libraryId === this.currentLibraryId) || folders[0];
+                if (mine) { ok = true; this.abbFolderId = mine.id; }
+            }
+        } catch { /* not a shim, or no access */ }
+        this.abbAvailable = ok;
+        if (tab) tab.style.display = ok ? '' : 'none';
+        if (!ok && this.currentTab === 'add') this.switchTab('home');
+    },
+
+    // Like ABS.request, but surfaces the shim's JSON {error} message on 4xx/5xx
+    // instead of a bare status line.
+    async _shimCall(path, options = {}) {
+        const headers = {};
+        if (options.body) headers['Content-Type'] = 'application/json';
+        const res = await fetch(ABS.apiUrl(path), { credentials: 'omit', ...options, headers: { ...headers, ...options.headers } });
+        if (res.status === 204) return null;
+        const text = await res.text();
+        let data = null;
+        try { data = text ? JSON.parse(text) : null; } catch { data = null; }
+        if (!res.ok) throw new Error((data && data.error) || `HTTP ${res.status}`);
+        return data;
+    },
+
+    showAdd() {
+        document.getElementById('header-title').textContent = 'Add audiobook';
+        if (!this._abbRoot) {
+            const root = document.createElement('div');
+            root.className = 'abb-root';
+            root.innerHTML =
+                '<div class="search-bar abb-search"><input type="text" id="abb-q" placeholder="Search AudioBookBay…" autocomplete="off"><button id="abb-go" class="abb-go">Search</button></div>' +
+                '<div id="abb-results"></div>';
+            const go = () => this.abbSearch(root.querySelector('#abb-q').value, root.querySelector('#abb-results'));
+            root.querySelector('#abb-go').addEventListener('click', go);
+            root.querySelector('#abb-q').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
+            this._abbRoot = root;
+        }
+        const content = document.getElementById('content');
+        content.innerHTML = '';
+        content.appendChild(this._abbRoot);
+    },
+
+    async abbSearch(q, out) {
+        q = (q || '').trim();
+        if (!q) return;
+        out.innerHTML = '<div class="loading">Searching AudioBookBay…</div>';
+        let r;
+        try {
+            r = await this._shimCall(`/api/admin/abb/search?q=${encodeURIComponent(q)}`);
+        } catch (e) {
+            out.innerHTML = `<div class="empty-state">Search failed: ${esc(e.message)}</div>`;
+            return;
+        }
+        if (!r.results.length) {
+            out.innerHTML = '<div class="empty-state">No results</div>';
+            return;
+        }
+        out.innerHTML = '';
+        const ul = document.createElement('ul');
+        ul.className = 'tracklist abb-list';
+        for (const res of r.results) {
+            const li = document.createElement('li');
+            li.className = 'tracklist-item abb-item';
+            const sub = [res.format ? res.format.toUpperCase() : null, res.bitrate, res.sizeBytes ? formatBytes(res.sizeBytes) : null, res.language].filter(Boolean).join(' • ');
+            li.innerHTML =
+                '<div class="abb-main">' +
+                  '<img class="ep-cover abb-cover" alt="" loading="lazy" referrerpolicy="no-referrer">' +
+                  '<span class="tracklist-title"><strong></strong><br><span class="text-muted"></span></span>' +
+                  '<button class="abb-grab">Grab</button>' +
+                '</div>' +
+                '<div class="abb-progress"></div>';
+            const img = li.querySelector('.abb-cover');
+            if (res.cover && /^https?:/.test(res.cover)) {
+                img.src = res.cover;
+                img.addEventListener('error', () => { img.style.visibility = 'hidden'; });
+            } else {
+                img.style.visibility = 'hidden';
+            }
+            li.querySelector('strong').textContent = res.title;
+            li.querySelector('.text-muted').textContent = sub;
+            const btn = li.querySelector('.abb-grab');
+            const prog = li.querySelector('.abb-progress');
+            btn.addEventListener('click', () => {
+                btn.disabled = true;
+                btn.innerHTML = '<span class="abb-spinner"></span>Grabbing…';
+                this.abbGrab(res, prog).then((ok) => {
+                    btn.textContent = ok ? 'Added ✓' : 'Retry';
+                    btn.disabled = !!ok;
+                    if (ok) { this._tabCache = {}; }  // library/home tabs re-fetch to show the new book
+                });
+            });
+            ul.appendChild(li);
+        }
+        out.appendChild(ul);
+    },
+
+    _abbRow(listEl, name, status) {
+        const el = document.createElement('div');
+        el.className = 'abb-row';
+        el.innerHTML = '<div class="abb-row-text"><span class="abb-row-name"></span><span class="abb-row-status text-muted"></span></div><div class="abb-bar"><span></span></div>';
+        el.querySelector('.abb-row-name').textContent = name;
+        const st = el.querySelector('.abb-row-status');
+        const bar = el.querySelector('.abb-bar > span');
+        st.textContent = status ? ' · ' + status : '';
+        listEl.appendChild(el);
+        return {
+            setStatus(t) { st.textContent = ' · ' + t; },
+            setProgress(done, total) {
+                const pct = total ? Math.round(done / total * 100) : 0;
+                bar.style.width = pct + '%';
+                st.textContent = ` · ${pct}% (${formatBytes(done)} / ${formatBytes(total)})`;
+            },
+            setPct(pct) { bar.style.width = Math.max(0, Math.min(100, pct)) + '%'; },
+            complete(t) { el.classList.add('ok'); bar.style.width = '100%'; st.textContent = ' · ' + (t || 'Done'); },
+            fail(t) { el.classList.add('err'); st.textContent = ' · ' + (t || 'Failed'); },
+        };
+    },
+
+    async abbGrab(res, listEl) {
+        const folderId = this.abbFolderId;
+        const row = this._abbRow(listEl, 'Real-Debrid', 'Resolving on AudioBookBay…');
+        try {
+            const m = await this._shimCall('/api/admin/abb/resolve', { method: 'POST', body: JSON.stringify({ url: res.url }) });
+            row.setStatus('Adding to Real-Debrid…');
+            const add = (fileId) => this._shimCall('/api/admin/abb/torrents', { method: 'POST', body: JSON.stringify(fileId != null ? { magnet: m.magnet, fileId } : { magnet: m.magnet }) });
+            const first = await add(null);
+            const torrents = [{ id: first.id }];
+            if (first.mode === 'multi') {
+                const rest = first.files.filter(f => f.id !== first.selected);
+                for (let i = 0; i < rest.length; i += 4) {
+                    const added = await Promise.all(rest.slice(i, i + 4).map(f => add(f.id).catch(e => ({ error: e.message }))));
+                    for (const a of added) {
+                        if (a.error) this._abbRow(listEl, 'file', '').fail('Add failed: ' + a.error);
+                        else torrents.push({ id: a.id });
+                    }
+                    row.setStatus(`Added ${torrents.length} / ${rest.length + 1} torrent(s)…`);
+                }
+            }
+            row.setStatus(`${torrents.length} torrent(s) — waiting for Real-Debrid`);
+            const interval = Math.max(4000, torrents.length * 600);
+            const pending = new Map(torrents.map(t => [t.id, this._abbRow(listEl, 'RD ' + t.id, 'Queued')]));
+            const fetches = [];
+            while (pending.size) {
+                await new Promise(r => setTimeout(r, interval));
+                for (const [id, trow] of [...pending]) {
+                    let st;
+                    try { st = await this._shimCall('/api/admin/abb/torrents/' + encodeURIComponent(id)); }
+                    catch (e) { trow.setStatus('Poll error: ' + e.message); continue; }
+                    if (st.error && !st.downloads) { trow.fail(st.error); pending.delete(id); continue; }
+                    if (st.status === 'downloaded' && st.downloads) {
+                        pending.delete(id);
+                        trow.complete('Ready: ' + st.downloads.map(d => d.filename).join(', '));
+                        fetches.push((async () => {
+                            for (const d of st.downloads) {
+                                if (!d.isAudio && !d.isArchive) continue;
+                                if (d.ext === 'rar' || d.ext === '7z') {
+                                    this._abbRow(listEl, d.filename, '').fail(`Real-Debrid produced a ${d.ext}; extract it via the shim's browser upload`);
+                                    continue;
+                                }
+                                await this.abbFetchToPcloud(folderId, d.download, m.folderName + '/' + d.filename, listEl);
+                            }
+                            await this._shimCall('/api/admin/abb/torrents/' + encodeURIComponent(id), { method: 'DELETE' }).catch(() => {});
+                        })());
+                    } else {
+                        trow.setStatus(`${st.status} ${typeof st.progress === 'number' ? st.progress + '%' : ''}${st.seeders != null ? ' · ' + st.seeders + ' seeders' : ''}${st.speed ? ' · ' + formatBytes(st.speed) + '/s' : ''}`);
+                        if (typeof st.progress === 'number') trow.setPct(st.progress);
+                    }
+                }
+            }
+            await Promise.all(fetches);
+            row.complete('Done');
+            return true;
+        } catch (e) {
+            row.fail(e.message || String(e));
+            return false;
+        }
+    },
+
+    // pCloud pulls the file itself; we poll the shim, which stat()s the target.
+    async abbFetchToPcloud(folderId, url, relPath, listEl) {
+        const row = this._abbRow(listEl, relPath.split('/').pop(), 'Queueing on pCloud…');
+        try {
+            const base = `/api/admin/storage/folder/${encodeURIComponent(folderId)}/fetch-url`;
+            const started = await this._shimCall(base + '/start', { method: 'POST', body: JSON.stringify({ url, relPath }) });
+            const t0 = Date.now();
+            let lastSize = 0;
+            for (;;) {
+                await new Promise(r => setTimeout(r, 3000));
+                const qs = new URLSearchParams({ relPath: started.relPath, lastSize: String(lastSize) });
+                if (started.expectedSize) qs.set('expectedSize', String(started.expectedSize));
+                const p = await this._shimCall(base + '/progress?' + qs.toString());
+                if (p.finished) break;
+                const elapsed = Math.round((Date.now() - t0) / 1000);
+                if (elapsed > 3600) throw new Error('Gave up after an hour');
+                if (p.status === 'pending') row.setStatus(`pCloud fetching… ${elapsed}s` + (started.expectedSize ? ` (${formatBytes(started.expectedSize)})` : ''));
+                else if (p.size) row.setProgress(p.downloaded, p.size);
+                else row.setStatus(`Downloading… ${formatBytes(p.downloaded)}`);
+                lastSize = p.downloaded || 0;
+            }
+            row.setStatus('Registering…');
+            const saved = await this._shimCall(base + '/finish', { method: 'POST', body: JSON.stringify({ relPath: started.relPath, registerAsBook: true }) });
+            if (saved.itemId) row.complete('In your library');
+            else if (saved.registerError) row.complete('Saved but not registered: ' + saved.registerError);
+            else if (/\.zip$/i.test(started.relPath)) {
+                row.complete('Saved — extracting…');
+                await this.abbExtractZip(folderId, started.relPath, listEl);
+            } else row.complete('Saved');
+        } catch (e) {
+            row.fail(e.message || String(e));
+        }
+    },
+
+    async abbExtractZip(folderId, relPath, listEl) {
+        const head = this._abbRow(listEl, 'Extracting ' + relPath.split('/').pop(), 'Reading archive…');
+        const rows = {};
+        try {
+            const base = `/api/admin/storage/folder/${encodeURIComponent(folderId)}/extract`;
+            await this._shimCall(base + '/start', { method: 'POST', body: JSON.stringify({ relPath, deleteArchive: true }) });
+            for (;;) {
+                await new Promise(r => setTimeout(r, 2500));
+                const job = await this._shimCall(base + '/status?relPath=' + encodeURIComponent(relPath));
+                for (const e of job.entries || []) {
+                    if (!rows[e.outRelPath]) rows[e.outRelPath] = this._abbRow(listEl, e.outRelPath.split('/').pop(), 'Queued');
+                    const r = rows[e.outRelPath];
+                    if (e.status === 'running') r.setProgress(e.uploaded, e.size);
+                    else if (e.status === 'done') r.complete(e.itemId ? 'In your library' : (e.error || 'Extracted'));
+                    else if (e.status === 'error') r.fail(e.error || 'Failed');
+                }
+                if (job.status === 'running') head.setStatus(`${job.next || 0} / ${job.entries.length} files`);
+                else if (job.status === 'done') { head.complete(`${job.entries.length} file(s)` + (job.error ? ' — ' + job.error : '')); return; }
+                else if (job.status === 'error') { head.fail(job.error || 'Extraction failed'); return; }
+            }
+        } catch (e) {
+            head.fail(e.message || String(e));
+        }
     },
 
     // ── Navigation ──
@@ -1057,6 +1315,7 @@ const App = {
             case 'home': this.showHome(); break;
             case 'library': this.showLibrary(); break;
             case 'latest': this.showLatest(); break;
+            case 'add': this.showAdd(); break;
             case 'series': this.showSeries(); break;
             case 'collections': this.showCollections(); break;
             case 'authors': this.showAuthors(); break;

@@ -765,3 +765,26 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
     .h-scroll .card { width: 150px; }
     .h-scroll .card img { width: 150px; height: 150px; }
 }
+
+/* ── Add audiobook (ABS_shim ABB → Real-Debrid) ── */
+.abb-search { display: flex; gap: 0.5rem; }
+.abb-search input { flex: 1; min-width: 0; }
+.abb-go { padding: 0 1rem; background: var(--accent); color: #fff; border-radius: var(--radius); }
+.abb-item { padding: 0.6rem 0.75rem; }
+.abb-main { display: flex; align-items: center; gap: 0.75rem; }
+.abb-main .tracklist-title { min-width: 0; }
+.abb-main strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.abb-cover { width: 44px; height: 44px; object-fit: cover; border-radius: 6px; background: var(--card-bg); flex-shrink: 0; }
+.abb-grab { padding: 0.4rem 0.8rem; background: var(--accent); color: #fff; border-radius: var(--radius); font-size: 0.85rem; white-space: nowrap; flex-shrink: 0; }
+.abb-grab:disabled { opacity: 0.75; }
+.abb-spinner { display: inline-block; width: 0.8em; height: 0.8em; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: abb-spin 0.7s linear infinite; vertical-align: -0.1em; margin-right: 0.4em; }
+@keyframes abb-spin { to { transform: rotate(360deg); } }
+.abb-progress:empty { display: none; }
+.abb-progress { margin-top: 0.5rem; display: flex; flex-direction: column; gap: 0.35rem; }
+.abb-row { font-size: 0.8rem; background: var(--card-bg); border-radius: 6px; padding: 0.4rem 0.5rem; }
+.abb-row-text { display: flex; flex-wrap: wrap; gap: 0 0.25rem; }
+.abb-row-name { font-weight: 500; overflow-wrap: anywhere; }
+.abb-bar { display: block; height: 3px; background: var(--border); border-radius: 2px; margin-top: 0.3rem; overflow: hidden; }
+.abb-bar > span { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.2s; }
+.abb-row.ok .abb-bar > span { background: #4ade80; }
+.abb-row.err .abb-row-status { color: #f5a524; }
