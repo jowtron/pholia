@@ -167,3 +167,7 @@ paths) are intentionally left out of this repo; keep them in private notes.
 - **`input type="url"`** rejects bare hostnames — use `type="text"` and auto-prepend `https://`
 - **`reg.update()` is unreliable on iOS PWA** — pair it with a build-version probe (`fetch('/index.html?_v=…')` + parse `#build-version`) for reliable update detection
 - **Don't trust "meta exists" as "fully cached"** — sliding-window writes meta upfront with chunks added incrementally; check actual chunk presence in validators
+
+## "Add audiobook" (ABS_shim only)
+
+When the server is an ABS_shim with a Real-Debrid token (`GET /api/admin/abb/settings` → `rdTokenSet:true`) and a `pcloud_oauth` folder, `App.checkAbbSupport()` unhides `#abb-btn` — the ABB-logo icon (`icons/abb.png`) in the header beside search. It opens the Add screen (`App.showAdd()`, internal tab state `'add'` with no bottom tab; back arrow / tapping the icon again returns to the previous tab). The grab flow (`abbGrab` → `abbFetchToPcloud` → `abbExtractZip`) drives shim routes `/api/admin/abb/*`, `/api/admin/storage/folder/:id/fetch-url/*`, `extract/*`, and finishes with `POST /api/admin/libraries/:id/scan` (the shim only auto-registers single m4b files; mp3 releases need the scan). Renaming any of those routes on the shim hides/breaks this screen silently — change both repos together. Stock ABS 404s the first probe, so the icon never shows there.
