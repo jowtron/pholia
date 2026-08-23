@@ -818,8 +818,20 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
 .abb-details .meta { color: var(--text-muted); margin-bottom: 0.4rem; }
 .abb-details p { margin: 0 0 0.5rem 0; }
 .abb-details p:last-child { margin-bottom: 0; }
+.abb-pick-modal .modal-content { display: flex; flex-direction: column; max-height: 85vh; }
+.abb-pick-modal .modal-body { overflow-y: auto; min-height: 0; }
+.abb-pick-modal h3 { font-size: 1rem; overflow-wrap: anywhere; }
+.abb-pick-hint { font-size: 0.8rem; margin-bottom: 0.5rem; }
+.abb-pick-list { font-size: 0.85rem; }
+.abb-pick-group { margin: 0.35rem 0; }
+.abb-pick-dir { display: block; font-weight: 600; padding: 0.25rem 0; overflow-wrap: anywhere; }
+.abb-pick-file { display: block; padding: 0.2rem 0 0.2rem 1.4rem; overflow-wrap: anywhere; }
+.abb-pick-file input, .abb-pick-dir input { margin-right: 0.35rem; }
+.abb-pick-modal .modal-actions { display: flex; align-items: center; gap: 0.5rem; }
+.abb-pick-modal .abb-pick-summary { margin-right: auto; font-size: 0.8rem; }
 .abb-row { font-size: 0.8rem; background: var(--card-bg); border-radius: 6px; padding: 0.4rem 0.5rem; }
-.abb-row-text { display: flex; flex-wrap: wrap; gap: 0 0.25rem; }
+.abb-row-text { display: flex; flex-wrap: wrap; gap: 0 0.25rem; align-items: center; }
+.abb-row-btn { margin-left: auto; padding: 0.1rem 0.55rem; font-size: 0.75rem; border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--text-muted); }
 .abb-row-name { font-weight: 500; overflow-wrap: anywhere; }
 .abb-bar { display: block; height: 3px; background: var(--border); border-radius: 2px; margin-top: 0.3rem; overflow: hidden; }
 .abb-bar > span { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.2s; }

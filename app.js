@@ -1099,7 +1099,10 @@ const App = {
         out.innerHTML = '<div class="loading">Searching AudioBookBay…</div>';
         let r;
         try {
-            r = await this._shimCall(`/api/admin/abb/search?q=${encodeURIComponent(q)}`);
+            // A pasted magnet link becomes a single pseudo-result.
+            r = /^magnet:\?/i.test(q)
+                ? { results: [{ title: this._magnetTitle(q), url: null, magnet: q, cover: null, format: null, bitrate: null, sizeBytes: null, language: '', posted: null }] }
+                : await this._shimCall(`/api/admin/abb/search?q=${encodeURIComponent(q)}`);
         } catch (e) {
             out.innerHTML = `<div class="empty-state">Search failed: ${esc(e.message)}</div>`;
             return;
@@ -1114,7 +1117,7 @@ const App = {
         for (const res of r.results) {
             const li = document.createElement('li');
             li.className = 'tracklist-item abb-item';
-            const sub = [res.format ? res.format.toUpperCase() : null, res.bitrate, res.sizeBytes ? formatBytes(res.sizeBytes) : null, res.language, res.posted ? 'Posted ' + res.posted : null].filter(Boolean).join(' • ');
+            const sub = res.magnet ? 'Magnet link' : [res.format ? res.format.toUpperCase() : null, res.bitrate, res.sizeBytes ? formatBytes(res.sizeBytes) : null, res.language, res.posted ? 'Posted ' + res.posted : null].filter(Boolean).join(' • ');
             li.innerHTML =
                 '<div class="abb-main">' +
                   '<img class="ep-cover abb-cover" alt="" loading="lazy" referrerpolicy="no-referrer">' +
@@ -1134,9 +1137,11 @@ const App = {
             li.querySelector('.text-muted').textContent = sub;
             // Tap the title/cover → blurb + written by / read by (fetched once).
             const details = li.querySelector('.abb-details');
-            const toggle = () => this.abbToggleDetails(res, details);
-            li.querySelector('.tracklist-title').addEventListener('click', toggle);
-            img.addEventListener('click', toggle);
+            if (res.url) {
+                const toggle = () => this.abbToggleDetails(res, details);
+                li.querySelector('.tracklist-title').addEventListener('click', toggle);
+                img.addEventListener('click', toggle);
+            }
             const btn = li.querySelector('.abb-grab');
             const prog = li.querySelector('.abb-progress');
             btn.addEventListener('click', () => {
@@ -1151,6 +1156,10 @@ const App = {
             ul.appendChild(li);
         }
         out.appendChild(ul);
+    },
+
+    _magnetTitle(magnet) {
+        try { return (new URL(magnet).searchParams.get('dn') || '').replace(/\+/g, ' ').trim() || 'Magnet link'; } catch { return 'Magnet link'; }
     },
 
     async abbToggleDetails(res, box) {
@@ -1191,44 +1200,78 @@ const App = {
             setPct(pct) { bar.style.width = Math.max(0, Math.min(100, pct)) + '%'; },
             complete(t) { el.classList.add('ok'); bar.style.width = '100%'; st.textContent = ' · ' + (t || 'Done'); },
             fail(t) { el.classList.add('err'); st.textContent = ' · ' + (t || 'Failed'); },
+            addButton(label, onClick) {
+                const b = document.createElement('button');
+                b.className = 'abb-row-btn';
+                b.textContent = label;
+                b.addEventListener('click', onClick);
+                el.querySelector('.abb-row-text').appendChild(b);
+                return () => b.remove();
+            },
         };
     },
 
     async abbGrab(res, listEl) {
         const folderId = this.abbFolderId;
-        const row = this._abbRow(listEl, 'Real-Debrid', 'Resolving on AudioBookBay…');
+        const row = this._abbRow(listEl, 'Real-Debrid', res.magnet ? 'Reading magnet…' : 'Resolving on AudioBookBay…');
         try {
-            const m = await this._shimCall('/api/admin/abb/resolve', { method: 'POST', body: JSON.stringify({ url: res.url }) });
-            row.setStatus('Adding to Real-Debrid…');
-            const add = (fileId) => this._shimCall('/api/admin/abb/torrents', { method: 'POST', body: JSON.stringify(fileId != null ? { magnet: m.magnet, fileId } : { magnet: m.magnet }) });
-            const first = await add(null);
-            const torrents = [{ id: first.id }];
-            if (first.mode === 'multi') {
-                const rest = first.files.filter(f => f.id !== first.selected);
-                for (let i = 0; i < rest.length; i += 4) {
-                    const added = await Promise.all(rest.slice(i, i + 4).map(f => add(f.id).catch(e => ({ error: e.message }))));
-                    for (const a of added) {
-                        if (a.error) this._abbRow(listEl, 'file', '').fail('Add failed: ' + a.error);
-                        else torrents.push({ id: a.id });
-                    }
-                    row.setStatus(`Added ${torrents.length} / ${rest.length + 1} torrent(s)…`);
-                }
+            const m = await this._shimCall('/api/admin/abb/resolve', { method: 'POST', body: JSON.stringify(res.magnet ? { magnet: res.magnet } : { url: res.url }) });
+            row.setStatus('Asking Real-Debrid what’s in it…');
+            const peek = await this._shimCall('/api/admin/abb/torrents', { method: 'POST', body: JSON.stringify({ magnet: m.magnet, inspect: true }) });
+            const candidates = (peek.files || []).filter(f => f.isAudio || f.isArchive);
+            if (!candidates.length) throw new Error('Torrent contains no audio files');
+            let chosen = candidates;
+            if (candidates.length > 1) {
+                row.setStatus('Choose which files to grab…');
+                chosen = await this.abbPickFiles(peek.name || m.title, candidates);
+                if (!chosen) { row.fail('Cancelled'); return false; }
             }
+            const plan = this.abbPlanDest(m.folderName, chosen);
+            row.setStatus(`Adding ${plan.length} torrent(s) to Real-Debrid…`);
+            const add = (fileId) => this._shimCall('/api/admin/abb/torrents', { method: 'POST', body: JSON.stringify({ magnet: m.magnet, fileId }) });
+            const torrents = [];
+            for (let i = 0; i < plan.length; i += 4) {
+                const added = await Promise.all(plan.slice(i, i + 4).map(p => add(p.id).then(a => ({ ...a, dest: p.dest })).catch(e => ({ error: e.message, dest: p.dest }))));
+                for (const a of added) {
+                    if (a.error) this._abbRow(listEl, a.dest, '').fail('Add failed: ' + a.error);
+                    else torrents.push({ id: a.id, dest: a.dest });
+                }
+                row.setStatus(`Added ${torrents.length} / ${plan.length} torrent(s)…`);
+            }
+            if (!torrents.length) throw new Error('Nothing could be added to Real-Debrid');
             row.setStatus(`${torrents.length} torrent(s) — waiting for Real-Debrid`);
+            // Cancel deletes whatever is still on RD; a torrent whose progress
+            // hasn't moved for 20 min (no seeders) is given up on the same way.
             const interval = Math.max(4000, torrents.length * 600);
-            const pending = new Map(torrents.map(t => [t.id, this._abbRow(listEl, 'RD ' + t.id, 'Queued')]));
+            const STALL_MS = 20 * 60 * 1000;
+            const pending = new Map(torrents.map(t => [t.id, { row: this._abbRow(listEl, t.dest, 'Queued'), dest: t.dest, lastProgress: -1, lastChangeAt: Date.now() }]));
             const fetches = [];
             let needsScan = false;
+            let cancelled = false;
+            const removeCancel = row.addButton('Cancel', () => { cancelled = true; });
+            const dropTorrent = id => this._shimCall('/api/admin/abb/torrents/' + encodeURIComponent(id), { method: 'DELETE' }).catch(() => {});
             while (pending.size) {
                 await new Promise(r => setTimeout(r, interval));
-                for (const [id, trow] of [...pending]) {
+                if (cancelled) {
+                    for (const [id, p] of pending) { p.row.fail('Cancelled'); dropTorrent(id); }
+                    pending.clear();
+                    removeCancel();
+                    row.fail('Cancelled — torrents removed from Real-Debrid');
+                    return false;
+                }
+                for (const [id, p] of [...pending]) {
                     let st;
                     try { st = await this._shimCall('/api/admin/abb/torrents/' + encodeURIComponent(id)); }
-                    catch (e) { trow.setStatus('Poll error: ' + e.message); continue; }
-                    if (st.error && !st.downloads) { trow.fail(st.error); pending.delete(id); continue; }
+                    catch (e) { p.row.setStatus('Poll error: ' + e.message); continue; }
+                    if (st.error && !st.downloads) { p.row.fail(st.error); pending.delete(id); dropTorrent(id); continue; }
+                    if (st.progress !== p.lastProgress) { p.lastProgress = st.progress; p.lastChangeAt = Date.now(); }
+                    else if (st.status !== 'downloaded' && Date.now() - p.lastChangeAt > STALL_MS) {
+                        p.row.fail(`No progress for 20 min (${st.seeders || 0} seeders) — gave up and removed it from Real-Debrid`);
+                        pending.delete(id); dropTorrent(id); continue;
+                    }
                     if (st.status === 'downloaded' && st.downloads) {
                         pending.delete(id);
-                        trow.complete('Ready: ' + st.downloads.map(d => d.filename).join(', '));
+                        p.row.complete('Ready on Real-Debrid');
                         fetches.push((async () => {
                             for (const d of st.downloads) {
                                 if (!d.isAudio && !d.isArchive) continue;
@@ -1236,24 +1279,25 @@ const App = {
                                     this._abbRow(listEl, d.filename, '').fail(`Real-Debrid produced a ${d.ext}; extract it via the shim's browser upload`);
                                     continue;
                                 }
-                                const registered = await this.abbFetchToPcloud(folderId, d.download, m.folderName + '/' + d.filename, listEl);
+                                const registered = await this.abbFetchToPcloud(folderId, d.download, p.dest, listEl);
                                 if (!registered) needsScan = true;
                             }
                             await this._shimCall('/api/admin/abb/torrents/' + encodeURIComponent(id), { method: 'DELETE' }).catch(() => {});
                         })());
                     } else {
-                        trow.setStatus(`${st.status} ${typeof st.progress === 'number' ? st.progress + '%' : ''}${st.seeders != null ? ' · ' + st.seeders + ' seeders' : ''}${st.speed ? ' · ' + formatBytes(st.speed) + '/s' : ''}`);
-                        if (typeof st.progress === 'number') trow.setPct(st.progress);
+                        p.row.setStatus(`${st.status} ${typeof st.progress === 'number' ? st.progress + '%' : ''}${st.seeders != null ? ' · ' + st.seeders + ' seeders' : ''}${st.speed ? ' · ' + formatBytes(st.speed) + '/s' : ''}`);
+                        if (typeof st.progress === 'number') p.row.setPct(st.progress);
                     }
                 }
             }
+            removeCancel();
             await Promise.all(fetches);
+            if (!fetches.length) { row.fail('Nothing downloaded'); return false; }
             // The shim's /fetch-url/finish only registers single m4b/m4a/aac
             // files; mp3 releases are N chapter files that need a library scan
-            // once they've all landed. Without this the book only appeared
-            // after pressing "Scan now" in the shim's /admin. Skipped when every
-            // file registered via /finish — a scan racing another grab's
-            // registration is how duplicates appeared on 2026-08-23.
+            // once they've all landed. Skipped when every file registered via
+            // /finish — a scan racing another grab's registration is how
+            // duplicates appeared on 2026-08-23.
             if (this.abbLibraryId && needsScan) {
                 row.setStatus('Scanning library…');
                 try {
@@ -1272,6 +1316,93 @@ const App = {
         }
     },
 
+    // Where each chosen file lands on pCloud (mirrors the shim /admin logic):
+    // collapse the dirs every chosen file shares to the deepest one, keep
+    // sub-folders below it (one book per folder), and give m4b siblings
+    // their own folder so the scanner doesn't read them as one broken book.
+    abbPlanDest(folderName, files) {
+        const san = s => s.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim();
+        const split = files.map(f => f.path.split('/').filter(Boolean));
+        let depth = 0;
+        while (split.every(p => p.length > depth + 1 && p[depth] === split[0][depth])) depth++;
+        const top = depth > 0 ? san(split[0][depth - 1]) : san(folderName);
+        const rels = split.map(p => [top, ...p.slice(depth)].map(san));
+        const dirOf = r => r.slice(0, -1).join('/');
+        return files.map((f, i) => {
+            const r = rels[i];
+            const name = r[r.length - 1];
+            const siblings = rels.filter((o, j) => j !== i && dirOf(o) === dirOf(r) && /\.(m4b|m4a|aac|mp3|flac|ogg|opus)$/i.test(o[o.length - 1]));
+            const dest = /\.(m4b|m4a|aac)$/i.test(name) && siblings.length
+                ? [...r.slice(0, -1), name.replace(/\.[^.]+$/, ''), name].join('/')
+                : r.join('/');
+            return { id: f.id, dest, bytes: f.bytes };
+        });
+    },
+
+    // Modal picker for multi-file releases; resolves with the chosen files or
+    // null on cancel. Directory checkboxes toggle their files.
+    abbPickFiles(name, files) {
+        return new Promise(resolve => {
+            const overlay = document.createElement('div');
+            overlay.className = 'modal abb-pick-modal';
+            overlay.innerHTML =
+                '<div class="modal-content">' +
+                  '<div class="modal-header"><h3></h3></div>' +
+                  '<div class="modal-body">' +
+                    '<p class="text-muted abb-pick-hint">Pick what to grab. Whole folders are one book each; mp3 files in a folder are chapters of that book.</p>' +
+                    '<div class="abb-pick-list"></div>' +
+                  '</div>' +
+                  '<div class="modal-actions"><span class="text-muted abb-pick-summary"></span><button class="text-btn" data-cancel>Cancel</button><button class="abb-grab" data-ok>Grab</button></div>' +
+                '</div>';
+            overlay.querySelector('h3').textContent = name;
+            const list = overlay.querySelector('.abb-pick-list');
+            const groups = new Map();
+            for (const f of files) {
+                const parts = f.path.split('/').filter(Boolean);
+                const dir = parts.slice(0, -1).join('/') || '/';
+                if (!groups.has(dir)) groups.set(dir, []);
+                groups.get(dir).push({ f, name: parts[parts.length - 1] });
+            }
+            const boxes = [];
+            const ok = overlay.querySelector('[data-ok]');
+            const summary = overlay.querySelector('.abb-pick-summary');
+            const chosen = () => boxes.filter(b => b.checked).map(b => b._file);
+            const update = () => {
+                const c = chosen();
+                ok.disabled = !c.length;
+                ok.textContent = `Grab ${c.length} file${c.length === 1 ? '' : 's'}`;
+                summary.textContent = c.length ? formatBytes(c.reduce((s, f) => s + (f.bytes || 0), 0)) : 'Nothing selected';
+            };
+            for (const [dir, entries] of groups) {
+                const g = document.createElement('div');
+                g.className = 'abb-pick-group';
+                const dl = document.createElement('label'); dl.className = 'abb-pick-dir';
+                const dcb = document.createElement('input'); dcb.type = 'checkbox'; dcb.checked = true;
+                dl.appendChild(dcb);
+                dl.appendChild(document.createTextNode(` ${dir} (${entries.length} file${entries.length === 1 ? '' : 's'}, ${formatBytes(entries.reduce((s, e) => s + (e.f.bytes || 0), 0))})`));
+                g.appendChild(dl);
+                const fileBoxes = [];
+                for (const e of entries) {
+                    const l = document.createElement('label'); l.className = 'abb-pick-file';
+                    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = true; cb._file = e.f;
+                    l.appendChild(cb);
+                    l.appendChild(document.createTextNode(' ' + e.name + (e.f.bytes ? ' · ' + formatBytes(e.f.bytes) : '') + (e.f.isArchive ? ' · archive' : '')));
+                    g.appendChild(l);
+                    fileBoxes.push(cb); boxes.push(cb);
+                    cb.addEventListener('change', () => { dcb.checked = fileBoxes.every(b => b.checked); dcb.indeterminate = !dcb.checked && fileBoxes.some(b => b.checked); update(); });
+                }
+                dcb.addEventListener('change', () => { fileBoxes.forEach(b => { b.checked = dcb.checked; }); dcb.indeterminate = false; update(); });
+                list.appendChild(g);
+            }
+            update();
+            const close = val => { overlay.remove(); resolve(val); };
+            ok.addEventListener('click', () => close(chosen()));
+            overlay.querySelector('[data-cancel]').addEventListener('click', () => close(null));
+            overlay.addEventListener('click', e => { if (e.target === overlay) close(null); });
+            document.body.appendChild(overlay);
+        });
+    },
+
     // pCloud pulls the file itself; we poll the shim, which stat()s the target.
     async abbFetchToPcloud(folderId, url, relPath, listEl) {
         const row = this._abbRow(listEl, relPath.split('/').pop(), 'Queueing on pCloud…');
@@ -1280,7 +1411,8 @@ const App = {
             const started = await this._shimCall(base + '/start', { method: 'POST', body: JSON.stringify({ url, relPath }) });
             const t0 = Date.now();
             let lastSize = 0;
-            for (;;) {
+            if (started.alreadyComplete) row.setStatus('Already on pCloud (same size) — registering…');
+            for (; !started.alreadyComplete;) {
                 await new Promise(r => setTimeout(r, 3000));
                 const qs = new URLSearchParams({ relPath: started.relPath, lastSize: String(lastSize) });
                 if (started.expectedSize) qs.set('expectedSize', String(started.expectedSize));
