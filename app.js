@@ -1178,8 +1178,8 @@ const App = {
         catch (e) { box.textContent = "Couldn't list: " + e.message; return; }
         // One row per release — the grab flow adds one RD torrent per file.
         const all = this._abbGroupTorrents(r.torrents || []);
-        const hidden = this._abbRdShowAll ? [] : all.filter(g => this._abbVideoRe.test(g.filename));
-        const groups = this._abbRdShowAll ? all : all.filter(g => !this._abbVideoRe.test(g.filename));
+        const hidden = this._abbRdShowAll ? [] : all.filter(g => this._abbLooksVideo(g.filename));
+        const groups = this._abbRdShowAll ? all : all.filter(g => !this._abbLooksVideo(g.filename));
         count.textContent = all.length ? `(${groups.length}${hidden.length ? ' + ' + hidden.length + ' video' : ''})` : '';
         box.innerHTML = '';
         if (!groups.length) box.innerHTML = `<div class="text-muted">${all.length ? 'Nothing audiobook-looking on Real-Debrid.' : 'Nothing on Real-Debrid.'}</div>`;
@@ -1211,6 +1211,8 @@ const App = {
 
     // Hide TV/film torrents by name unless asked (see shim /admin).
     _abbVideoRe: /\b(2160p|1080[pi]|720p|480p|4k|uhd|x26[45]|h\.?26[45]|hevc|av1|xvid|divx|blu-?ray|bdrip|brrip|web-?dl|webrip|hdtv|hdrip|dvdrip|remux|s\d{1,2}e\d{1,3}|season\s?\d+|complete series|yify|yts|rarbg|dts(-hd)?|truehd|atmos|ddp?\s?[57]\.1|aac\s?[57]\.1)\b|\.(mkv|mp4|avi|m2ts|ts)$/i,
+    _abbAudioRe: /\b(audiobook|unabridged|abridged|narrated|m4b|mp3)\b/i,
+    _abbLooksVideo(name) { return this._abbVideoRe.test(name) && !this._abbAudioRe.test(name); },
     _abbRdShowAll: false,
 
     _abbGroupTorrents(torrents) {
