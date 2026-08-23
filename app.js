@@ -1176,35 +1176,101 @@ const App = {
         let r;
         try { r = await this._shimCall('/api/admin/abb/torrents'); }
         catch (e) { box.textContent = "Couldn't list: " + e.message; return; }
-        const ts = r.torrents || [];
-        count.textContent = ts.length ? `(${ts.length})` : '';
-        if (!ts.length) { box.textContent = 'Nothing on Real-Debrid.'; return; }
+        // One row per release — the grab flow adds one RD torrent per file.
+        const groups = this._abbGroupTorrents(r.torrents || []);
+        count.textContent = groups.length ? `(${groups.length})` : '';
+        if (!groups.length) { box.textContent = 'Nothing on Real-Debrid.'; return; }
         box.innerHTML = '';
         const listEl = root.querySelector('#abb-rd-progress');
-        for (const t of ts) {
+        for (const g of groups) {
             const el = document.createElement('div');
             el.className = 'abb-row abb-rd-item';
             el.innerHTML = '<div class="abb-row-text"><span class="abb-row-name"></span><span class="abb-row-status text-muted"></span></div><div class="abb-rd-actions"></div>';
-            el.querySelector('.abb-row-name').textContent = t.filename + (t.bytes ? ' · ' + formatBytes(t.bytes) : '');
-            el.querySelector('.abb-row-status').textContent = ' · ' + (t.error ? t.error : `${t.status}${typeof t.progress === 'number' ? ' ' + t.progress + '%' : ''}${t.seeders != null ? ' · ' + t.seeders + ' seeders' : ''}`);
+            el.querySelector('.abb-row-name').textContent = `${g.filename} · ${g.torrents.length} torrent${g.torrents.length === 1 ? '' : 's'}${g.bytes ? ' · ' + formatBytes(g.bytes) : ''}`;
+            el.querySelector('.abb-row-status').textContent = ' · ' + g.summary;
             const acts = el.querySelector('.abb-rd-actions');
             const act = (label, fn) => { const b = document.createElement('button'); b.className = 'abb-row-btn'; b.textContent = label; b.addEventListener('click', async () => { b.disabled = true; await fn(); this.abbLoadRdList(); }); acts.appendChild(b); };
-            if (!t.error) act(t.status === 'downloaded' ? 'Finish' : 'Watch', () => this.abbResumeTorrent(t, listEl));
-            act('Delete', () => this._shimCall('/api/admin/abb/torrents/' + encodeURIComponent(t.id), { method: 'DELETE' }).catch(() => {}));
+            if (g.live.length) {
+                act('Choose files…', () => this.abbResumeGroup(g, listEl, true));
+                act(g.allDone ? 'Finish' : 'Watch', () => this.abbResumeGroup(g, listEl, false));
+            }
+            act('Delete', () => Promise.all(g.torrents.map(t => this._shimCall('/api/admin/abb/torrents/' + encodeURIComponent(t.id), { method: 'DELETE' }).catch(() => {}))));
             box.appendChild(el);
         }
     },
 
-    async abbResumeTorrent(t, listEl) {
-        const row = this._abbRow(listEl, t.filename, 'Checking on Real-Debrid…');
+    _abbGroupTorrents(torrents) {
+        const byHash = new Map();
+        for (const t of torrents) {
+            const key = t.hash || t.id;
+            if (!byHash.has(key)) byHash.set(key, { hash: t.hash, filename: t.filename, torrents: [], bytes: 0 });
+            const g = byHash.get(key);
+            g.torrents.push(t); g.bytes += t.bytes || 0;
+        }
+        return [...byHash.values()].map(g => {
+            g.live = g.torrents.filter(t => !t.error);
+            g.allDone = g.live.length > 0 && g.live.every(t => t.status === 'downloaded');
+            const done = g.live.filter(t => t.status === 'downloaded').length;
+            const errs = g.torrents.length - g.live.length;
+            const dl = g.live.filter(t => t.status !== 'downloaded');
+            const pct = dl.length ? Math.round(dl.reduce((s, t) => s + (t.progress || 0), 0) / dl.length) : null;
+            const seeders = dl.length ? Math.max(...dl.map(t => t.seeders || 0)) : null;
+            g.summary = [`${done} / ${g.torrents.length} ready`, pct != null ? `downloading ${pct}%` : null, seeders != null ? `${seeders} seeders` : null, errs ? `${errs} failed` : null].filter(Boolean).join(' · ');
+            return g;
+        });
+    },
+
+    // Resume a release this tab didn't start; with `pick`, re-offer the file
+    // picker (currently selected files pre-ticked), deleting torrents for
+    // unticked files and adding torrents for newly ticked ones from the hash.
+    async abbResumeGroup(g, listEl, pick) {
+        const row = this._abbRow(listEl, g.filename, 'Checking on Real-Debrid…');
         try {
-            const st = await this._shimCall('/api/admin/abb/torrents/' + encodeURIComponent(t.id));
-            if (st.error && !st.downloads) throw new Error(st.error);
-            const sel = st.selectedFiles || [];
-            if (!sel.length) throw new Error('Real-Debrid has no file selected for this torrent — delete it and grab again');
+            const infos = [];
+            for (const t of g.live) {
+                const st = await this._shimCall('/api/admin/abb/torrents/' + encodeURIComponent(t.id));
+                if (st.error && !st.downloads) { this._abbRow(listEl, 'RD ' + t.id, '').fail(st.error); continue; }
+                infos.push(st);
+            }
+            if (!infos.length) throw new Error('No usable torrents in this group');
+            const allFiles = infos[0].files || [];
+            const byFile = new Map();
+            for (const st of infos) for (const f of st.selectedFiles || []) byFile.set(f.id, st.id);
+            let chosen = allFiles.filter(f => byFile.has(f.id));
+            if (pick) {
+                const candidates = allFiles.filter(f => f.isAudio || f.isArchive).map(f => ({ ...f, selected: byFile.has(f.id) }));
+                if (!candidates.length) throw new Error('Torrent contains no audio files');
+                row.setStatus('Choose which files to keep…');
+                chosen = await this.abbPickFiles(g.filename, candidates, true);
+                if (!chosen) { row.fail('Cancelled'); return; }
+            }
+            if (!chosen.length) throw new Error('Nothing selected');
+            const want = new Set(chosen.map(f => f.id));
+            const hash = infos[0].hash || g.hash;
+            for (const st of infos) {
+                const covers = (st.selectedFiles || []).map(f => f.id);
+                if (covers.length && !covers.some(id => want.has(id))) {
+                    await this._shimCall('/api/admin/abb/torrents/' + encodeURIComponent(st.id), { method: 'DELETE' }).catch(() => {});
+                    covers.forEach(id => byFile.delete(id));
+                }
+            }
+            const missing = chosen.filter(f => !byFile.has(f.id));
+            if (missing.length) {
+                row.setStatus(`Adding ${missing.length} torrent(s) to Real-Debrid…`);
+                const magnet = 'magnet:?xt=urn:btih:' + hash + '&dn=' + encodeURIComponent(g.filename);
+                for (const f of missing) {
+                    try { const a = await this._shimCall('/api/admin/abb/torrents', { method: 'POST', body: JSON.stringify({ magnet, fileId: f.id }) }); byFile.set(f.id, a.id); }
+                    catch (e) { this._abbRow(listEl, f.path, '').fail('Add failed: ' + e.message); }
+                }
+            }
             const san = s => s.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120) || 'audiobook';
-            const plan = this.abbPlanDest(san(st.filename), sel);
-            await this.abbTrackTorrents([{ id: t.id, dest: plan[0].dest }], this.abbFolderId, listEl, row);
+            const plan = this.abbPlanDest(san(g.filename), chosen.filter(f => byFile.has(f.id)));
+            const byTorrent = new Map();
+            for (const p of plan) { const tid = byFile.get(p.id); if (!byTorrent.has(tid)) byTorrent.set(tid, p.dest); }
+            const torrents = [...byTorrent].map(([id, dest]) => ({ id, dest }));
+            if (!torrents.length) throw new Error('Nothing to track');
+            row.setStatus(`${torrents.length} torrent(s) — waiting for Real-Debrid`);
+            await this.abbTrackTorrents(torrents, this.abbFolderId, listEl, row);
         } catch (e) {
             row.fail(e.message || String(e));
         }
@@ -1404,7 +1470,8 @@ const App = {
 
     // Modal picker for multi-file releases; resolves with the chosen files or
     // null on cancel. Directory checkboxes toggle their files.
-    abbPickFiles(name, files) {
+    abbPickFiles(name, files, useSelectedFlag) {
+        const pre = f => (useSelectedFlag ? !!f.selected : true);
         return new Promise(resolve => {
             const overlay = document.createElement('div');
             overlay.className = 'modal abb-pick-modal';
@@ -1440,14 +1507,15 @@ const App = {
                 const g = document.createElement('div');
                 g.className = 'abb-pick-group';
                 const dl = document.createElement('label'); dl.className = 'abb-pick-dir';
-                const dcb = document.createElement('input'); dcb.type = 'checkbox'; dcb.checked = true;
+                const dcb = document.createElement('input'); dcb.type = 'checkbox';
+                dcb.checked = entries.every(e => pre(e.f)); dcb.indeterminate = !dcb.checked && entries.some(e => pre(e.f));
                 dl.appendChild(dcb);
                 dl.appendChild(document.createTextNode(` ${dir} (${entries.length} file${entries.length === 1 ? '' : 's'}, ${formatBytes(entries.reduce((s, e) => s + (e.f.bytes || 0), 0))})`));
                 g.appendChild(dl);
                 const fileBoxes = [];
                 for (const e of entries) {
                     const l = document.createElement('label'); l.className = 'abb-pick-file';
-                    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = true; cb._file = e.f;
+                    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = pre(e.f); cb._file = e.f;
                     l.appendChild(cb);
                     l.appendChild(document.createTextNode(' ' + e.name + (e.f.bytes ? ' · ' + formatBytes(e.f.bytes) : '') + (e.f.isArchive ? ' · archive' : '')));
                     g.appendChild(l);
