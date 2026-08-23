@@ -1027,6 +1027,7 @@ const App = {
     // the rendered progress lives in a detached element that is re-attached
     // whenever the tab is shown; switching tabs mid-grab doesn't lose it.
     abbAvailable: false,
+    isShim: false,     // server answers /api/admin/abb/settings → ABS_shim (enables delete-from-pCloud)
     abbFolderId: null,
     abbLibraryId: null,
     _abbRoot: null,
@@ -1036,13 +1037,14 @@ const App = {
         let ok = false;
         try {
             const s = await ABS.request('/api/admin/abb/settings');
+            this.isShim = !!s;
             if (s && s.rdTokenSet) {
                 const st = await ABS.request('/api/admin/storage/status');
                 const folders = (st?.folders || []).filter(f => f.provider === 'pcloud_oauth');
                 const mine = folders.find(f => f.libraryId === this.currentLibraryId) || folders[0];
                 if (mine) { ok = true; this.abbFolderId = mine.id; this.abbLibraryId = mine.libraryId; }
             }
-        } catch { /* not a shim, or no access */ }
+        } catch { this.isShim = false; /* not a shim, or no access */ }
         this.abbAvailable = ok;
         btn.classList.toggle('hidden', !ok);
         if (!ok && this.currentTab === 'add') this.switchTab('home');
@@ -1316,6 +1318,53 @@ const App = {
         } catch (e) {
             box.innerHTML = `<div class="meta">Couldn't load details: ${esc(e.message)}</div>`;
         }
+    },
+
+    // Long press (≈550 ms, finger not moving) or right-click. Sets a flag so
+    // the click that follows the release is swallowed by the tap handler.
+    _wireLongPress(el, fn) {
+        let timer = null, sx = 0, sy = 0;
+        const clear = () => { if (timer) { clearTimeout(timer); timer = null; } };
+        el.addEventListener('pointerdown', (e) => {
+            if (e.button !== 0 && e.pointerType === 'mouse') return;
+            sx = e.clientX; sy = e.clientY;
+            clear();
+            timer = setTimeout(() => { timer = null; el._longPressed = true; fn(); }, 550);
+        });
+        el.addEventListener('pointermove', (e) => { if (Math.abs(e.clientX - sx) > 10 || Math.abs(e.clientY - sy) > 10) clear(); });
+        ['pointerup', 'pointercancel', 'pointerleave'].forEach(t => el.addEventListener(t, clear));
+        el.addEventListener('contextmenu', (e) => { e.preventDefault(); clear(); el._longPressed = true; fn(); });
+    },
+
+    confirmDeleteItem(itemId, title) {
+        const overlay = document.createElement('div');
+        overlay.className = 'modal confirm-modal';
+        overlay.innerHTML =
+            '<div class="modal-content modal-narrow">' +
+              '<div class="modal-header"><h3>Delete from pCloud?</h3></div>' +
+              '<div class="modal-body"><p class="confirm-title"></p><p class="text-muted confirm-text">Removes the book from the library <b>and permanently deletes its audio file(s) from pCloud</b>. Listening progress is lost. This cannot be undone.</p></div>' +
+              '<div class="modal-actions"><button class="text-btn" data-cancel>Cancel</button><button class="danger-btn" data-ok>Delete</button></div>' +
+            '</div>';
+        overlay.querySelector('.confirm-title').textContent = title;
+        const close = () => overlay.remove();
+        overlay.querySelector('[data-cancel]').addEventListener('click', close);
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+        overlay.querySelector('[data-ok]').addEventListener('click', async () => {
+            const ok = overlay.querySelector('[data-ok]');
+            ok.disabled = true; ok.textContent = 'Deleting…';
+            try {
+                const r = await this._shimCall(`/api/admin/items/${encodeURIComponent(itemId)}?deleteFiles=1`, { method: 'DELETE' });
+                try { await Offline.deleteBook({ id: itemId, media: { tracks: [] } }); } catch { /* no offline copy */ }
+                close();
+                this._tabCache = {};
+                this.switchTab(this.currentTab);
+                if (r && r.reason) alert(r.reason);
+            } catch (e) {
+                ok.disabled = false; ok.textContent = 'Delete';
+                overlay.querySelector('.confirm-text').textContent = 'Delete failed: ' + (e.message || e);
+            }
+        });
+        document.body.appendChild(overlay);
     },
 
     _abbRow(listEl, name, status) {
@@ -2269,8 +2318,13 @@ const App = {
     bindCardClicks() {
         this.markDownloadedCards();
         document.querySelectorAll('.grid-item[data-id], .card[data-id]').forEach(el => {
+            const type = el.dataset.type;
+            // Long-press a book → "delete from pCloud?" (ABS_shim servers only).
+            if (this.isShim && !el.dataset.episodeId && type !== 'series' && type !== 'authors') {
+                this._wireLongPress(el, () => this.confirmDeleteItem(el.dataset.id, el.dataset.title || el.querySelector('.card-title, .item-title')?.textContent || 'this book'));
+            }
             el.addEventListener('click', () => {
-                const type = el.dataset.type;
+                if (el._longPressed) { el._longPressed = false; return; }
                 if (type === 'series') {
                     this.showSeriesDetail(el.dataset.id, el.dataset.title || 'Series');
                 } else if (type === 'authors') {
@@ -2396,6 +2450,7 @@ const App = {
         const finished = !!progress?.isFinished;
         const finishedLabel = finished ? 'Mark as not started' : 'Mark as finished';
         html += `<button class="text-btn detail-finish-btn" id="detail-finish">${finishedLabel}</button>`;
+        if (this.isShim) html += `<button class="text-btn detail-delete-btn" id="detail-delete">Delete from pCloud…</button>`;
         html += `<div id="offline-controls" class="offline-controls"></div>`;
 
         if (chapters.length) {
@@ -2436,6 +2491,7 @@ const App = {
                 if (active) active.scrollIntoView({ block: 'center', behavior: 'smooth' });
             }, 100);
         });
+        document.getElementById('detail-delete')?.addEventListener('click', () => this.confirmDeleteItem(item.id, meta.title || 'this book'));
         document.getElementById('detail-finish')?.addEventListener('click', async (e) => {
             const btn = e.currentTarget;
             const wantFinished = !finished;

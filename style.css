@@ -307,6 +307,12 @@ main {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 1rem;
 }
 .grid-item { cursor: pointer; border-radius: var(--radius); overflow: hidden; background: var(--card-bg); position: relative; }
+/* Long-press opens our own menu; stop iOS's image callout / text selection. */
+.grid-item, .h-scroll .card { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+.confirm-title { font-weight: 600; margin-bottom: 0.5rem; overflow-wrap: anywhere; }
+.danger-btn { padding: 0.45rem 0.9rem; background: #dc2626; color: #fff; border-radius: var(--radius); }
+.danger-btn:disabled { opacity: 0.7; }
+.detail-delete-btn { color: #f87171; }
 
 /* Downloaded badge — small green dot in the top-left corner of cards */
 .grid-item.is-downloaded::before, .h-scroll .card.is-downloaded::before {
