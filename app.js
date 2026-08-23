@@ -1336,16 +1336,24 @@ const App = {
         el.addEventListener('contextmenu', (e) => { e.preventDefault(); clear(); el._longPressed = true; fn(); });
     },
 
-    confirmDeleteItem(itemId, title) {
+    confirmDeleteItem(itemId, title, item) {
         const overlay = document.createElement('div');
         overlay.className = 'modal confirm-modal';
         overlay.innerHTML =
             '<div class="modal-content modal-narrow">' +
               '<div class="modal-header"><h3>Delete from pCloud?</h3></div>' +
-              '<div class="modal-body"><p class="confirm-title"></p><p class="text-muted confirm-text">Removes the book from the library <b>and permanently deletes its audio file(s) from pCloud</b>. Listening progress is lost. This cannot be undone.</p></div>' +
+              '<div class="modal-body"><p class="confirm-title"></p><p class="text-muted confirm-detail">Loading…</p><p class="text-muted confirm-text">Removes the book from the library <b>and permanently deletes its audio file(s) from pCloud</b>. Listening progress is lost. This cannot be undone.</p></div>' +
               '<div class="modal-actions"><button class="text-btn" data-cancel>Cancel</button><button class="danger-btn" data-ok>Delete</button></div>' +
             '</div>';
         overlay.querySelector('.confirm-title').textContent = title;
+        // Format / length / file count so "which Secret is this?" is obvious
+        // when the same book exists as mp3 and m4b. Cards don't carry it,
+        // so fetch the item unless the caller (book page) already has it.
+        const detail = overlay.querySelector('.confirm-detail');
+        (item ? Promise.resolve(item) : ABS.getItem(itemId)).then(it => {
+            const parts = [this._formatLabel(it), it?.media?.duration ? formatTime(it.media.duration) : null, it?.media?.metadata?.authorName].filter(Boolean);
+            detail.textContent = parts.join(' · ') || '';
+        }).catch(() => { detail.textContent = ''; });
         const close = () => overlay.remove();
         overlay.querySelector('[data-cancel]').addEventListener('click', close);
         overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
@@ -2491,7 +2499,7 @@ const App = {
                 if (active) active.scrollIntoView({ block: 'center', behavior: 'smooth' });
             }, 100);
         });
-        document.getElementById('detail-delete')?.addEventListener('click', () => this.confirmDeleteItem(item.id, meta.title || 'this book'));
+        document.getElementById('detail-delete')?.addEventListener('click', () => this.confirmDeleteItem(item.id, meta.title || 'this book', item));
         document.getElementById('detail-finish')?.addEventListener('click', async (e) => {
             const btn = e.currentTarget;
             const wantFinished = !finished;

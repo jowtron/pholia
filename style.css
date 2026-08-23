@@ -276,10 +276,11 @@ main {
 }
 .seq-badge {
     position: absolute; top: 6px; left: 6px; z-index: 2;
-    font-size: 0.65rem; font-weight: 700; line-height: 1; padding: 0.3em 0.5em;
-    border-radius: 999px; background: rgba(0,0,0,0.72); color: #fff;
-    backdrop-filter: blur(4px); pointer-events: none; letter-spacing: 0.02em;
+    font-size: 0.7rem; font-weight: 700; line-height: 1; padding: 0.35em 0.55em;
+    border-radius: 999px; background: var(--accent); color: #fff;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.45); pointer-events: none; letter-spacing: 0.02em;
 }
+.confirm-detail { font-size: 0.85rem; margin-bottom: 0.5rem; }
 .h-scroll .card {
     flex-shrink: 0; width: 130px; scroll-snap-align: start; cursor: pointer;
 }
