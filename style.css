@@ -828,7 +828,9 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
 .abb-pick-file { display: block; padding: 0.2rem 0 0.2rem 1.4rem; overflow-wrap: anywhere; }
 .abb-pick-file input, .abb-pick-dir input { margin-right: 0.35rem; }
 .abb-pick-modal .modal-actions { display: flex; align-items: center; gap: 0.5rem; }
-.abb-rd { margin-top: 1rem; font-size: 0.85rem; }
+.abb-active { padding: 0 0.75rem 0.5rem; }
+.abb-active .section-title { margin-top: 0.75rem; margin-bottom: 0.4rem; font-size: 0.95rem; }
+.abb-rd { margin-top: 1rem; font-size: 0.85rem; padding: 0 0.75rem; }
 .abb-rd summary { cursor: pointer; font-weight: 600; padding: 0.4rem 0; }
 .abb-rd-item { margin: 0.35rem 0; }
 .abb-rd-actions { display: flex; gap: 0.4rem; justify-content: flex-end; margin-top: 0.3rem; }

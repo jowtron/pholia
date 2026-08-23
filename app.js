@@ -1081,12 +1081,12 @@ const App = {
             root.className = 'abb-root';
             root.innerHTML =
                 '<div class="search-bar abb-search"><span class="search-wrap"><input type="text" id="abb-q" placeholder="Search AudioBookBay…" autocomplete="off"><button type="button" class="search-clear" id="abb-clear" aria-label="Clear search">×</button></span><button id="abb-go" class="abb-go">Search</button></div>' +
+                '<div id="abb-active" class="abb-active hidden"><div class="section-title">In progress</div><div id="abb-rd-progress" class="abb-progress"></div></div>' +
                 '<div id="abb-results"></div>' +
                 '<details id="abb-rd" class="abb-rd"><summary>On Real-Debrid <span id="abb-rd-count" class="text-muted"></span></summary>' +
                   '<p class="text-muted abb-pick-hint">Grabs run in this tab. If the app was closed mid-grab the torrents are still here — Finish collects a completed one, Watch resumes waiting, Delete removes it.</p>' +
                   '<div id="abb-rd-list" class="text-muted">Not loaded.</div>' +
                   '<button class="text-btn" id="abb-rd-refresh">Refresh</button>' +
-                  '<div id="abb-rd-progress" class="abb-progress"></div>' +
                 '</details>';
             const go = () => this.abbSearch(root.querySelector('#abb-q').value, root.querySelector('#abb-results'));
             root.querySelector('#abb-go').addEventListener('click', go);
@@ -1224,6 +1224,9 @@ const App = {
     // picker (currently selected files pre-ticked), deleting torrents for
     // unticked files and adding torrents for newly ticked ones from the hash.
     async abbResumeGroup(g, listEl, pick) {
+        const active = this._abbRoot.querySelector('#abb-active');
+        active.classList.remove('hidden');
+        active.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
         const row = this._abbRow(listEl, g.filename, 'Checking on Real-Debrid…');
         try {
             const infos = [];
