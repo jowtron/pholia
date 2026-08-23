@@ -1081,16 +1081,25 @@ const App = {
             root.className = 'abb-root';
             root.innerHTML =
                 '<div class="search-bar abb-search"><span class="search-wrap"><input type="text" id="abb-q" placeholder="Search AudioBookBay…" autocomplete="off"><button type="button" class="search-clear" id="abb-clear" aria-label="Clear search">×</button></span><button id="abb-go" class="abb-go">Search</button></div>' +
-                '<div id="abb-results"></div>';
+                '<div id="abb-results"></div>' +
+                '<details id="abb-rd" class="abb-rd"><summary>On Real-Debrid <span id="abb-rd-count" class="text-muted"></span></summary>' +
+                  '<p class="text-muted abb-pick-hint">Grabs run in this tab. If the app was closed mid-grab the torrents are still here — Finish collects a completed one, Watch resumes waiting, Delete removes it.</p>' +
+                  '<div id="abb-rd-list" class="text-muted">Not loaded.</div>' +
+                  '<button class="text-btn" id="abb-rd-refresh">Refresh</button>' +
+                  '<div id="abb-rd-progress" class="abb-progress"></div>' +
+                '</details>';
             const go = () => this.abbSearch(root.querySelector('#abb-q').value, root.querySelector('#abb-results'));
             root.querySelector('#abb-go').addEventListener('click', go);
             root.querySelector('#abb-q').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
             this._wireSearchClear(root.querySelector('#abb-q'), root.querySelector('#abb-clear'), () => { root.querySelector('#abb-results').innerHTML = ''; });
+            root.querySelector('#abb-rd-refresh').addEventListener('click', () => this.abbLoadRdList());
+            root.querySelector('#abb-rd').addEventListener('toggle', (e) => { if (e.target.open) this.abbLoadRdList(); });
             this._abbRoot = root;
         }
         const content = document.getElementById('content');
         content.innerHTML = '';
         content.appendChild(this._abbRoot);
+        this.abbLoadRdList();
     },
 
     async abbSearch(q, out) {
@@ -1150,12 +1159,55 @@ const App = {
                 this.abbGrab(res, prog).then((ok) => {
                     btn.textContent = ok ? 'Added ✓' : 'Retry';
                     btn.disabled = !!ok;
+                    this.abbLoadRdList();
                     if (ok) { this._tabCache = {}; }  // library/home tabs re-fetch to show the new book
                 });
             });
             ul.appendChild(li);
         }
         out.appendChild(ul);
+    },
+
+    async abbLoadRdList() {
+        const root = this._abbRoot; if (!root) return;
+        const box = root.querySelector('#abb-rd-list');
+        const count = root.querySelector('#abb-rd-count');
+        box.textContent = 'Loading…';
+        let r;
+        try { r = await this._shimCall('/api/admin/abb/torrents'); }
+        catch (e) { box.textContent = "Couldn't list: " + e.message; return; }
+        const ts = r.torrents || [];
+        count.textContent = ts.length ? `(${ts.length})` : '';
+        if (!ts.length) { box.textContent = 'Nothing on Real-Debrid.'; return; }
+        box.innerHTML = '';
+        const listEl = root.querySelector('#abb-rd-progress');
+        for (const t of ts) {
+            const el = document.createElement('div');
+            el.className = 'abb-row abb-rd-item';
+            el.innerHTML = '<div class="abb-row-text"><span class="abb-row-name"></span><span class="abb-row-status text-muted"></span></div><div class="abb-rd-actions"></div>';
+            el.querySelector('.abb-row-name').textContent = t.filename + (t.bytes ? ' · ' + formatBytes(t.bytes) : '');
+            el.querySelector('.abb-row-status').textContent = ' · ' + (t.error ? t.error : `${t.status}${typeof t.progress === 'number' ? ' ' + t.progress + '%' : ''}${t.seeders != null ? ' · ' + t.seeders + ' seeders' : ''}`);
+            const acts = el.querySelector('.abb-rd-actions');
+            const act = (label, fn) => { const b = document.createElement('button'); b.className = 'abb-row-btn'; b.textContent = label; b.addEventListener('click', async () => { b.disabled = true; await fn(); this.abbLoadRdList(); }); acts.appendChild(b); };
+            if (!t.error) act(t.status === 'downloaded' ? 'Finish' : 'Watch', () => this.abbResumeTorrent(t, listEl));
+            act('Delete', () => this._shimCall('/api/admin/abb/torrents/' + encodeURIComponent(t.id), { method: 'DELETE' }).catch(() => {}));
+            box.appendChild(el);
+        }
+    },
+
+    async abbResumeTorrent(t, listEl) {
+        const row = this._abbRow(listEl, t.filename, 'Checking on Real-Debrid…');
+        try {
+            const st = await this._shimCall('/api/admin/abb/torrents/' + encodeURIComponent(t.id));
+            if (st.error && !st.downloads) throw new Error(st.error);
+            const sel = st.selectedFiles || [];
+            if (!sel.length) throw new Error('Real-Debrid has no file selected for this torrent — delete it and grab again');
+            const san = s => s.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120) || 'audiobook';
+            const plan = this.abbPlanDest(san(st.filename), sel);
+            await this.abbTrackTorrents([{ id: t.id, dest: plan[0].dest }], this.abbFolderId, listEl, row);
+        } catch (e) {
+            row.fail(e.message || String(e));
+        }
     },
 
     _magnetTitle(magnet) {
@@ -1240,6 +1292,17 @@ const App = {
             }
             if (!torrents.length) throw new Error('Nothing could be added to Real-Debrid');
             row.setStatus(`${torrents.length} torrent(s) — waiting for Real-Debrid`);
+            return await this.abbTrackTorrents(torrents, folderId, listEl, row);
+        } catch (e) {
+            row.fail(e.message || String(e));
+            return false;
+        }
+    },
+
+    // Shared tail of a grab (also used to resume a torrent this tab didn't
+    // start): poll, hand finished files to pCloud, delete on RD, scan.
+    async abbTrackTorrents(torrents, folderId, listEl, row) {
+        try {
             // Cancel deletes whatever is still on RD; a torrent whose progress
             // hasn't moved for 20 min (no seeders) is given up on the same way.
             const interval = Math.max(4000, torrents.length * 600);

@@ -828,6 +828,11 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
 .abb-pick-file { display: block; padding: 0.2rem 0 0.2rem 1.4rem; overflow-wrap: anywhere; }
 .abb-pick-file input, .abb-pick-dir input { margin-right: 0.35rem; }
 .abb-pick-modal .modal-actions { display: flex; align-items: center; gap: 0.5rem; }
+.abb-rd { margin-top: 1rem; font-size: 0.85rem; }
+.abb-rd summary { cursor: pointer; font-weight: 600; padding: 0.4rem 0; }
+.abb-rd-item { margin: 0.35rem 0; }
+.abb-rd-actions { display: flex; gap: 0.4rem; justify-content: flex-end; margin-top: 0.3rem; }
+.abb-rd-actions .abb-row-btn { margin-left: 0; }
 .abb-pick-modal .abb-pick-summary { margin-right: auto; font-size: 0.8rem; }
 .abb-row { font-size: 0.8rem; background: var(--card-bg); border-radius: 6px; padding: 0.4rem 0.5rem; }
 .abb-row-text { display: flex; flex-wrap: wrap; gap: 0 0.25rem; align-items: center; }
