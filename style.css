@@ -266,6 +266,20 @@ main {
     scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch;
 }
 .h-scroll::-webkit-scrollbar { display: none; }
+/* Shelves scroll sideways, which nothing used to signal. Two cues: the
+   right edge fades out while there's more to the right (class toggled by a
+   scroll listener in App._markShelves), and on phones the card width is
+   derived from the viewport so a partial card always peeks in. */
+.h-scroll.can-scroll:not(.at-end) {
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 56px), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 56px), transparent);
+}
+.seq-badge {
+    position: absolute; top: 6px; left: 6px; z-index: 2;
+    font-size: 0.65rem; font-weight: 700; line-height: 1; padding: 0.3em 0.5em;
+    border-radius: 999px; background: rgba(0,0,0,0.72); color: #fff;
+    backdrop-filter: blur(4px); pointer-events: none; letter-spacing: 0.02em;
+}
 .h-scroll .card {
     flex-shrink: 0; width: 130px; scroll-snap-align: start; cursor: pointer;
 }
@@ -751,8 +765,10 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
     .pp-sleep-indicator { }
 
     .grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 0.75rem; }
-    .h-scroll .card { width: 110px; }
-    .h-scroll .card img { width: 110px; height: 110px; }
+    /* ~2.6 cards per viewport so the third is visibly cut off (130px cards
+       used to fit exactly three on a 390px phone — looked like a grid). */
+    .h-scroll .card { width: calc((100% - 1.5rem) / 2.6); }
+    .h-scroll .card img { width: 100%; height: auto; aspect-ratio: 1; }
 
     .detail-header { flex-direction: column; align-items: center; text-align: center; }
     .detail-cover { width: 180px; height: 180px; }

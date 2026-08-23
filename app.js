@@ -348,6 +348,10 @@ const App = {
         document.getElementById('settings-btn').addEventListener('click', () => this.showSettings());
         document.getElementById('search-btn').addEventListener('click', () => this.showSearch());
         document.getElementById('abb-btn').addEventListener('click', () => this.toggleAdd());
+        document.getElementById('content').addEventListener('scroll', (e) => {
+            if (e.target.classList?.contains('h-scroll')) this._markShelves(e.target);
+        }, true);
+        window.addEventListener('resize', () => this._markShelves());
 
         // Search
         document.getElementById('search-cancel').addEventListener('click', () => this.hideSearch());
@@ -1189,6 +1193,7 @@ const App = {
             const interval = Math.max(4000, torrents.length * 600);
             const pending = new Map(torrents.map(t => [t.id, this._abbRow(listEl, 'RD ' + t.id, 'Queued')]));
             const fetches = [];
+            let needsScan = false;
             while (pending.size) {
                 await new Promise(r => setTimeout(r, interval));
                 for (const [id, trow] of [...pending]) {
@@ -1206,7 +1211,8 @@ const App = {
                                     this._abbRow(listEl, d.filename, '').fail(`Real-Debrid produced a ${d.ext}; extract it via the shim's browser upload`);
                                     continue;
                                 }
-                                await this.abbFetchToPcloud(folderId, d.download, m.folderName + '/' + d.filename, listEl);
+                                const registered = await this.abbFetchToPcloud(folderId, d.download, m.folderName + '/' + d.filename, listEl);
+                                if (!registered) needsScan = true;
                             }
                             await this._shimCall('/api/admin/abb/torrents/' + encodeURIComponent(id), { method: 'DELETE' }).catch(() => {});
                         })());
@@ -1220,8 +1226,10 @@ const App = {
             // The shim's /fetch-url/finish only registers single m4b/m4a/aac
             // files; mp3 releases are N chapter files that need a library scan
             // once they've all landed. Without this the book only appeared
-            // after pressing "Scan now" in the shim's /admin.
-            if (this.abbLibraryId) {
+            // after pressing "Scan now" in the shim's /admin. Skipped when every
+            // file registered via /finish — a scan racing another grab's
+            // registration is how duplicates appeared on 2026-08-23.
+            if (this.abbLibraryId && needsScan) {
                 row.setStatus('Scanning library…');
                 try {
                     const report = await this._shimCall(`/api/admin/libraries/${encodeURIComponent(this.abbLibraryId)}/scan`, { method: 'POST' });
@@ -1262,7 +1270,7 @@ const App = {
             }
             row.setStatus('Registering…');
             const saved = await this._shimCall(base + '/finish', { method: 'POST', body: JSON.stringify({ relPath: started.relPath, registerAsBook: true }) });
-            if (saved.itemId) row.complete('In your library');
+            if (saved.itemId) { row.complete('In your library'); return true; }
             else if (saved.registerError) row.complete('Saved but not registered: ' + saved.registerError);
             else if (/\.zip$/i.test(started.relPath)) {
                 row.complete('Saved — extracting…');
@@ -1271,6 +1279,7 @@ const App = {
         } catch (e) {
             row.fail(e.message || String(e));
         }
+        return false;
     },
 
     async abbExtractZip(folderId, relPath, listEl) {
@@ -1369,7 +1378,34 @@ const App = {
         }
     },
 
-    setContent(html) { document.getElementById('content').innerHTML = html; },
+    setContent(html) {
+        document.getElementById('content').innerHTML = html;
+        this._markShelves();
+    },
+
+    // Mark each .h-scroll with can-scroll / at-end so CSS can fade the right
+    // edge only while there's more to the right. Runs after every paint and
+    // (via a capturing scroll listener — scroll doesn't bubble) on scroll.
+    _markShelves(one) {
+        const shelves = one ? [one] : document.querySelectorAll('.h-scroll');
+        for (const el of shelves) {
+            const can = el.scrollWidth > el.clientWidth + 2;
+            el.classList.toggle('can-scroll', can);
+            el.classList.toggle('at-end', !can || el.scrollLeft + el.clientWidth >= el.scrollWidth - 2);
+        }
+    },
+
+    // "Book 2" badge text from ABS metadata: expanded items carry
+    // series[].sequence, minified ones "Series #2" in seriesName.
+    _seqBadge(meta) {
+        if (!meta) return '';
+        let seq = meta.series?.[0]?.sequence;
+        if (seq == null || seq === '') {
+            const m = /#\s*([\d.]+[a-z]?)\s*$/i.exec(meta.seriesName || '');
+            seq = m ? m[1] : null;
+        }
+        return seq ? `<span class="seq-badge">Book ${esc(String(seq))}</span>` : '';
+    },
     showLoading() { this.setContent('<div class="loading">Loading</div>'); },
 
     // ── Home ──
@@ -1509,6 +1545,7 @@ const App = {
                     }
                     const titleAttr = ` data-title="${esc(entity.name || title)}"`;
                     html += `<div class="card" data-id="${itemId}" data-type="${section.type}"${titleAttr}${episodeId ? ` data-episode-id="${episodeId}"` : ''}>`;
+                    if (section.type === 'book') html += this._seqBadge(meta);
                     if (coverSrc) {
                         html += `<img src="${coverSrc}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
                     }
@@ -1809,7 +1846,7 @@ const App = {
                 for (const b of books) {
                     const item = b.libraryItem || b;
                     const meta = item.media?.metadata || {};
-                    html += this.gridItemHtml(item.id, meta.title, meta.authorName, 0);
+                    html += this.gridItemHtml(item.id, meta.title, meta.authorName, 0, meta);
                 }
                 html += '</div>';
             }
@@ -1879,7 +1916,7 @@ const App = {
         for (const item of items) {
             const meta = item.media?.metadata || {};
             const progress = item.mediaProgress?.progress || 0;
-            html += this.gridItemHtml(item.id, meta.title, meta.authorName, progress);
+            html += this.gridItemHtml(item.id, meta.title, meta.authorName, progress, meta);
         }
         html += '</div>';
         return html;
@@ -1889,8 +1926,9 @@ const App = {
         this.bindCardClicks();
     },
 
-    gridItemHtml(id, title, author, progress) {
+    gridItemHtml(id, title, author, progress, meta) {
         let html = `<div class="grid-item" data-id="${id}">`;
+        html += this._seqBadge(meta);
         html += `<img src="${ABS.coverUrl(id)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
         html += `<button class="play-overlay" data-play-id="${id}">\u25B6</button>`;
         if (progress > 0) {
