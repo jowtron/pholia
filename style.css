@@ -396,6 +396,7 @@ main {
 .detail-meta .author-link { color: var(--accent); text-decoration: none; cursor: pointer; }
 .detail-meta .author-link:hover { color: var(--accent-hover); text-decoration: underline; }
 .detail-meta .narrator { color: var(--text-muted); font-size: 0.85rem; font-style: italic; }
+.detail-meta .format { color: var(--text-muted); font-size: 0.75rem; letter-spacing: 0.04em; margin-top: 0.15rem; }
 .detail-meta .duration { font-size: 0.8rem; color: var(--text-muted); margin-top: 0.5rem; }
 .detail-meta .description {
     font-size: 0.85rem; color: var(--text-muted); line-height: 1.4;

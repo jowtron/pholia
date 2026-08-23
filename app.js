@@ -2022,6 +2022,20 @@ const App = {
         }
     },
 
+    // "M4B" / "MP3 · 12 files · 64 kbps" from the item's audioFiles — the
+    // file extension is the honest answer to "is this m4b or mp3", codec
+    // alone can't distinguish m4a from m4b.
+    _formatLabel(item) {
+        const files = item.media?.audioFiles || [];
+        if (!files.length) return '';
+        const exts = [...new Set(files.map(f => String(f.metadata?.ext || f.ext || '').replace(/^\./, '').toUpperCase()).filter(Boolean))];
+        const parts = [exts.join('/') || (files[0].codec || '').toUpperCase()];
+        if (files.length > 1) parts.push(`${files.length} files`);
+        const br = files[0].bitRate;
+        if (br) parts.push(`${Math.round(br / 1000)} kbps`);
+        return parts.filter(Boolean).join(' · ');
+    },
+
     async showBookDetail(item) {
         this._currentDetailItem = item;
         const meta = item.media?.metadata || {};
@@ -2055,6 +2069,8 @@ const App = {
         html += `<div class="duration">${formatTime(duration)}`;
         if (progress) html += ` &bull; ${Math.round(progress.progress * 100)}% complete`;
         html += '</div>';
+        const fmt = this._formatLabel(item);
+        if (fmt) html += `<div class="format">${esc(fmt)}</div>`;
         if (meta.description) html += `<div class="description">${esc(meta.description)}</div>`;
         html += '</div></div>';
 
