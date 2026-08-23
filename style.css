@@ -812,6 +812,12 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
 @keyframes abb-spin { to { transform: rotate(360deg); } }
 .abb-progress:empty { display: none; }
 .abb-progress { margin-top: 0.5rem; display: flex; flex-direction: column; gap: 0.35rem; }
+.abb-main .tracklist-title { cursor: pointer; }
+.abb-details:empty { display: none; }
+.abb-details { margin-top: 0.5rem; font-size: 0.85rem; line-height: 1.45; background: var(--card-bg); border-radius: 6px; padding: 0.5rem 0.65rem; }
+.abb-details .meta { color: var(--text-muted); margin-bottom: 0.4rem; }
+.abb-details p { margin: 0 0 0.5rem 0; }
+.abb-details p:last-child { margin-bottom: 0; }
 .abb-row { font-size: 0.8rem; background: var(--card-bg); border-radius: 6px; padding: 0.4rem 0.5rem; }
 .abb-row-text { display: flex; flex-wrap: wrap; gap: 0 0.25rem; }
 .abb-row-name { font-weight: 500; overflow-wrap: anywhere; }

@@ -1121,6 +1121,7 @@ const App = {
                   '<span class="tracklist-title"><strong></strong><br><span class="text-muted"></span></span>' +
                   '<button class="abb-grab">Grab</button>' +
                 '</div>' +
+                '<div class="abb-details"></div>' +
                 '<div class="abb-progress"></div>';
             const img = li.querySelector('.abb-cover');
             if (res.cover && /^https?:/.test(res.cover)) {
@@ -1131,6 +1132,11 @@ const App = {
             }
             li.querySelector('strong').textContent = res.title;
             li.querySelector('.text-muted').textContent = sub;
+            // Tap the title/cover → blurb + written by / read by (fetched once).
+            const details = li.querySelector('.abb-details');
+            const toggle = () => this.abbToggleDetails(res, details);
+            li.querySelector('.tracklist-title').addEventListener('click', toggle);
+            img.addEventListener('click', toggle);
             const btn = li.querySelector('.abb-grab');
             const prog = li.querySelector('.abb-progress');
             btn.addEventListener('click', () => {
@@ -1145,6 +1151,25 @@ const App = {
             ul.appendChild(li);
         }
         out.appendChild(ul);
+    },
+
+    async abbToggleDetails(res, box) {
+        if (box.childNodes.length) { box.innerHTML = ''; box._loaded = false; return; }
+        box.innerHTML = '<div class="meta"><span class="abb-spinner"></span>Loading description…</div>';
+        try {
+            const d = await this._shimCall(`/api/admin/abb/details?url=${encodeURIComponent(res.url)}`);
+            const meta = [
+                d.author ? 'Written by ' + d.author : null,
+                d.narrators?.length ? 'Read by ' + d.narrators.join(', ') : null,
+                d.format, d.bitrate, d.length,
+                d.abridged === true ? 'Abridged' : d.abridged === false ? 'Unabridged' : null,
+            ].filter(Boolean).join(' · ');
+            const paras = (d.description || '').split(/\n\n+/).filter(Boolean);
+            box.innerHTML = `<div class="meta">${esc(meta)}</div>` +
+                (paras.length ? paras.map(p => `<p>${esc(p)}</p>`).join('') : '<p class="text-muted">No description on the listing.</p>');
+        } catch (e) {
+            box.innerHTML = `<div class="meta">Couldn't load details: ${esc(e.message)}</div>`;
+        }
     },
 
     _abbRow(listEl, name, status) {
