@@ -1210,7 +1210,7 @@ const App = {
     },
 
     // Hide TV/film torrents by name unless asked (see shim /admin).
-    _abbVideoRe: /\b(2160p|1080[pi]|720p|480p|4k|uhd|x26[45]|h\.?26[45]|hevc|av1|xvid|divx|blu-?ray|bdrip|brrip|web-?dl|webrip|hdtv|hdrip|dvdrip|remux|s\d{1,2}e\d{1,3}|season\s?\d+|complete series|yify|yts|rarbg|dts(-hd)?|truehd|atmos|ddp?\s?[57]\.1|aac\s?[57]\.1)\b|\.(mkv|mp4|avi|m2ts|ts)$/i,
+    _abbVideoRe: /\b(2160p|1080[pi]|720p|480p|4k|uhd|x26[45]|h\.?26[45]|hevc|av1|xvid|divx|blu-?ray|bdrip|brrip|web-?dl|webrip|hdtv|hdrip|dvdrip|remux|hdr(10\+?)?|dolby[\s.]?vision|sdr|s\d{1,2}e\d{1,3}|season\s?\d+|complete series|yify|yts|rarbg|dts(-hd)?|truehd|atmos|ddp?\s?[57]\.1|aac\s?[57]\.1)\b|\.(mkv|mp4|avi|m2ts|ts)$/i,
     _abbAudioRe: /\b(audiobook|unabridged|abridged|narrated|m4b|mp3)\b/i,
     _abbLooksVideo(name) { return this._abbVideoRe.test(name) && !this._abbAudioRe.test(name); },
     _abbRdShowAll: false,
@@ -1562,11 +1562,21 @@ const App = {
             const t0 = Date.now();
             let lastSize = 0;
             if (started.alreadyComplete) row.setStatus('Already on pCloud (same size) — registering…');
+            if (started.resumed) row.setStatus('pCloud already has a partial copy — resuming…');
+            // A single failed poll (pCloud's API throws transient errors)
+            // must not kill the grab; give up only after several in a row.
+            let pollErrors = 0;
             for (; !started.alreadyComplete;) {
                 await new Promise(r => setTimeout(r, 3000));
                 const qs = new URLSearchParams({ relPath: started.relPath, lastSize: String(lastSize) });
                 if (started.expectedSize) qs.set('expectedSize', String(started.expectedSize));
-                const p = await this._shimCall(base + '/progress?' + qs.toString());
+                let p;
+                try { p = await this._shimCall(base + '/progress?' + qs.toString()); pollErrors = 0; }
+                catch (e) {
+                    if (++pollErrors >= 6) throw new Error('Progress check kept failing: ' + e.message);
+                    row.setStatus(`Progress check failed (${pollErrors}/6): ${e.message} — retrying`);
+                    continue;
+                }
                 if (p.finished) break;
                 const elapsed = Math.round((Date.now() - t0) / 1000);
                 if (elapsed > 3600) throw new Error('Gave up after an hour');
