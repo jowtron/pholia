@@ -24,7 +24,6 @@ const Player = {
         this.audio.addEventListener('ended', () => this.onTrackEnded());
         this.audio.addEventListener('play', () => this.setPlaying(true));
         this.audio.addEventListener('pause', () => this.setPlaying(false));
-        this.audio.addEventListener('error', () => this._recoverFromAudioError());
         // Sustained playback clears the recovery budget so transient stalls
         // over a long listening session don't exhaust 3 attempts forever.
         this.audio.addEventListener('playing', () => { this._audioRecoveryAttempts = 0; });
@@ -38,6 +37,11 @@ const Player = {
          'emptied','suspend','durationchange','error'].forEach(ev => {
             this.audio.addEventListener(ev, () => this._logAudioEvent(ev));
         });
+
+        // Registered AFTER the instrumentation listeners (they fire in
+        // registration order) so the shipped crash-log tail includes the
+        // error event itself — recovery ships the log when it runs.
+        this.audio.addEventListener('error', () => this._recoverFromAudioError());
 
         const speed = localStorage.getItem('pholia_speed');
         if (speed) this.audio.playbackRate = parseFloat(speed);
@@ -120,6 +124,34 @@ const Player = {
         } catch {}
     },
 
+    // play() rejections are otherwise invisible: NotAllowedError when iOS
+    // decides the tap's user activation expired during startItem's awaits,
+    // AbortError on src churn. Log them into the ring buffer so crash logs
+    // show WHY nothing played.
+    _logPlayRejection(source, err) {
+        try {
+            const data = { ev: 'play-rejected', source, name: err?.name || String(err) };
+            console.warn('[audio]', data);
+            if (typeof App !== 'undefined' && App?._swLog) {
+                const ts = new Date().toISOString().substring(11, 23);
+                App._swLog.push(`${ts} audio ${JSON.stringify(data)}`);
+                if (App._swLog.length > (App._swLogMax || 200)) App._swLog.shift();
+                App._renderSwLog?.();
+            }
+        } catch {}
+    },
+
+    // Play with logging + one retry when the element reports ready. Every
+    // programmatic play goes through here so rejections land in the log.
+    _tryPlay(source) {
+        this.audio.play().catch(err => {
+            this._logPlayRejection(source, err);
+            this.audio.addEventListener('canplay', () => {
+                this.audio.play().catch(e2 => this._logPlayRejection(source + '@canplay', e2));
+            }, { once: true });
+        });
+    },
+
     // iOS Safari can permanently abandon a stream after its ~1 s Range-stall
     // budget expires (pCloud-backed Ranges via the shim regularly exceed it).
     // Reload the same src and restore playhead; cap at 3 attempts so a
@@ -130,7 +162,14 @@ const Player = {
         console.error('Audio error', { code, message: err?.message });
         // Ship the audio event tail to the server for after-the-fact analysis.
         try { App?.shipCrashLog?.(`audio-error-${code ?? 'x'}`); } catch {}
-        const recoverable = code === 2 /* MEDIA_ERR_NETWORK */ || code === 3 /* MEDIA_ERR_DECODE */;
+        // iOS/WebKit reports a network failure or first-byte timeout BEFORE
+        // metadata as MEDIA_ERR_SRC_NOT_SUPPORTED (4), not MEDIA_ERR_NETWORK
+        // — at readyState 0 it can't tell "server never answered" from "bad
+        // codec" (crash-log analysis 2026-08-23: ~40s TTFB on a fresh book
+        // -> error 4 -> dead player). Treat that as recoverable too; a
+        // genuinely unsupported file just burns the 3 attempts.
+        const recoverable = code === 2 /* MEDIA_ERR_NETWORK */ || code === 3 /* MEDIA_ERR_DECODE */
+            || (code === 4 /* MEDIA_ERR_SRC_NOT_SUPPORTED */ && this.audio.readyState === 0);
         if (!recoverable || !this.audio.src) return;
         if (this._audioRecoveryAttempts >= 3) {
             console.warn('Audio recovery budget exhausted; tap play to retry');
@@ -146,11 +185,7 @@ const Player = {
             try {
                 this.audio.addEventListener('loadedmetadata', () => {
                     try { this._logSeekCall('error-recover', savedTime); this.audio.currentTime = savedTime; } catch {}
-                    if (wasPlaying) {
-                        this.audio.play().catch(() => {
-                            this.audio.addEventListener('canplay', () => this.audio.play().catch(() => {}), { once: true });
-                        });
-                    }
+                    if (wasPlaying) this._tryPlay('error-recover');
                 }, { once: true });
                 this.audio.load();
             } catch (e) {
@@ -451,12 +486,14 @@ const Player = {
                 }
             }
         } catch {}
-        if (this.audio.src !== url) this.audio.src = url;
+        // Re-assign src even when unchanged if the element is in an error
+        // state — an errored element ignores play()/currentTime entirely and
+        // only re-running the load algorithm clears it (iOS: error 4 after a
+        // load timeout left the player dead until the PWA was killed).
+        if (this.audio.src !== url || this.audio.error) this.audio.src = url;
         this.audio.currentTime = offset;
         // Play immediately; if it fails (slow connection), retry when audio is ready
-        this.audio.play().catch(() => {
-            this.audio.addEventListener('canplay', () => this.audio.play().catch(() => {}), { once: true });
-        });
+        this._tryPlay(source);
         // Big seek (chapter nav, scrub, jump back/forward) — restart auto-cache
         // so it re-evaluates which chunks fall in the new sliding window. The
         // existing one-shot loop iterates chunks linearly forward and never
@@ -523,11 +560,25 @@ const Player = {
     },
 
     play() {
-        this.audio.play().catch(() => {});
+        // An errored media element is inert — play() is a silent no-op. A
+        // user tap must ALWAYS revive playback: reload the same src via
+        // loadTime (which re-assigns src on error) and reset the recovery
+        // budget, since a tap is fresh user intent.
+        if (this.audio.error && this.item) {
+            this._audioRecoveryAttempts = 0;
+            this.loadTime(this.getGlobalTime(), 'revive-play');
+            return;
+        }
+        this._tryPlay('play-btn');
         this._updatePositionState();
     },
     pause() { this.audio.pause(); this._updatePositionState(); },
-    toggle() { this.audio.paused ? this.play() : this.pause(); },
+    toggle() {
+        // paused is unreliable on an errored element (error can fire with
+        // paused=false) — route through play()'s revive path first.
+        if (this.audio.error) { this.play(); return; }
+        this.audio.paused ? this.play() : this.pause();
+    },
 
     skip(seconds, source = 'skip-btn') {
         const t = Math.max(0, Math.min(this.getGlobalTime() + seconds, this.getTotalDuration()));
@@ -694,9 +745,7 @@ const Player = {
             }
             this._logSeekCall('next-track', 0);
             this.audio.currentTime = 0;
-            this.audio.play().catch(() => {
-                this.audio.addEventListener('canplay', () => this.audio.play().catch(() => {}), { once: true });
-            });
+            this._tryPlay('next-track');
         } else {
             this.syncProgress(true);
         }
