@@ -1618,7 +1618,18 @@ const App = {
         const row = this._abbRow(listEl, relPath.split('/').pop(), 'Queueing on pCloud…');
         try {
             const base = `/api/admin/storage/folder/${encodeURIComponent(folderId)}/fetch-url`;
-            const started = await this._shimCall(base + '/start', { method: 'POST', body: JSON.stringify({ url, relPath }) });
+            // /start can block for a while (pCloud stat of the target hangs
+            // 10-60s while pCloud is busy) — tick elapsed time so it doesn't
+            // look frozen. Seen: >1 min of silent "Queueing", 2026-08-24.
+            const t0q = Date.now();
+            const qTimer = setInterval(() => row.setStatus(
+                `Queueing on pCloud… ${Math.round((Date.now() - t0q) / 1000)}s (checking for an existing copy — pCloud can be slow here)`), 3000);
+            let started;
+            try {
+                started = await this._shimCall(base + '/start', { method: 'POST', body: JSON.stringify({ url, relPath }) });
+            } finally {
+                clearInterval(qTimer);
+            }
             const t0 = Date.now();
             let lastSize = 0;
             if (started.alreadyComplete) row.setStatus('Already on pCloud (same size) — registering…');
