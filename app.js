@@ -179,6 +179,21 @@ const App = {
     _swLog: [],
     _swLogMax: 200,
 
+    // Tell the SW a media load for `url` is about to begin so it pins how it
+    // will answer every request for that file (all from the worker, or none):
+    // iOS cancels a media load whose CORS status changes between responses.
+    // Resolves with the mode, or null if there's no controller / no reply.
+    pinMediaMode(url) {
+        return new Promise(resolve => {
+            const ctrl = navigator.serviceWorker?.controller;
+            if (!ctrl) return resolve(null);
+            const ch = new MessageChannel();
+            const t = setTimeout(() => resolve(null), 500);
+            ch.port1.onmessage = (e) => { clearTimeout(t); resolve(e.data?.mode || null); };
+            try { ctrl.postMessage({ type: 'MEDIA_LOAD', url }, [ch.port2]); } catch { clearTimeout(t); resolve(null); }
+        });
+    },
+
     setupSwDebugBridge() {
         if (!('serviceWorker' in navigator)) return;
         // Send config now and on every controllerchange (new SW = needs the flag again).

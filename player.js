@@ -484,7 +484,7 @@ const Player = {
         }
     },
 
-    loadTime(globalTime, source = 'loadTime') {
+    async loadTime(globalTime, source = 'loadTime') {
         this._logSeekCall(source, globalTime);
         const prevTime = this.getGlobalTime();
         let url, offset = 0;
@@ -548,7 +548,12 @@ const Player = {
         // only re-running the load algorithm clears it (iOS: error 4 after a
         // load timeout left the player dead until the PWA was killed).
         const srcChanged = this.audio.src !== url || !!this.audio.error;
-        if (srcChanged) this.audio.src = url;
+        if (srcChanged) {
+            // Let the SW pin how it will answer this file before the media
+            // load begins (all from the worker or none — see sw.js modeFor).
+            await App?.pinMediaMode?.(url);
+            this.audio.src = url;
+        }
         // iOS completes a seek on a PLAYING element in two stages — a quick
         // approximate one that starts sound, then the precise one that snaps
         // back — so the second after a rewind is heard twice (crash-log tail
@@ -826,17 +831,20 @@ const Player = {
         fetch(url, { credentials: 'omit', headers: { Range: 'bytes=0-262143' } }).catch(() => {});
     },
 
-    onTrackEnded() {
+    async onTrackEnded() {
         const tracks = this.session?.audioTracks || this.tracks;
         if (this.currentTrackIndex < tracks.length - 1) {
             this.currentTrackIndex++;
+            let next;
             if (this.session?.audioTracks) {
                 const t = this.session.audioTracks[this.currentTrackIndex];
-                this.audio.src = t.contentUrl.startsWith('http')
+                next = t.contentUrl.startsWith('http')
                     ? t.contentUrl : `${ABS.serverUrl}${t.contentUrl}?token=${ABS.token}`;
             } else {
-                this.audio.src = ABS.trackUrl(this.item.id, this.tracks[this.currentTrackIndex].ino);
+                next = ABS.trackUrl(this.item.id, this.tracks[this.currentTrackIndex].ino);
             }
+            await App?.pinMediaMode?.(next);
+            this.audio.src = next;
             this._logSeekCall('next-track', 0);
             this.audio.currentTime = 0;
             this._tryPlay('next-track');

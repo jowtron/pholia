@@ -101,6 +101,27 @@ self.addEventListener('message', e => {
         saveConfig();
         debugLog('config', { experimentalPartialCache, swDebugLog });
     }
+    if (e.data?.type === 'MEDIA_LOAD' && e.data.url) {
+        // The page is about to assign audio.src: pin how this file will be
+        // answered (see modeFor) and reply on the port so the page can set
+        // src only once the pin is in place. Persisted with the flags so a
+        // worker restart mid-book keeps answering the same way.
+        const port = e.ports && e.ports[0];
+        (async () => {
+            let mode = 'native';
+            try {
+                await loadConfig();
+                await loadCachedKeys(); // fresh: chunks written since the last CACHE_CHANGED
+                const baseKey = offlineKey(e.data.url);
+                mode = modeFor(baseKey);
+                pinnedModes.set(baseKey, mode);
+                while (pinnedModes.size > 20) pinnedModes.delete(pinnedModes.keys().next().value);
+                saveConfig();
+                debugLog('pin', { url: baseKey, mode, chunks: cachedChunks?.get(baseKey)?.size || 0, numChunks: cachedMetas?.get(baseKey)?.numChunks || null });
+            } catch {}
+            try { port?.postMessage({ mode }); } catch {}
+        })();
+    }
 });
 
 // Serve partially cached books from the local cache when the requested Range
@@ -116,6 +137,7 @@ let swDebugLog = false;
 // defaults before the page re-sends SW_CONFIG — so both flags are persisted
 // in Cache Storage and read back on the first fetch after a restart.
 let partialDisabledUntil = 0; // set by a failed bridge fetch, see serveChunked
+const pinnedModes = new Map(); // baseKey → 'sw' | 'native', see modeFor
 let configLoaded = null;
 function loadConfig() {
     if (!configLoaded) {
@@ -127,6 +149,7 @@ function loadConfig() {
                 const j = await r.json();
                 if (typeof j.experimentalPartialCache === 'boolean') experimentalPartialCache = j.experimentalPartialCache;
                 if (typeof j.swDebugLog === 'boolean') swDebugLog = j.swDebugLog;
+                if (j.pins && typeof j.pins === 'object') for (const [k, v] of Object.entries(j.pins)) if (v === 'sw' || v === 'native') pinnedModes.set(k, v);
             } catch {}
         })();
     }
@@ -135,7 +158,8 @@ function loadConfig() {
 async function saveConfig() {
     try {
         const c = await caches.open(CONFIG_CACHE);
-        await c.put(CONFIG_KEY, new Response(JSON.stringify({ experimentalPartialCache, swDebugLog }), { headers: { 'Content-Type': 'application/json' } }));
+        const pins = Object.fromEntries(pinnedModes);
+        await c.put(CONFIG_KEY, new Response(JSON.stringify({ experimentalPartialCache, swDebugLog, pins }), { headers: { 'Content-Type': 'application/json' } }));
     } catch {}
 }
 
@@ -279,60 +303,53 @@ self.addEventListener('fetch', e => {
         // network (which is what "cached books still take ages" was).
         const ready = Promise.all([ensureKeys(), loadConfig()]);
         if (!AUDIO_PATH_RE.test(url.pathname)) return;
-        e.respondWith(ready.then(() => decideAudio(e.request, url) || passthroughFetch(e.request)));
+        // fetch(e.request) keeps the request no-cors → the same opaque
+        // response the browser would have produced natively (see modeFor).
+        e.respondWith(ready.then(() => decideAudio(e.request, url) || fetch(e.request)));
         return;
     }
     const handled = decideAudio(e.request, url);
     if (handled) e.respondWith(handled);
 });
 
-// Re-issue a media request from the worker as a plain CORS GET with just the
-// Range header (fetch(e.request) would be no-cors → an opaque response the
-// media element can't use, and would carry iOS's non-safelisted headers).
-function passthroughFetch(request) {
-    const range = request.headers.get('range');
+// A CORS GET re-issued from the worker with just the Range header (the media
+// element's own headers include iOS's non-safelisted X-Playback-Session-Id,
+// which would force a preflight). Used wherever a worker-served file needs
+// bytes the cache doesn't have: same-typed response as the cached parts.
+function corsFetch(request, rangeOverride) {
+    const range = rangeOverride === undefined ? request.headers.get('range') : rangeOverride;
     return fetch(request.url, { headers: range ? { Range: range } : {}, mode: 'cors', credentials: 'omit' });
 }
 
-// Returns a Response promise when the cache should answer, null for native
-// passthrough. Pure function of the loaded key map + flags.
+// How the worker will answer EVERY request for a file, decided once when the
+// page announces a media load (MEDIA_LOAD) and pinned until the next one.
+// iOS's media loader cancels a resource whose CORS status changes between
+// responses, so a file has to be all-worker (cached parts from Cache Storage,
+// the rest bridged from the shim) or all-native — never a mix. Mixing is
+// what the 2026-09-03 logs showed: header from the cache, then the file tail
+// natively, rejected every 170 ms until the loader gave up.
+function modeFor(baseKey) {
+    if (cachedKeys.has(completeKeyOf(baseKey)) || cachedKeys.has(baseKey)) return 'sw';
+    const chunks = cachedChunks?.get(baseKey)?.size || 0;
+    if (experimentalPartialCache && Date.now() >= partialDisabledUntil && cachedMetas?.has(baseKey) && chunks > 0) return 'sw';
+    return 'native';
+}
+
+// Returns a Response promise when the worker answers, null for native.
 function decideAudio(request, url) {
+    if (!AUDIO_PATH_RE.test(url.pathname)) return null;
     const baseKey = offlineKey(url.toString());
     const range = request.headers.get('range');
-
-    // Conservative gate: only intercept fully-cached entries.
-    if (!experimentalPartialCache || Date.now() < partialDisabledUntil) {
-        if (!cachedKeys.has(completeKeyOf(baseKey)) && !cachedKeys.has(baseKey)) {
-            // Log audio passthroughs too, or a disabled gate is invisible in the log.
-            if (AUDIO_PATH_RE.test(url.pathname)) debugLog('audio', { url: baseKey, range, decision: 'passthrough-conservative' });
-            return null;
-        }
-        return handleCrossOrigin(request);
+    let mode = pinnedModes.get(baseKey);
+    if (!mode) {
+        // No pin (older page, or a load the page didn't announce): only a
+        // fully cached file is safe to serve — partial serving without a pin
+        // is exactly the worker/native mix that breaks iOS.
+        mode = (cachedKeys.has(completeKeyOf(baseKey)) || cachedKeys.has(baseKey)) ? 'sw' : 'native';
     }
-
-    // Partial gate: intercept when the requested Range starts inside a cached
-    // chunk; serveChunked streams the cached run and bridges the rest from
-    // the network. Every decision is logged.
-    const meta = cachedMetas?.get(baseKey);
-    const chunkSet = cachedChunks?.get(baseKey);
-    if (meta) {
-        const fits = rangeStartCached(range, meta, chunkSet);
-        debugLog('audio', {
-            url: baseKey,
-            range,
-            chunks: chunkSet ? chunkSet.size : 0,
-            numChunks: meta.numChunks,
-            totalSize: meta.totalSize,
-            decision: fits ? 'intercept' : 'passthrough',
-        });
-        return fits ? handleCrossOriginLogged(request, baseKey, range) : null;
-    }
-    if (cachedKeys.has(baseKey)) {
-        debugLog('audio', { url: baseKey, range, decision: 'intercept-legacy' });
-        return handleCrossOriginLogged(request, baseKey, range);
-    }
-    debugLog('audio', { url: baseKey, range, decision: 'passthrough-no-meta' });
-    return null;
+    debugLog('audio', { url: baseKey, range, mode, chunks: cachedChunks?.get(baseKey)?.size || 0, numChunks: cachedMetas?.get(baseKey)?.numChunks || null });
+    if (mode !== 'sw') return null;
+    return handleCrossOriginLogged(request, baseKey, range);
 }
 
 // Wraps handleCrossOrigin to log what was returned. Helps spot
@@ -450,7 +467,7 @@ async function handleCrossOrigin(request) {
     const cached = await cache.match(baseKey);
     if (cached) return serveCached(request, cached);
 
-    return fetch(request);
+    return corsFetch(request);
 }
 
 const SAFE_SLICE_LIMIT = 50 * 1024 * 1024;
@@ -504,7 +521,7 @@ async function serveChunked(request, cache, baseKey, meta) {
         // If any chunk is missing, the partial assembly would break — better
         // to let the network serve the whole thing.
         for (let i = 0; i < numChunks; i++) {
-            if (!(await cache.match(chunkKey(baseKey, i)))) return fetch(request);
+            if (!(await cache.match(chunkKey(baseKey, i)))) return corsFetch(request, null);
         }
         const stream = new ReadableStream({
             async start(controller) {
@@ -544,14 +561,16 @@ async function serveChunked(request, cache, baseKey, meta) {
     const startChunk = Math.floor(start / chunkSize);
     const requestEndChunk = Math.min(Math.floor(end / chunkSize), numChunks - 1);
 
-    // Find the contiguous cached run starting from the request offset.
+    // Find the contiguous cached run starting from the request offset. An
+    // uncached start chunk (worker-pinned file, request outside the cached
+    // region) means an empty run: everything comes over the bridge.
     const chunkSet = cachedChunks?.get(baseKey) || new Set();
-    let lastContiguousChunk = startChunk;
-    for (let i = startChunk + 1; i <= requestEndChunk; i++) {
+    let lastContiguousChunk = chunkSet.has(startChunk) ? startChunk : startChunk - 1;
+    for (let i = startChunk + 1; lastContiguousChunk >= startChunk && i <= requestEndChunk; i++) {
         if (!chunkSet.has(i)) break;
         lastContiguousChunk = i;
     }
-    const cacheEnd = Math.min(end, (lastContiguousChunk + 1) * chunkSize - 1, totalSize - 1);
+    const cacheEnd = lastContiguousChunk < startChunk ? start - 1 : Math.min(end, (lastContiguousChunk + 1) * chunkSize - 1, totalSize - 1);
     const needsNetwork = cacheEnd < end;
     const totalLength = end - start + 1;
 
@@ -565,6 +584,7 @@ async function serveChunked(request, cache, baseKey, meta) {
     let cur = startChunk;
     let networkReader = null;
     let networkAbort = null;
+    let cancelled = false;
     // Start the gap fetch NOW, not when the cached run is consumed: the
     // shim's cold first byte (8-16 s measured 2026-09-03) then overlaps the
     // minutes of cached audio instead of landing mid-stream as a stall at
@@ -617,6 +637,7 @@ async function serveChunked(request, cache, baseKey, meta) {
                     const c = await cache.match(chunkKey(baseKey, cur));
                     if (!c) { controller.error(new Error('chunk evicted: ' + cur)); return; }
                     const buf = await c.arrayBuffer();
+                    if (cancelled) return; // iOS cancelled while we were reading
                     const chunkStartByte = cur * chunkSize;
                     const sliceStart = Math.max(0, start - chunkStartByte);
                     const sliceEnd = Math.min(buf.byteLength, cacheEnd - chunkStartByte + 1);
@@ -639,12 +660,14 @@ async function serveChunked(request, cache, baseKey, meta) {
             }
             try {
                 const { value, done } = await networkReader.read();
+                if (cancelled) return;
                 if (done) { debugLog('stream-done', { url: baseKey, range, delivered, ms: Date.now() - t0 }); controller.close(); return; }
                 delivered += value.byteLength;
                 controller.enqueue(value);
             } catch (err) { debugLog('stream-error', { url: baseKey, range, phase: 'network', delivered, err: String(err) }); controller.error(err); }
         },
         cancel(reason) {
+            cancelled = true;
             // iOS cancels most media responses; the interesting part is how
             // far it got (0 delivered = it rejected the response outright).
             debugLog('stream-cancel', { url: baseKey, range, delivered, ms: Date.now() - t0, reason: reason ? String(reason) : null });
