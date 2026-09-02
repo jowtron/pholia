@@ -1213,7 +1213,7 @@ const App = {
             const li = document.createElement('li');
             li.className = 'tracklist-item abb-item';
             // "⚡" = the magnet is cached on the shim, so Grab skips AudioBookBay.
-            const sub = res.magnet ? 'Magnet link' : [res.format ? res.format.toUpperCase() : null, res.bitrate, res.sizeBytes ? formatBytes(res.sizeBytes) : null, res.language, res.posted ? 'Posted ' + res.posted : null, res.infoHash ? '⚡' : null].filter(Boolean).join(' • ');
+            const sub = res.magnet ? 'Magnet link' : [res.inLibrary ? '✓ In library' : null, res.format ? res.format.toUpperCase() : null, res.bitrate, res.sizeBytes ? formatBytes(res.sizeBytes) : null, res.language, res.posted ? 'Posted ' + res.posted : null, res.infoHash ? '⚡' : null].filter(Boolean).join(' • ');
             li.innerHTML =
                 '<div class="abb-main">' +
                   '<img class="ep-cover abb-cover" alt="" loading="lazy" referrerpolicy="no-referrer">' +
@@ -1231,14 +1231,13 @@ const App = {
             }
             li.querySelector('strong').textContent = res.title;
             li.querySelector('.text-muted').textContent = sub;
-            // Tap the title/cover → blurb + written by / read by (fetched once).
+            // Tap the title → blurb + written by / read by (fetched once);
+            // tap the cover → the full-size source image in a lightbox.
             const details = li.querySelector('.abb-details');
-            if (res.url) {
-                const toggle = () => this.abbToggleDetails(res, details);
-                li.querySelector('.tracklist-title').addEventListener('click', toggle);
-                img.addEventListener('click', toggle);
-            }
+            if (res.url) li.querySelector('.tracklist-title').addEventListener('click', () => this.abbToggleDetails(res, details));
+            if (res.cover) img.addEventListener('click', () => this._abbLightbox(res.coverOrig || res.cover));
             const btn = li.querySelector('.abb-grab');
+            if (res.inLibrary) { btn.textContent = 'Again'; btn.title = 'Already in your library — grab again anyway'; btn.classList.add('abb-grab-again'); }
             const prog = li.querySelector('.abb-progress');
             btn.addEventListener('click', () => {
                 btn.disabled = true;
@@ -1383,6 +1382,18 @@ const App = {
 
     _magnetTitle(magnet) {
         try { return (new URL(magnet).searchParams.get('dn') || '').replace(/\+/g, ' ').trim() || 'Magnet link'; } catch { return 'Magnet link'; }
+    },
+
+    _abbLightbox(src) {
+        const box = document.createElement('div');
+        box.className = 'abb-lightbox';
+        const img = document.createElement('img');
+        img.alt = '';
+        img.referrerPolicy = 'no-referrer';
+        img.src = src;
+        box.appendChild(img);
+        box.addEventListener('click', () => box.remove());
+        document.body.appendChild(box);
     },
 
     async abbToggleDetails(res, box) {
@@ -1757,7 +1768,8 @@ const App = {
             }
             row.setStatus('Registering…');
             const saved = await this._shimCall(base + '/finish', { method: 'POST', body: JSON.stringify({ relPath: started.relPath, registerAsBook: true }) });
-            if (saved.itemId) { row.complete('In your library'); return true; }
+            if (saved.alreadyInLibrary) { row.complete('Already in your library — nothing new'); return true; }
+            else if (saved.itemId) { row.complete('In your library'); return true; }
             else if (saved.registerError) row.complete('Saved but not registered: ' + saved.registerError);
             else if (/\.zip$/i.test(started.relPath)) {
                 row.complete('Saved — extracting…');
