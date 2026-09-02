@@ -1113,7 +1113,10 @@ const App = {
                 // copy of ABB's listings; hidden until the shim has crawled something).
                 '<div id="abb-browse" class="abb-browse hidden">' +
                   '<select id="abb-cat" aria-label="Category"><option value="">Latest</option></select>' +
-                  '<select id="abb-lang" aria-label="Language"><option value="">Any language</option></select>' +
+                  // One language picker for both search and browse — a phone
+                  // row can't carry two, and wanting English results in one
+                  // but not the other isn't a real case.
+                  '<select id="abb-lang" aria-label="Language (search and browse)"><option value="">Any language</option></select>' +
                   '<select id="abb-fmt" aria-label="Format"><option value="">Any format</option></select>' +
                   '<button id="abb-browse-go" class="abb-go">Browse</button>' +
                 '</div>' +
@@ -1163,6 +1166,12 @@ const App = {
         fill('abb-cat', f.categories, (n) => n);
         fill('abb-lang', f.languages, (n) => n);
         fill('abb-fmt', f.formats, (n) => n.toUpperCase());
+        // Default to English until the user picks something else: nearly
+        // everything ABB posts is English, and a Dutch or Spanish re-post of
+        // a popular title otherwise outranks the one they were after.
+        const lang = root.querySelector('#abb-lang');
+        if (!lang.value && !lang.dataset.touched && [...lang.options].some((o) => o.value === 'English')) lang.value = 'English';
+        lang.addEventListener('change', () => { lang.dataset.touched = '1'; }, { once: true });
         root.querySelector('#abb-cat').options[0].textContent = 'Latest (' + f.total.toLocaleString() + ')';
         root.querySelector('#abb-browse').classList.remove('hidden');
     },
@@ -1200,6 +1209,12 @@ const App = {
         }
     },
 
+    // '' when the browse row is hidden (an older shim with no catalogue).
+    _abbLang() {
+        const sel = this._abbRoot && this._abbRoot.querySelector('#abb-lang');
+        return sel ? sel.value : '';
+    },
+
     async abbSearch(q, out) {
         q = (q || '').trim();
         if (!q) return;
@@ -1209,19 +1224,25 @@ const App = {
             // A pasted magnet link becomes a single pseudo-result.
             r = /^magnet:\?/i.test(q)
                 ? { results: [{ title: this._magnetTitle(q), url: null, magnet: q, cover: null, format: null, bitrate: null, sizeBytes: null, language: '', posted: null }] }
-                : await this._shimCall(`/api/admin/abb/search?q=${encodeURIComponent(q)}`);
+                : await this._shimCall(`/api/admin/abb/search?q=${encodeURIComponent(q)}&lang=${encodeURIComponent(this._abbLang())}`);
         } catch (e) {
             out.innerHTML = `<div class="empty-state">Search failed: ${esc(e.message)}</div>`;
             return;
         }
         if (!r.results.length) {
-            out.innerHTML = '<div class="empty-state">No results</div>';
+            out.innerHTML = r.language
+                ? `<div class="empty-state">No ${esc(r.language)} results. Set the language picker to "Any language" to search everything.</div>`
+                : '<div class="empty-state">No results</div>';
             return;
         }
         out.innerHTML = '';
+        // Both notes can apply at once, so append rather than assign.
+        if (r.filteredOut) {
+            out.innerHTML += `<div class="text-muted abb-pick-hint">${r.filteredOut} result(s) hidden by the ${esc(r.language)} filter.</div>`;
+        }
         if (r.liveError) {
             // The shim answered from its catalogue because AudioBookBay didn't respond.
-            out.innerHTML = `<div class="text-muted abb-pick-hint">AudioBookBay didn't answer — showing cached results only.</div>`;
+            out.innerHTML += `<div class="text-muted abb-pick-hint">AudioBookBay didn't answer — showing cached results only.</div>`;
         }
         this._abbRenderResults(r.results, out);
     },
