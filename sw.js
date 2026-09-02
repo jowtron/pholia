@@ -278,12 +278,20 @@ self.addEventListener('fetch', e => {
         // network (which is what "cached books still take ages" was).
         const ready = Promise.all([ensureKeys(), loadConfig()]);
         if (!AUDIO_PATH_RE.test(url.pathname)) return;
-        e.respondWith(ready.then(() => decideAudio(e.request, url) || fetch(e.request)));
+        e.respondWith(ready.then(() => decideAudio(e.request, url) || passthroughFetch(e.request)));
         return;
     }
     const handled = decideAudio(e.request, url);
     if (handled) e.respondWith(handled);
 });
+
+// Re-issue a media request from the worker as a plain CORS GET with just the
+// Range header (fetch(e.request) would be no-cors → an opaque response the
+// media element can't use, and would carry iOS's non-safelisted headers).
+function passthroughFetch(request) {
+    const range = request.headers.get('range');
+    return fetch(request.url, { headers: range ? { Range: range } : {}, mode: 'cors', credentials: 'omit' });
+}
 
 // Returns a Response promise when the cache should answer, null for native
 // passthrough. Pure function of the loaded key map + flags.
@@ -558,14 +566,24 @@ async function serveChunked(request, cache, baseKey, meta) {
     // the seam. The body stays unread (TCP backpressure) until we get there.
     // One retry: the shim retries pCloud itself, but a 5xx here would
     // otherwise truncate the response and send iOS into a re-request loop.
+    const t0 = Date.now();
+    let delivered = 0;
     const networkResP = needsNetwork ? (async () => {
         let lastErr = null;
         for (let attempt = 0; attempt < 2; attempt++) {
             try {
-                const headers = new Headers(request.headers);
-                headers.set('Range', `bytes=${cacheEnd + 1}-${end}`);
+                // Send ONLY the Range header. Copying the media element's
+                // headers dragged iOS's X-Playback-Session-Id into this CORS
+                // fetch; that header isn't safelisted, so the browser sent a
+                // preflight the shim didn't allow and the fetch threw — the
+                // stream then ended at the cache edge and iOS re-requested
+                // the same start byte until it gave up (2026-09-03 log).
                 networkAbort = new AbortController();
-                const res = await fetch(request.url, { headers, signal: networkAbort.signal });
+                const res = await fetch(request.url, {
+                    headers: { Range: `bytes=${cacheEnd + 1}-${end}` },
+                    mode: 'cors', credentials: 'omit', signal: networkAbort.signal,
+                });
+                debugLog('bridge', { url: baseKey, gap: `${cacheEnd + 1}-${end}`, status: res.status, ttfbMs: Date.now() - t0, attempt });
                 if (res.status === 206 || res.status === 200) return res;
                 lastErr = new Error('network fetch ' + res.status);
                 try { res.body?.cancel(); } catch {}
@@ -587,25 +605,30 @@ async function serveChunked(request, cache, baseKey, meta) {
                     const sliceStart = Math.max(0, start - chunkStartByte);
                     const sliceEnd = Math.min(buf.byteLength, cacheEnd - chunkStartByte + 1);
                     controller.enqueue(new Uint8Array(buf, sliceStart, sliceEnd - sliceStart));
+                    delivered += sliceEnd - sliceStart;
                     cur++;
-                } catch (err) { controller.error(err); }
+                } catch (err) { debugLog('stream-error', { url: baseKey, range, phase: 'cache', delivered, err: String(err) }); controller.error(err); }
                 return;
             }
             // Network phase.
-            if (!needsNetwork) { controller.close(); return; }
+            if (!needsNetwork) { debugLog('stream-done', { url: baseKey, range, delivered, ms: Date.now() - t0 }); controller.close(); return; }
             if (!networkReader) {
                 try {
                     const res = await networkResP;
                     networkReader = res.body.getReader();
-                } catch (err) { controller.error(err); return; }
+                } catch (err) { debugLog('stream-error', { url: baseKey, range, phase: 'bridge', delivered, err: String(err) }); controller.error(err); return; }
             }
             try {
                 const { value, done } = await networkReader.read();
-                if (done) { controller.close(); return; }
+                if (done) { debugLog('stream-done', { url: baseKey, range, delivered, ms: Date.now() - t0 }); controller.close(); return; }
+                delivered += value.byteLength;
                 controller.enqueue(value);
-            } catch (err) { controller.error(err); }
+            } catch (err) { debugLog('stream-error', { url: baseKey, range, phase: 'network', delivered, err: String(err) }); controller.error(err); }
         },
-        cancel() {
+        cancel(reason) {
+            // iOS cancels most media responses; the interesting part is how
+            // far it got (0 delivered = it rejected the response outright).
+            debugLog('stream-cancel', { url: baseKey, range, delivered, ms: Date.now() - t0, reason: reason ? String(reason) : null });
             try { networkAbort?.abort(); } catch {}
         },
     });
