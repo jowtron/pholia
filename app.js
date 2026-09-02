@@ -2506,18 +2506,29 @@ const App = {
     // cached META blob (works offline, immune to server-side ino drift after
     // library rescans). Only hits the network when the book isn't cached.
     async quickPlay(itemId, openPlayer = false) {
+        const t0 = Date.now();
+        Player._logMark('tap', 0);
         try {
             let item = null;
+            // The offline-cache scan and the item fetch don't depend on each
+            // other: run both, prefer the cached copy if the book is fully
+            // downloaded. Waiting for the scan first put its full cost in
+            // front of every tap.
+            const netP = ABS.getItem(itemId).catch(() => null);
             const downloadedIds = await Offline.fullyDownloadedIds();
+            Player._logMark('cache-scan', Date.now() - t0);
             if (downloadedIds.has(itemId)) {
                 const downloaded = await Offline.fullyDownloaded();
                 item = downloaded.find(i => i.id === itemId) || null;
             }
-            if (!item) item = await ABS.getItem(itemId);
+            if (!item) item = await netP;
+            if (!item) throw new Error('item unavailable');
+            Player._logMark('item', Date.now() - t0);
             if (item.mediaType === 'podcast') {
                 this.showItem(itemId);
             } else {
                 await Player.startItem(item);
+                Player._logMark('started', Date.now() - t0);
                 if (openPlayer) this.openFullscreen();
             }
         } catch (e) {

@@ -117,6 +117,19 @@ const Player = {
         } catch { return null; }
     },
 
+    // Timing marks (ms since the tap) for the "why did play take so long"
+    // question — they land in the same shipped log as the audio events.
+    _logMark(name, ms) {
+        try {
+            if (typeof App !== 'undefined' && App?._swLog) {
+                const ts = new Date().toISOString().substring(11, 23);
+                App._swLog.push(`${ts} audio ${JSON.stringify({ ev: 'mark', name, ms })}`);
+                if (App._swLog.length > (App._swLogMax || 200)) App._swLog.shift();
+                App._renderSwLog?.();
+            }
+        } catch {}
+    },
+
     _logSeekCall(source, target) {
         try {
             const from = Number((this.audio.currentTime || 0).toFixed(2));
@@ -252,12 +265,14 @@ const Player = {
         // activation lapse if that gap grows.
         const local = startTime === null ? this._localPos(item.id) : null;
         const progressP = (startTime === null) ? ABS.getProgress(item.id).catch(() => null) : Promise.resolve(null);
+        const tSession = Date.now();
         try {
             this.session = await ABS.startSession(item.id);
         } catch (e) {
             console.warn('Could not start session', e);
             this.session = null;
         }
+        this._logMark('session', Date.now() - tSession);
 
         if (startTime === null) {
             let serverTime = null, serverAt = 0;

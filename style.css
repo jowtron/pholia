@@ -788,7 +788,8 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
         flex-direction: column; gap: 16px; align-items: center;
         justify-content: flex-start;
     }
-    .fs-cover-wrap { width: 280px; height: 280px; max-width: 80vw; max-height: 80vw; }
+    /* Fill the width: 90vw is ~350px on a 390px phone (was capped at 280). */
+    .fs-cover-wrap { width: min(90vw, 420px); height: min(90vw, 420px); max-width: none; max-height: none; }
     .fs-bottom {
         padding: 10px 16px 12px;
         padding-bottom: calc(12px + var(--safe-bottom));
