@@ -1507,11 +1507,26 @@ const App = {
             const plan = this.abbPlanDest(m.folderName, chosen);
             row.setStatus(`Adding ${plan.length} torrent(s) to Real-Debrid…`);
             const add = (fileId) => this._shimCall('/api/admin/abb/torrents', { method: 'POST', body: JSON.stringify({ magnet: m.magnet, fileId }) });
+            // Two adds at a time (each is ~10 RD API calls; four in parallel drew a
+            // 429 on 2026-09-02). A failed add gets a Retry that re-adds just that
+            // file and tracks it to the library on its own.
             const torrents = [];
-            for (let i = 0; i < plan.length; i += 4) {
-                const added = await Promise.all(plan.slice(i, i + 4).map(p => add(p.id).then(a => ({ ...a, dest: p.dest })).catch(e => ({ error: e.message, dest: p.dest }))));
+            const retryAdd = (p) => {
+                const r = this._abbRow(listEl, p.dest, '');
+                const retry = () => {
+                    r.setStatus('Adding to Real-Debrid…');
+                    add(p.id)
+                        .then((a) => { removeBtn(); return this.abbTrackTorrents([{ id: a.id, dest: p.dest }], folderId, listEl, r); })
+                        .then((ok) => { this.abbLoadRdList(); if (ok) this._tabCache = {}; })
+                        .catch((e) => r.fail('Add failed: ' + e.message));
+                };
+                let removeBtn = r.addButton('Retry', retry);
+                return r;
+            };
+            for (let i = 0; i < plan.length; i += 2) {
+                const added = await Promise.all(plan.slice(i, i + 2).map(p => add(p.id).then(a => ({ ...a, dest: p.dest, plan: p })).catch(e => ({ error: e.message, dest: p.dest, plan: p }))));
                 for (const a of added) {
-                    if (a.error) this._abbRow(listEl, a.dest, '').fail('Add failed: ' + a.error);
+                    if (a.error) retryAdd(a.plan).fail('Add failed: ' + a.error);
                     else torrents.push({ id: a.id, dest: a.dest });
                 }
                 row.setStatus(`Added ${torrents.length} / ${plan.length} torrent(s)…`);
