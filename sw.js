@@ -2,6 +2,9 @@ const CACHE_NAME = 'pholia-v5';
 const OFFLINE_AUDIO_CACHE = 'pholia-offline-audio-v2';
 const OFFLINE_META_CACHE = 'pholia-offline-meta-v1';
 const COVERS_CACHE = 'pholia-covers-v1';
+// Tiny persisted SW settings (see loadConfig) — must survive activate's cache sweep.
+const CONFIG_CACHE = 'pholia-sw-config-v1';
+const CONFIG_KEY = 'https://pholia.local/sw-config';
 const MAX_COVERS = 500;
 const APP_SHELL = [
     './',
@@ -20,7 +23,7 @@ const APP_SHELL = [
     './icons/icon-512.png',
 ];
 
-const KEEP_CACHES = new Set([CACHE_NAME, OFFLINE_AUDIO_CACHE, OFFLINE_META_CACHE, COVERS_CACHE]);
+const KEEP_CACHES = new Set([CACHE_NAME, OFFLINE_AUDIO_CACHE, OFFLINE_META_CACHE, COVERS_CACHE, CONFIG_CACHE]);
 
 self.addEventListener('install', e => {
     e.waitUntil(
@@ -94,18 +97,46 @@ self.addEventListener('message', e => {
     if (e.data?.type === 'SW_CONFIG') {
         experimentalPartialCache = !!e.data.experimentalPartialCache;
         swDebugLog = !!e.data.swDebugLog;
+        configLoaded = Promise.resolve();
+        saveConfig();
         debugLog('config', { experimentalPartialCache, swDebugLog });
     }
 });
 
-// Experimental: serve partial caches when the requested Range fits the
-// cached chunks. Off by default and has no UI toggle — known to break
-// iOS playback when the cached region has gaps. Set
-// localStorage.pholia_sw_partial_intercept = 'true' to test.
-let experimentalPartialCache = false;
-// Separate flag for the debug log so instrumentation can stay on while
-// the (broken) partial intercept stays off.
+// Serve partially cached books from the local cache when the requested Range
+// starts inside a cached chunk (Settings → "Play from partial cache", default
+// ON since 2026-09-03). The earlier version stopped the response at the first
+// gap, which iOS can't recover from; serveChunked now bridges the gap with a
+// network fetch that is started up front, so the shim's cold first byte
+// overlaps the cached playback instead of stalling it.
+let experimentalPartialCache = true;
+// Separate flag for the debug log so instrumentation can stay on independently.
 let swDebugLog = false;
+// iOS restarts this worker constantly and plain globals revert to their
+// defaults before the page re-sends SW_CONFIG — so both flags are persisted
+// in Cache Storage and read back on the first fetch after a restart.
+let configLoaded = null;
+function loadConfig() {
+    if (!configLoaded) {
+        configLoaded = (async () => {
+            try {
+                const c = await caches.open(CONFIG_CACHE);
+                const r = await c.match(CONFIG_KEY);
+                if (!r) return;
+                const j = await r.json();
+                if (typeof j.experimentalPartialCache === 'boolean') experimentalPartialCache = j.experimentalPartialCache;
+                if (typeof j.swDebugLog === 'boolean') swDebugLog = j.swDebugLog;
+            } catch {}
+        })();
+    }
+    return configLoaded;
+}
+async function saveConfig() {
+    try {
+        const c = await caches.open(CONFIG_CACHE);
+        await c.put(CONFIG_KEY, new Response(JSON.stringify({ experimentalPartialCache, swDebugLog }), { headers: { 'Content-Type': 'application/json' } }));
+    } catch {}
+}
 
 function debugLog(tag, data) {
     if (!swDebugLog) return;
@@ -125,6 +156,15 @@ function debugLog(tag, data) {
 let cachedKeys = null;
 let cachedMetas = null;
 let cachedChunks = null;
+// One in-flight key walk at a time: a burst of Range requests on a fresh
+// worker would otherwise each start their own cache.keys() pass.
+let keysLoading = null;
+function ensureKeys() {
+    if (cachedKeys !== null) return Promise.resolve();
+    if (!keysLoading) keysLoading = loadCachedKeys().finally(() => { keysLoading = null; });
+    return keysLoading;
+}
+const AUDIO_PATH_RE = /\/api\/items\/[^/]+\/file\/[^/]+$/;
 
 function baseKeyFromMarker(url, marker) {
     const q = url.indexOf('?' + marker);
@@ -230,24 +270,36 @@ self.addEventListener('fetch', e => {
         return;
     }
 
-    if (cachedKeys === null) {
-        loadCachedKeys();
+    if (cachedKeys === null || configLoaded === null) {
+        // Fresh worker (iOS restarts it constantly): the key map and the
+        // persisted flags aren't loaded yet. Other requests pass through;
+        // audio waits the few ms for the map so the first play after a
+        // restart still comes from cache instead of always going to the
+        // network (which is what "cached books still take ages" was).
+        const ready = Promise.all([ensureKeys(), loadConfig()]);
+        if (!AUDIO_PATH_RE.test(url.pathname)) return;
+        e.respondWith(ready.then(() => decideAudio(e.request, url) || fetch(e.request)));
         return;
     }
+    const handled = decideAudio(e.request, url);
+    if (handled) e.respondWith(handled);
+});
+
+// Returns a Response promise when the cache should answer, null for native
+// passthrough. Pure function of the loaded key map + flags.
+function decideAudio(request, url) {
     const baseKey = offlineKey(url.toString());
-    const range = e.request.headers.get('range');
+    const range = request.headers.get('range');
 
-    // Conservative gate (default): only intercept fully-cached entries.
+    // Conservative gate: only intercept fully-cached entries.
     if (!experimentalPartialCache) {
-        if (!cachedKeys.has(completeKeyOf(baseKey)) && !cachedKeys.has(baseKey)) {
-            return;
-        }
-        e.respondWith(handleCrossOrigin(e.request));
-        return;
+        if (!cachedKeys.has(completeKeyOf(baseKey)) && !cachedKeys.has(baseKey)) return null;
+        return handleCrossOrigin(request);
     }
 
-    // Experimental gate: intercept partial caches when the requested Range
-    // is fully covered by cached chunks. Every decision is logged.
+    // Partial gate: intercept when the requested Range starts inside a cached
+    // chunk; serveChunked streams the cached run and bridges the rest from
+    // the network. Every decision is logged.
     const meta = cachedMetas?.get(baseKey);
     const chunkSet = cachedChunks?.get(baseKey);
     if (meta) {
@@ -260,16 +312,15 @@ self.addEventListener('fetch', e => {
             totalSize: meta.totalSize,
             decision: fits ? 'intercept' : 'passthrough',
         });
-        if (fits) e.respondWith(handleCrossOriginLogged(e.request, baseKey, range));
-        return;
+        return fits ? handleCrossOriginLogged(request, baseKey, range) : null;
     }
     if (cachedKeys.has(baseKey)) {
         debugLog('audio', { url: baseKey, range, decision: 'intercept-legacy' });
-        e.respondWith(handleCrossOriginLogged(e.request, baseKey, range));
-        return;
+        return handleCrossOriginLogged(request, baseKey, range);
     }
     debugLog('audio', { url: baseKey, range, decision: 'passthrough-no-meta' });
-});
+    return null;
+}
 
 // Wraps handleCrossOrigin to log what was returned. Helps spot
 // Content-Range/Content-Length/Content-Type mismatches between cache-served
@@ -501,6 +552,28 @@ async function serveChunked(request, cache, baseKey, meta) {
     let cur = startChunk;
     let networkReader = null;
     let networkAbort = null;
+    // Start the gap fetch NOW, not when the cached run is consumed: the
+    // shim's cold first byte (8-16 s measured 2026-09-03) then overlaps the
+    // minutes of cached audio instead of landing mid-stream as a stall at
+    // the seam. The body stays unread (TCP backpressure) until we get there.
+    // One retry: the shim retries pCloud itself, but a 5xx here would
+    // otherwise truncate the response and send iOS into a re-request loop.
+    const networkResP = needsNetwork ? (async () => {
+        let lastErr = null;
+        for (let attempt = 0; attempt < 2; attempt++) {
+            try {
+                const headers = new Headers(request.headers);
+                headers.set('Range', `bytes=${cacheEnd + 1}-${end}`);
+                networkAbort = new AbortController();
+                const res = await fetch(request.url, { headers, signal: networkAbort.signal });
+                if (res.status === 206 || res.status === 200) return res;
+                lastErr = new Error('network fetch ' + res.status);
+                try { res.body?.cancel(); } catch {}
+            } catch (err) { lastErr = err; if (networkAbort?.signal.aborted) break; }
+        }
+        throw lastErr || new Error('network fetch failed');
+    })() : null;
+    if (networkResP) networkResP.catch(() => {}); // cancelled before use is not an error
 
     const stream = new ReadableStream({
         async pull(controller) {
@@ -522,14 +595,7 @@ async function serveChunked(request, cache, baseKey, meta) {
             if (!needsNetwork) { controller.close(); return; }
             if (!networkReader) {
                 try {
-                    const headers = new Headers(request.headers);
-                    headers.set('Range', `bytes=${cacheEnd + 1}-${end}`);
-                    networkAbort = new AbortController();
-                    const res = await fetch(request.url, { headers, signal: networkAbort.signal });
-                    if (res.status !== 206 && res.status !== 200) {
-                        controller.error(new Error('network fetch ' + res.status));
-                        return;
-                    }
+                    const res = await networkResP;
                     networkReader = res.body.getReader();
                 } catch (err) { controller.error(err); return; }
             }

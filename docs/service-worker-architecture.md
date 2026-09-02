@@ -53,9 +53,9 @@ So meta is written **before** the chunk loop starts. Consequence: meta existing 
 
 ### The `__complete` sentinel
 
-Pholia's SW only intercepts audio URLs that are **fully** cached. Partial caches (sliding-window in progress, or after window eviction) pass through to network natively.
+Since 2026-09-03 the default gate is the **partial** one (Settings → "Play from partial cache"): a Range whose start byte falls inside a cached chunk is served by `serveChunked`, which streams the contiguous cached run and bridges the remainder from the network in the same 206. Two things make this work where the first attempt didn't: the gap fetch is started when the response starts (so the shim's 8–16 s cold first byte overlaps cached playback instead of stalling at the seam), and a fresh worker awaits its key map / persisted flags for audio requests instead of passing the first ones through (iOS restarts the worker constantly, which made "cached" books always hit the network on the first play). Both flags are persisted in the `pholia-sw-config-v1` cache. With the toggle off, the conservative gate below applies.
 
-Why: iOS WebKit adds measurable latency to every SW-intercepted media fetch, even for pure passthrough. Streaming a partially-cached file with the SW in the loop introduced buffer underruns on slow networks. Native passthrough avoids the latency penalty.
+Conservative gate: only audio URLs that are **fully** cached are intercepted. Partial caches pass through to network natively — the original reasoning being that iOS WebKit adds latency to every SW-intercepted media fetch and a mid-stream cache→network seam underran on slow networks.
 
 The `__complete` sentinel is the signal — present only when every chunk is cached at the expected size. The SW's `cachedKeys` Set tracks which URLs have this sentinel; the fetch handler consults the Set synchronously. URLs not in the Set return without `respondWith`, leaving the browser to fetch natively.
 
@@ -180,7 +180,7 @@ If you take nothing else from this doc:
 | Chunked storage with query-param keys | Switch to URL fragments — Cache API strips them, every write overwrites |
 | Meta written upfront, not at end | Defer meta to after the loop — partial caches become invisible |
 | Selective interception via `cachedKeys` | Always-intercept audio — iOS playback gets buffer underruns |
-| `__complete` sentinel gates interception | Intercept partials — same problem |
+| Partial intercept bridges the gap in ONE response, gap fetch started up front | End the response at the cache edge — iOS re-requests the same start byte forever |
 | `cache.put` cache-key strips `?v=` for app shell | Use raw request URL — cache leaks an entry per deploy |
 | Wildcard `_headers` rules avoided | Add `/*` rule — concatenates with per-file rules, Safari mis-parses |
 

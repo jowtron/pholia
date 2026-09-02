@@ -163,12 +163,10 @@ const App = {
     },
 
     sendSwConfig() {
-        // The visible 'pholia_sw_experimental' toggle now only controls the
-        // audio-event debug log; the partial-cache intercept is a separate
-        // (default off, no UI) flag because it's known to break iOS playback
-        // when cached regions have gaps.
+        // 'pholia_sw_experimental' is the audio debug log; the partial-cache
+        // intercept is its own Settings toggle, ON unless switched off.
         const swDebugLog = localStorage.getItem('pholia_sw_experimental') === 'true';
-        const experimentalPartialCache = localStorage.getItem('pholia_sw_partial_intercept') === 'true';
+        const experimentalPartialCache = localStorage.getItem('pholia_sw_partial_intercept') !== 'false';
         try {
             navigator.serviceWorker?.controller?.postMessage({
                 type: 'SW_CONFIG',
@@ -186,6 +184,9 @@ const App = {
         // Send config now and on every controllerchange (new SW = needs the flag again).
         this.sendSwConfig();
         navigator.serviceWorker.addEventListener('controllerchange', () => this.sendSwConfig());
+        // The SW persists its flags, but re-sending on every foreground is
+        // cheap insurance for a worker that restarted while we were hidden.
+        document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') this.sendSwConfig(); });
         navigator.serviceWorker.addEventListener('message', (e) => {
             if (e.data?.type !== 'SW_DEBUG') return;
             console.log('[sw]', e.data.tag, e.data.data);
@@ -408,6 +409,10 @@ const App = {
         document.getElementById('setting-hide-collections').addEventListener('change', e => {
             localStorage.setItem('pholia_hide_collections', e.target.checked ? 'true' : 'false');
             this.applyTabVisibility();
+        });
+        document.getElementById('setting-partial-cache').addEventListener('change', e => {
+            localStorage.setItem('pholia_sw_partial_intercept', e.target.checked ? 'true' : 'false');
+            this.sendSwConfig();
         });
         document.getElementById('setting-sw-experimental').addEventListener('change', e => {
             localStorage.setItem('pholia_sw_experimental', e.target.checked ? 'true' : 'false');
@@ -2891,6 +2896,7 @@ const App = {
         document.getElementById('setting-theme').value = localStorage.getItem('pholia_theme') || 'dark';
         document.getElementById('setting-auto-cache').checked = localStorage.getItem('pholia_auto_cache') === 'true';
         document.getElementById('setting-hide-collections').checked = localStorage.getItem('pholia_hide_collections') === 'true';
+        document.getElementById('setting-partial-cache').checked = localStorage.getItem('pholia_sw_partial_intercept') !== 'false';
         const swExp = localStorage.getItem('pholia_sw_experimental') === 'true';
         document.getElementById('setting-sw-experimental').checked = swExp;
         document.getElementById('sw-log-section').classList.toggle('hidden', !swExp);
