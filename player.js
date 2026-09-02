@@ -22,8 +22,10 @@ const Player = {
         this.audio.preload = 'auto';
         this.audio.addEventListener('timeupdate', () => this.onTimeUpdate());
         this.audio.addEventListener('ended', () => this.onTrackEnded());
-        this.audio.addEventListener('play', () => this.setPlaying(true));
-        this.audio.addEventListener('pause', () => this.setPlaying(false));
+        // A silent seek (see loadTime) pauses and resumes under the hood;
+        // don't let that pair of events flip the play button.
+        this.audio.addEventListener('play', () => { if (!this._silentSeek) this.setPlaying(true); });
+        this.audio.addEventListener('pause', () => { if (!this._silentSeek) this.setPlaying(false); });
         // Sustained playback clears the recovery budget so transient stalls
         // over a long listening session don't exhaust 3 attempts forever.
         this.audio.addEventListener('playing', () => { this._audioRecoveryAttempts = 0; });
@@ -51,6 +53,33 @@ const Player = {
         this.updateSkipLabels();
 
         this.setupMediaSession();
+
+        // The server only knows the position as of the last sync. Flush it
+        // when the app goes to the background or is about to be killed —
+        // keepalive so the request outlives the page — instead of leaving up
+        // to 30 s of listening to the timer.
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden' && this.item) this.syncProgress(false, { keepalive: true });
+        });
+        window.addEventListener('pagehide', () => { if (this.item) this.syncProgress(false, { keepalive: true }); });
+    },
+
+    // Last position this device saw for an item, written every few seconds
+    // while playing and on every sync. Consulted on startItem: newer than the
+    // server's lastUpdate means a sync never landed (killed mid-chapter,
+    // offline), so resume from here instead of the server's stale value.
+    _localPos(itemId) {
+        try {
+            const v = JSON.parse(localStorage.getItem('pholia_pos_' + itemId));
+            return v && typeof v.t === 'number' && typeof v.at === 'number' ? v : null;
+        } catch { return null; }
+    },
+    _saveLocalPos(clear = false) {
+        if (!this.item) return;
+        try {
+            if (clear) localStorage.removeItem('pholia_pos_' + this.item.id);
+            else localStorage.setItem('pholia_pos_' + this.item.id, JSON.stringify({ t: this.getGlobalTime(), at: Date.now() }));
+        } catch {}
     },
 
     setupMediaSession() {
@@ -218,6 +247,11 @@ const Player = {
         this.tracks = item.media?.audioFiles || [];
         this._prewarmedFromTrackIndex = -1;
 
+        // Fetch progress alongside the session (not after it) so a resume
+        // adds no extra await between the tap and play() — iOS lets the user
+        // activation lapse if that gap grows.
+        const local = startTime === null ? this._localPos(item.id) : null;
+        const progressP = (startTime === null) ? ABS.getProgress(item.id).catch(() => null) : Promise.resolve(null);
         try {
             this.session = await ABS.startSession(item.id);
         } catch (e) {
@@ -225,12 +259,18 @@ const Player = {
             this.session = null;
         }
 
-        if (startTime === null && this.session?.currentTime) {
-            startTime = this.session.currentTime;
-        }
         if (startTime === null) {
-            const progress = await ABS.getProgress(item.id);
-            if (progress && !progress.isFinished) startTime = progress.currentTime || 0;
+            let serverTime = null, serverAt = 0;
+            if (this.session?.currentTime) serverTime = this.session.currentTime;
+            const progress = await progressP;
+            if (progress) {
+                serverAt = progress.lastUpdate || 0;
+                if (serverTime === null && !progress.isFinished) serverTime = progress.currentTime || 0;
+            }
+            startTime = serverTime;
+            // Newer local position than the server's last write: a sync
+            // didn't land. 2 s covers clock skew between phone and server.
+            if (local && local.at > serverAt + 2000) startTime = local.t;
         }
         startTime = startTime || 0;
 
@@ -490,10 +530,36 @@ const Player = {
         // state — an errored element ignores play()/currentTime entirely and
         // only re-running the load algorithm clears it (iOS: error 4 after a
         // load timeout left the player dead until the PWA was killed).
-        if (this.audio.src !== url || this.audio.error) this.audio.src = url;
+        const srcChanged = this.audio.src !== url || !!this.audio.error;
+        if (srcChanged) this.audio.src = url;
+        // iOS completes a seek on a PLAYING element in two stages — a quick
+        // approximate one that starts sound, then the precise one that snaps
+        // back — so the second after a rewind is heard twice (crash-log tail
+        // 2026-09-01: seeked at 3209.05, playing at 3209.13, then playing
+        // again at 3209.04 with no second seeking). Seek silently instead:
+        // pause, set the time, resume once seeked fires.
+        const silent = !srcChanged && !this.audio.paused;
+        if (silent) {
+            this._silentSeek = true;
+            this.audio.pause();
+        }
         this.audio.currentTime = offset;
-        // Play immediately; if it fails (slow connection), retry when audio is ready
-        this._tryPlay(source);
+        if (silent) {
+            let resumed = false;
+            const resume = () => {
+                if (resumed) return;
+                resumed = true;
+                this.audio.removeEventListener('seeked', resume);
+                this._silentSeek = false;
+                this._tryPlay(source);
+            };
+            this.audio.addEventListener('seeked', resume);
+            // Never strand a paused player if seeked doesn't come (src churn).
+            setTimeout(resume, 1500);
+        } else {
+            // Play immediately; if it fails (slow connection), retry when audio is ready
+            this._tryPlay(source);
+        }
         // Big seek (chapter nav, scrub, jump back/forward) — restart auto-cache
         // so it re-evaluates which chunks fall in the new sliding window. The
         // existing one-shot loop iterates chunks linearly forward and never
@@ -572,7 +638,12 @@ const Player = {
         this._tryPlay('play-btn');
         this._updatePositionState();
     },
-    pause() { this.audio.pause(); this._updatePositionState(); },
+    pause() {
+        this.audio.pause();
+        this._updatePositionState();
+        // A pause is the position the user will want back; don't wait for the timer.
+        if (this.item) this.syncProgress();
+    },
     toggle() {
         // paused is unreliable on an errored element (error can fire with
         // paused=false) — route through play()'s revive path first.
@@ -684,6 +755,8 @@ const Player = {
     _lastChapterIndex: -1,
     _prewarmedFromTrackIndex: -1,
     _lastPositionPublish: 0,
+    _lastLocalSave: 0,
+    _silentSeek: false,
     onTimeUpdate() {
         this.updateUI();
         // Update media session on chapter change
@@ -695,6 +768,10 @@ const Player = {
         // to the audio element's intrinsic duration on the lock screen.
         // Republishing once a second keeps the chapter-scoped scrubber sticky.
         const now = Date.now();
+        if (now - this._lastLocalSave > 5000) {
+            this._lastLocalSave = now;
+            this._saveLocalPos();
+        }
         if (now - this._lastPositionPublish > 1000) {
             this._lastPositionPublish = now;
             this._updatePositionState();
@@ -888,17 +965,20 @@ const Player = {
         if (this.syncInterval) { clearInterval(this.syncInterval); this.syncInterval = null; }
     },
 
-    async syncProgress(finished = false) {
+    async syncProgress(finished = false, opts = {}) {
         if (!this.item) return;
         const gt = this.getGlobalTime(), dur = this.getTotalDuration();
-        const now = Date.now(); const listened = (now - this.lastSyncTime) / 1000;
+        const now = Date.now();
+        // Only count wall-clock time as listened while audio was running.
+        const listened = this.isPlaying ? (now - this.lastSyncTime) / 1000 : 0;
         this.lastSyncTime = now;
+        this._saveLocalPos(finished);
         try {
-            if (this.session) await ABS.syncSession(this.session.id, gt, dur, listened);
+            if (this.session) await ABS.syncSession(this.session.id, gt, dur, listened, opts);
             else await ABS.updateProgress(this.item.id, {
                 currentTime: gt, duration: dur,
                 progress: dur > 0 ? gt / dur : 0, isFinished: finished,
-            });
+            }, opts);
         } catch (e) { console.warn('Sync failed', e); }
     },
 

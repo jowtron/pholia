@@ -199,10 +199,12 @@ const ABS = {
     },
 
     // Sync playback progress
-    async syncSession(sessionId, currentTime, duration, timeListened = 0) {
+    // opts.keepalive lets the request outlive the page (background / kill).
+    async syncSession(sessionId, currentTime, duration, timeListened = 0, opts = {}) {
         return this.request(`/api/session/${sessionId}/sync`, {
             method: 'POST',
             body: JSON.stringify({ currentTime, duration, timeListened }),
+            ...(opts.keepalive ? { keepalive: true } : {}),
         });
     },
 
@@ -228,10 +230,11 @@ const ABS = {
     },
 
     // Update progress directly
-    async updateProgress(itemId, progress) {
+    async updateProgress(itemId, progress, opts = {}) {
         return this.request(`/api/me/progress/${itemId}`, {
             method: 'PATCH',
             body: JSON.stringify(progress),
+            ...(opts.keepalive ? { keepalive: true } : {}),
         });
     },
 

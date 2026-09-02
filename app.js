@@ -2053,7 +2053,10 @@ const App = {
                         coverSrc = ABS.coverUrl(itemId);
                     }
                     const titleAttr = ` data-title="${esc(entity.name || title)}"`;
-                    html += `<div class="card" data-id="${itemId}" data-type="${section.type}"${titleAttr}${episodeId ? ` data-episode-id="${episodeId}"` : ''}>`;
+                    // Continue Listening: a tap resumes playback (the play
+                    // overlay is small; the whole tile is the obvious target).
+                    const resumeAttr = section.id === 'continue-listening' && section.type === 'book' ? ' data-resume="1"' : '';
+                    html += `<div class="card" data-id="${itemId}" data-type="${section.type}"${titleAttr}${resumeAttr}${episodeId ? ` data-episode-id="${episodeId}"` : ''}>`;
                     if (section.type === 'book') html += this._seqBadge(meta);
                     if (coverSrc) {
                         html += `<img src="${coverSrc}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
@@ -2474,6 +2477,8 @@ const App = {
                     this.showAuthorDetail(el.dataset.id, el.dataset.title || 'Author');
                 } else if (el.dataset.episodeId) {
                     this.playEpisode(el.dataset.id, el.dataset.episodeId);
+                } else if (el.dataset.resume) {
+                    this.quickPlay(el.dataset.id, true);
                 } else {
                     this.showItem(el.dataset.id);
                 }
@@ -2500,7 +2505,7 @@ const App = {
     // Cache-first: if the book is fully downloaded locally, play from the
     // cached META blob (works offline, immune to server-side ino drift after
     // library rescans). Only hits the network when the book isn't cached.
-    async quickPlay(itemId) {
+    async quickPlay(itemId, openPlayer = false) {
         try {
             let item = null;
             const downloadedIds = await Offline.fullyDownloadedIds();
@@ -2512,7 +2517,8 @@ const App = {
             if (item.mediaType === 'podcast') {
                 this.showItem(itemId);
             } else {
-                Player.startItem(item);
+                await Player.startItem(item);
+                if (openPlayer) this.openFullscreen();
             }
         } catch (e) {
             console.error('Quick play failed', e);
