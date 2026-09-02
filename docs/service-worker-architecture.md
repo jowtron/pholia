@@ -181,7 +181,7 @@ If you take nothing else from this doc:
 | `MAX_RANGE_SLICE = 4 MB` cap | Increase it or remove — open-ended Ranges will OOM the tab |
 | Chunked storage with query-param keys | Switch to URL fragments — Cache API strips them, every write overwrites |
 | Meta written upfront, not at end | Defer meta to after the loop — partial caches become invisible |
-| Selective interception via `cachedKeys` | Always-intercept audio — iOS playback gets buffer underruns |
+| Mode pinned per file at `MEDIA_LOAD`; `sw` files get every request answered (gaps bridged with a Range-only CORS fetch) | Answer some requests for a file and let others go native — iOS cancels on the CORS-status change |
 | Partial intercept bridges the gap in ONE response, gap fetch started up front | End the response at the cache edge — iOS re-requests the same start byte forever |
 | `cache.put` cache-key strips `?v=` for app shell | Use raw request URL — cache leaks an entry per deploy |
 | Wildcard `_headers` rules avoided | Add `/*` rule — concatenates with per-file rules, Safari mis-parses |

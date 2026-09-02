@@ -52,13 +52,15 @@ the user can poke the server in their browser, plus auto-retries on
 
 These behaviors are *load-bearing*; understand them before editing `sw.js`.
 
-### Selective interception
+### Selective interception — all-worker or all-native per file
 
-The SW intercepts cross-origin requests *only when something is cached for that URL*. For uncached URLs the fetch event handler returns without calling `respondWith`, so the browser handles the request natively as if no SW existed.
+**iOS's media loader cancels a resource whose CORS status changes between Range responses.** A response the SW synthesizes (it carries `Access-Control-Allow-Origin: *`) and a native no-cors media request have different statuses, so for one media load the SW must answer *every* request for that file or *none* of them. Mixing was the real reason "partial cache breaks iOS" (2026-09-03: cached header, then the file tail re-requested natively every 170 ms until the loader gave up).
 
-Why: iOS WebKit adds measurable latency to *every* SW-intercepted media fetch, even for pure passthrough. Streaming over slow networks (Tailscale) couldn't keep up — buffer underruns and audible glitches. Native passthrough avoids the round-trip entirely. This was a regression introduced by the offline-downloads commit (85caf8b) and fixed in 1bb9705.
+So the page announces each media load: `App.pinMediaMode(url)` posts `MEDIA_LOAD` over a MessageChannel before `audio.src` is assigned (`Player.loadTime`, `onTrackEnded`), and the SW pins a mode per file (`modeFor`): `sw` when the file is fully cached, or partially cached with the Settings toggle "Play from partial cache" on (default on); otherwise `native`. In `sw` mode `serveChunked` streams the contiguous cached run and bridges everything else from the server inside the same 206 via `corsFetch` — a CORS `fetch` carrying **only** `Range` (the media element's own headers include iOS's non-safelisted `X-Playback-Session-Id`, which forces a preflight). The bridge starts when the response starts, so the server's cold first byte overlaps cached playback. In `native` mode the fetch handler returns without `respondWith`. Pins and both flags persist in the `pholia-sw-config-v1` cache because iOS restarts the worker constantly; a fresh worker awaits its key map for audio requests rather than passing the first ones through. Un-pinned files fall back to the old rule (fully cached → SW, else native).
 
-The SW maintains an in-memory `cachedKeys` Set, populated lazily from `cache.keys()` and refreshed when the page sends `CACHE_CHANGED` messages after `downloadBook`/`deleteBook`. The fetch handler consults this synchronously.
+The original reason for not intercepting everything still stands: iOS WebKit adds latency to every SW-intercepted media fetch, so uncached files stay native (regression 85caf8b, fixed 1bb9705).
+
+The SW maintains an in-memory `cachedKeys` Set / `cachedMetas` / `cachedChunks`, populated from `cache.keys()` at activate, on `MEDIA_LOAD`, and when the page sends `CACHE_CHANGED` after chunk writes/deletes.
 
 ### Chunked offline audio cache
 
@@ -72,7 +74,7 @@ Per track: N chunk entries plus one meta entry (`totalSize`, `chunkSize`, `numCh
 
 **Cache keys MUST use query params, NOT URL fragments.** The Cache API spec strips fragments before storing or matching, so `url#chunk=0`, `url#chunk=1`, `url#meta` all collapse to the same key — every write overwrites the previous one. Use `url?__chunk=0`, `url?__meta=1` instead. (This bug caused weeks of mysterious "downloads complete instantly", "1 byte cached", "all chapters falsely green" symptoms.)
 
-The SW reassembles chunks on the fly when the audio element makes Range requests. Falls through to network if any required chunk is missing (handles partial caches and post-eviction requests gracefully).
+The SW reassembles chunks on the fly when the audio element makes Range requests; for a worker-pinned file, bytes it doesn't have are bridged from the server in the same response (see above) — never by letting the request go native.
 
 ### Cache versions
 
@@ -158,6 +160,7 @@ paths) are intentionally left out of this repo; keep them in private notes.
 - **`Content-Range` is not CORS-safelisted** — use HEAD `Content-Length` for size discovery
 - **iOS PWA memory cap (~50 MB)** — never `cache.put` a multi-hundred-MB Response or `arrayBuffer()` a huge cached entry; both crash the tab
 - **iOS WebKit adds latency to SW-intercepted media fetches** — only intercept when something is actually cached
+- **A media load must be all-SW or all-native** — iOS cancels when a response's CORS status differs from earlier ones; pin the mode per file at `MEDIA_LOAD`, bridge gaps with a Range-only CORS fetch, never mix
 - **Never use cache-first** in the SW for JS/CSS files
 - **Cache version must be bumped** when changing the on-disk format
 - **Safari on macOS is the primary test browser** — strictest about CORS
