@@ -394,6 +394,7 @@ main {
 /* ── Detail view ── */
 .detail-view { display: flex; flex-direction: column; gap: 1rem; }
 .detail-header { display: flex; gap: 1rem; align-items: flex-start; }
+.detail-cover { cursor: zoom-in; }
 .detail-cover {
     width: 140px; height: 140px; border-radius: var(--radius);
     object-fit: cover; background: var(--card-bg); flex-shrink: 0;

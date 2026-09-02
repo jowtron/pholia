@@ -346,6 +346,12 @@ const App = {
         // Header
         document.getElementById('back-btn').addEventListener('click', () => this.goBack());
         document.getElementById('settings-btn').addEventListener('click', () => this.showSettings());
+        // Tap a book's cover on its detail screen → full-size cover in a lightbox
+        // (delegated: the detail view is re-rendered as innerHTML).
+        document.addEventListener('click', (e) => {
+            const img = e.target.closest && e.target.closest('img.detail-cover');
+            if (img && img.src && img.style.visibility !== 'hidden') this._abbLightbox(img.src);
+        });
         document.getElementById('search-btn').addEventListener('click', () => this.showSearch());
         document.getElementById('abb-btn').addEventListener('click', () => this.toggleAdd());
         document.getElementById('content').addEventListener('scroll', (e) => {
