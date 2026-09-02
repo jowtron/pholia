@@ -1235,7 +1235,9 @@ const App = {
             // tap the cover → the full-size source image in a lightbox.
             const details = li.querySelector('.abb-details');
             if (res.url) li.querySelector('.tracklist-title').addEventListener('click', () => this.abbToggleDetails(res, details));
-            if (res.cover) img.addEventListener('click', () => this._abbLightbox(res.coverOrig || res.cover));
+            if (res.cover) img.addEventListener('click', () => this._abbLightbox(res.coverOrig || res.cover, res.coverCached ? res.cover : null));
+            // A dead image host falls back to the shim's cached copy (and vice versa).
+            if (res.coverOrig && res.coverCached) img.addEventListener('error', () => { if (img.src !== res.coverOrig) img.src = res.coverOrig; }, { once: true });
             const btn = li.querySelector('.abb-grab');
             if (res.inLibrary) { btn.textContent = 'Again'; btn.title = 'Already in your library — grab again anyway'; btn.classList.add('abb-grab-again'); }
             const prog = li.querySelector('.abb-progress');
@@ -1384,12 +1386,14 @@ const App = {
         try { return (new URL(magnet).searchParams.get('dn') || '').replace(/\+/g, ' ').trim() || 'Magnet link'; } catch { return 'Magnet link'; }
     },
 
-    _abbLightbox(src) {
+    // Full-size linked image first; if that host is gone, the cached webp.
+    _abbLightbox(src, fallback) {
         const box = document.createElement('div');
         box.className = 'abb-lightbox';
         const img = document.createElement('img');
         img.alt = '';
         img.referrerPolicy = 'no-referrer';
+        if (fallback && fallback !== src) img.addEventListener('error', () => { img.src = fallback; }, { once: true });
         img.src = src;
         box.appendChild(img);
         box.addEventListener('click', () => box.remove());
@@ -2864,10 +2868,38 @@ const App = {
         const swExp = localStorage.getItem('pholia_sw_experimental') === 'true';
         document.getElementById('setting-sw-experimental').checked = swExp;
         document.getElementById('sw-log-section').classList.toggle('hidden', !swExp);
+        // Rescan lives here for shim servers only (real ABS has its own UI).
+        document.getElementById('shim-section').classList.toggle('hidden', !this.isShim);
+        if (!this._shimRescanWired) {
+            this._shimRescanWired = true;
+            document.getElementById('shim-rescan').addEventListener('click', () => this.shimRescan());
+        }
         document.getElementById('settings-modal').classList.remove('hidden');
         this._renderSwLog();
         this.renderDownloadsList();
         this.renderAccountSection();
+    },
+
+    // POST /api/admin/libraries/:id/scan on the shim — picks up files that
+    // landed on pCloud outside the grab flow (or formats /finish didn't
+    // register). Same call the grab tail makes.
+    async shimRescan() {
+        const btn = document.getElementById('shim-rescan');
+        const st = document.getElementById('shim-rescan-status');
+        const libId = this.currentLibraryId || this.abbLibraryId;
+        if (!libId) { st.textContent = 'No library selected.'; return; }
+        btn.disabled = true;
+        st.textContent = 'Scanning… (a big library can take a minute)';
+        try {
+            const r = await this._shimCall(`/api/admin/libraries/${encodeURIComponent(libId)}/scan`, { method: 'POST' });
+            const errs = (r.errors || []).length;
+            st.textContent = `Done: ${r.added || 0} added, ${r.skipped || 0} already known${errs ? ', ' + errs + ' error' + (errs === 1 ? '' : 's') + ' (see /admin)' : ''}.`;
+            if (r.added) this._tabCache = {};
+        } catch (e) {
+            st.textContent = 'Scan failed: ' + e.message;
+        } finally {
+            btn.disabled = false;
+        }
     },
     hideSettings() { document.getElementById('settings-modal').classList.add('hidden'); },
 
