@@ -250,7 +250,9 @@ const Player = {
         if (fwText) fwText.textContent = label;
     },
 
-    async startItem(item, startTime = null) {
+    // sessionP: a /play request the caller already fired (quickPlay starts
+    // it at the tap, in parallel with the item fetch) — saves a round trip.
+    async startItem(item, startTime = null, sessionP = null) {
         if (this.session) await this.closeCurrentSession();
         if (this._autoCacheController) { this._autoCacheController.abort(); this._autoCacheController = null; }
         this._audioRecoveryAttempts = 0;
@@ -267,7 +269,7 @@ const Player = {
         const progressP = (startTime === null) ? ABS.getProgress(item.id).catch(() => null) : Promise.resolve(null);
         const tSession = Date.now();
         try {
-            this.session = await ABS.startSession(item.id);
+            this.session = await (sessionP || ABS.startSession(item.id));
         } catch (e) {
             console.warn('Could not start session', e);
             this.session = null;

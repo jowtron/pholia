@@ -2510,6 +2510,9 @@ const App = {
         Player._logMark('tap', 0);
         try {
             let item = null;
+            // Resume taps come from book tiles, so the /play session can be
+            // opened right away instead of after the item fetch.
+            const sessionP = openPlayer ? ABS.startSession(itemId) : null;
             // The offline-cache scan and the item fetch don't depend on each
             // other: run both, prefer the cached copy if the book is fully
             // downloaded. Waiting for the scan first put its full cost in
@@ -2527,7 +2530,7 @@ const App = {
             if (item.mediaType === 'podcast') {
                 this.showItem(itemId);
             } else {
-                await Player.startItem(item);
+                await Player.startItem(item, null, sessionP);
                 Player._logMark('started', Date.now() - t0);
                 if (openPlayer) this.openFullscreen();
             }
