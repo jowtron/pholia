@@ -664,7 +664,11 @@ async function serveChunked(request, cache, baseKey, meta) {
                 if (done) { debugLog('stream-done', { url: baseKey, range, delivered, ms: Date.now() - t0 }); controller.close(); return; }
                 delivered += value.byteLength;
                 controller.enqueue(value);
-            } catch (err) { debugLog('stream-error', { url: baseKey, range, phase: 'network', delivered, err: String(err) }); controller.error(err); }
+            } catch (err) {
+                // A read that fails because iOS cancelled the response is not an error worth logging.
+                if (!cancelled && !networkAbort?.signal.aborted) debugLog('stream-error', { url: baseKey, range, phase: 'network', delivered, err: String(err) });
+                controller.error(err);
+            }
         },
         cancel(reason) {
             cancelled = true;
