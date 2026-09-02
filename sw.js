@@ -115,6 +115,7 @@ let swDebugLog = false;
 // iOS restarts this worker constantly and plain globals revert to their
 // defaults before the page re-sends SW_CONFIG — so both flags are persisted
 // in Cache Storage and read back on the first fetch after a restart.
+let partialDisabledUntil = 0; // set by a failed bridge fetch, see serveChunked
 let configLoaded = null;
 function loadConfig() {
     if (!configLoaded) {
@@ -300,7 +301,7 @@ function decideAudio(request, url) {
     const range = request.headers.get('range');
 
     // Conservative gate: only intercept fully-cached entries.
-    if (!experimentalPartialCache) {
+    if (!experimentalPartialCache || Date.now() < partialDisabledUntil) {
         if (!cachedKeys.has(completeKeyOf(baseKey)) && !cachedKeys.has(baseKey)) return null;
         return handleCrossOrigin(request);
     }
@@ -589,6 +590,12 @@ async function serveChunked(request, cache, baseKey, meta) {
                 try { res.body?.cancel(); } catch {}
             } catch (err) { lastErr = err; if (networkAbort?.signal.aborted) break; }
         }
+        // Self-heal: a bridge that can't reach the shim would leave every
+        // intercepted response truncated at the cache edge (iOS then loops
+        // re-requesting the same byte and gives up). Stop intercepting for a
+        // while so playback falls back to plain network requests.
+        partialDisabledUntil = Date.now() + 5 * 60 * 1000;
+        debugLog('bridge-failed', { url: baseKey, gap: `${cacheEnd + 1}-${end}`, err: String(lastErr), disabledForMs: 5 * 60 * 1000 });
         throw lastErr || new Error('network fetch failed');
     })() : null;
     if (networkResP) networkResP.catch(() => {}); // cancelled before use is not an error
