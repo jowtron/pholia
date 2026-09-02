@@ -302,7 +302,11 @@ function decideAudio(request, url) {
 
     // Conservative gate: only intercept fully-cached entries.
     if (!experimentalPartialCache || Date.now() < partialDisabledUntil) {
-        if (!cachedKeys.has(completeKeyOf(baseKey)) && !cachedKeys.has(baseKey)) return null;
+        if (!cachedKeys.has(completeKeyOf(baseKey)) && !cachedKeys.has(baseKey)) {
+            // Log audio passthroughs too, or a disabled gate is invisible in the log.
+            if (AUDIO_PATH_RE.test(url.pathname)) debugLog('audio', { url: baseKey, range, decision: 'passthrough-conservative' });
+            return null;
+        }
         return handleCrossOrigin(request);
     }
 
@@ -593,9 +597,14 @@ async function serveChunked(request, cache, baseKey, meta) {
         // Self-heal: a bridge that can't reach the shim would leave every
         // intercepted response truncated at the cache edge (iOS then loops
         // re-requesting the same byte and gives up). Stop intercepting for a
-        // while so playback falls back to plain network requests.
-        partialDisabledUntil = Date.now() + 5 * 60 * 1000;
-        debugLog('bridge-failed', { url: baseKey, gap: `${cacheEnd + 1}-${end}`, err: String(lastErr), disabledForMs: 5 * 60 * 1000 });
+        // while so playback falls back to plain network requests. NOT on
+        // abort: iOS cancels the open-ended bytes=0- read the moment it has
+        // the moov, and that cancel reaches here as an AbortError (2026-09-03
+        // log: the valve fired on it and put the next 20 s on the network).
+        if (!networkAbort?.signal.aborted) {
+            partialDisabledUntil = Date.now() + 5 * 60 * 1000;
+            debugLog('bridge-failed', { url: baseKey, gap: `${cacheEnd + 1}-${end}`, err: String(lastErr), disabledForMs: 5 * 60 * 1000 });
+        }
         throw lastErr || new Error('network fetch failed');
     })() : null;
     if (networkResP) networkResP.catch(() => {}); // cancelled before use is not an error
@@ -623,7 +632,10 @@ async function serveChunked(request, cache, baseKey, meta) {
                 try {
                     const res = await networkResP;
                     networkReader = res.body.getReader();
-                } catch (err) { debugLog('stream-error', { url: baseKey, range, phase: 'bridge', delivered, err: String(err) }); controller.error(err); return; }
+                } catch (err) {
+                    if (!networkAbort?.signal.aborted) debugLog('stream-error', { url: baseKey, range, phase: 'bridge', delivered, err: String(err) });
+                    controller.error(err); return;
+                }
             }
             try {
                 const { value, done } = await networkReader.read();
