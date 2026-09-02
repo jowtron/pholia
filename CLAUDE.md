@@ -175,3 +175,7 @@ When the server is an ABS_shim with a Real-Debrid token (`GET /api/admin/abb/set
 **Delete from pCloud** (`App.isShim` only): long-press a book card (`_wireLongPress`, 550 ms; right-click on desktop) or tap "Delete from pCloud…" on the book page → `confirmDeleteItem` (shows format/length) → `DELETE /api/admin/items/:id?deleteFiles=1`. Irreversible: removes the audio files from pCloud and the library entry.
 
 Renaming any of those routes on the shim hides/breaks this screen silently — change both repos together. Stock ABS 404s the first probe, so the icon never shows there.
+
+## AudioBookBay browse-by-category (2026-09-02)
+
+The Add screen has a browse row (category / language / format selects + Browse) under the search bar, fed by the shim's catalogue routes `GET /api/admin/abb/catalog/categories` and `GET /api/admin/abb/catalog/browse?cat=&language=&format=&page=`. `abbLoadFacets()` hides the row when the endpoint 404s (older shim) or the catalogue is empty. Search and browse share `_abbRenderResults()` (same Grab flow); browse appends pages via a "Load more" text button. A "⚡" in a result's sub-line means the shim has the magnet cached, so Grab skips AudioBookBay. Search results may carry `liveError` (shim answered from its catalogue because ABB didn't respond) — shown as a hint above the list.

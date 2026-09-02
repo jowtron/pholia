@@ -1083,6 +1083,14 @@ const App = {
             root.className = 'abb-root';
             root.innerHTML =
                 '<div class="search-bar abb-search"><span class="search-wrap"><input type="text" id="abb-q" placeholder="Search AudioBookBay…" autocomplete="off"><button type="button" class="search-clear" id="abb-clear" aria-label="Clear search">×</button></span><button id="abb-go" class="abb-go">Search</button></div>' +
+                // Browse by category from the shim's AudioBookBay catalogue (a local
+                // copy of ABB's listings; hidden until the shim has crawled something).
+                '<div id="abb-browse" class="abb-browse hidden">' +
+                  '<select id="abb-cat" aria-label="Category"><option value="">Latest</option></select>' +
+                  '<select id="abb-lang" aria-label="Language"><option value="">Any language</option></select>' +
+                  '<select id="abb-fmt" aria-label="Format"><option value="">Any format</option></select>' +
+                  '<button id="abb-browse-go" class="abb-go">Browse</button>' +
+                '</div>' +
                 '<div id="abb-active" class="abb-active hidden"><div class="section-title">In progress</div><div id="abb-rd-progress" class="abb-progress"></div></div>' +
                 '<div id="abb-results"></div>' +
                 '<details id="abb-rd" class="abb-rd"><summary>On Real-Debrid <span id="abb-rd-count" class="text-muted"></span></summary>' +
@@ -1096,12 +1104,74 @@ const App = {
             this._wireSearchClear(root.querySelector('#abb-q'), root.querySelector('#abb-clear'), () => { root.querySelector('#abb-results').innerHTML = ''; });
             root.querySelector('#abb-rd-refresh').addEventListener('click', () => this.abbLoadRdList());
             root.querySelector('#abb-rd').addEventListener('toggle', (e) => { if (e.target.open) this.abbLoadRdList(); });
+            root.querySelector('#abb-browse-go').addEventListener('click', () => this.abbBrowse(1));
+            root.querySelector('#abb-cat').addEventListener('change', () => this.abbBrowse(1));
             this._abbRoot = root;
         }
         const content = document.getElementById('content');
         content.innerHTML = '';
         content.appendChild(this._abbRoot);
         this.abbLoadRdList();
+        this.abbLoadFacets();
+    },
+
+    // Category / language / format lists for the browse row. The shim's
+    // catalogue endpoint 404s on an older shim — the row just stays hidden.
+    async abbLoadFacets() {
+        const root = this._abbRoot; if (!root) return;
+        let f;
+        try { f = await this._shimCall('/api/admin/abb/catalog/categories'); } catch { return; }
+        if (!f || !f.total) return;
+        const fill = (id, items, label) => {
+            const sel = root.querySelector('#' + id);
+            const prev = sel.value;
+            while (sel.options.length > 1) sel.remove(1);
+            for (const it of items) {
+                const o = document.createElement('option');
+                o.value = it.name;
+                o.textContent = label(it.name) + ' (' + it.count.toLocaleString() + ')';
+                sel.appendChild(o);
+            }
+            sel.value = prev;
+        };
+        fill('abb-cat', f.categories, (n) => n);
+        fill('abb-lang', f.languages, (n) => n);
+        fill('abb-fmt', f.formats, (n) => n.toUpperCase());
+        root.querySelector('#abb-cat').options[0].textContent = 'Latest (' + f.total.toLocaleString() + ')';
+        root.querySelector('#abb-browse').classList.remove('hidden');
+    },
+
+    // Newest-first page of the catalogue for the selected category. Renders
+    // like search results (same Grab flow), with a Load more at the bottom.
+    async abbBrowse(page) {
+        const root = this._abbRoot; if (!root) return;
+        const out = root.querySelector('#abb-results');
+        const qs = new URLSearchParams({ page: String(page), limit: '30' });
+        const cat = root.querySelector('#abb-cat').value;
+        const lang = root.querySelector('#abb-lang').value;
+        const fmt = root.querySelector('#abb-fmt').value;
+        if (cat) qs.set('cat', cat);
+        if (lang) qs.set('language', lang);
+        if (fmt) qs.set('format', fmt);
+        const more = out.querySelector('.abb-more');
+        if (more) more.remove();
+        if (page === 1) out.innerHTML = '<div class="loading">Loading…</div>';
+        let r;
+        try { r = await this._shimCall('/api/admin/abb/catalog/browse?' + qs.toString()); }
+        catch (e) { out.innerHTML = `<div class="empty-state">Browse failed: ${esc(e.message)}</div>`; return; }
+        if (page === 1) {
+            out.innerHTML = '';
+            if (!r.results.length) { out.innerHTML = '<div class="empty-state">Nothing in the catalogue for that yet — the shim adds more every few minutes.</div>'; return; }
+        }
+        this._abbRenderResults(r.results, out);
+        this._abbBrowsePage = page;
+        if (r.hasMore) {
+            const b = document.createElement('button');
+            b.className = 'text-btn abb-more';
+            b.textContent = 'Load more';
+            b.addEventListener('click', () => this.abbBrowse(this._abbBrowsePage + 1));
+            out.appendChild(b);
+        }
     },
 
     async abbSearch(q, out) {
@@ -1123,12 +1193,27 @@ const App = {
             return;
         }
         out.innerHTML = '';
-        const ul = document.createElement('ul');
-        ul.className = 'tracklist abb-list';
-        for (const res of r.results) {
+        if (r.liveError) {
+            // The shim answered from its catalogue because AudioBookBay didn't respond.
+            out.innerHTML = `<div class="text-muted abb-pick-hint">AudioBookBay didn't answer — showing cached results only.</div>`;
+        }
+        this._abbRenderResults(r.results, out);
+    },
+
+    // Shared by search and browse: appends result rows to the list in `out`
+    // (creating it on first use) so browse's Load more can extend it.
+    _abbRenderResults(results, out) {
+        let ul = out.querySelector('ul.abb-list');
+        if (!ul) {
+            ul = document.createElement('ul');
+            ul.className = 'tracklist abb-list';
+            out.appendChild(ul);
+        }
+        for (const res of results) {
             const li = document.createElement('li');
             li.className = 'tracklist-item abb-item';
-            const sub = res.magnet ? 'Magnet link' : [res.format ? res.format.toUpperCase() : null, res.bitrate, res.sizeBytes ? formatBytes(res.sizeBytes) : null, res.language, res.posted ? 'Posted ' + res.posted : null].filter(Boolean).join(' • ');
+            // "⚡" = the magnet is cached on the shim, so Grab skips AudioBookBay.
+            const sub = res.magnet ? 'Magnet link' : [res.format ? res.format.toUpperCase() : null, res.bitrate, res.sizeBytes ? formatBytes(res.sizeBytes) : null, res.language, res.posted ? 'Posted ' + res.posted : null, res.infoHash ? '⚡' : null].filter(Boolean).join(' • ');
             li.innerHTML =
                 '<div class="abb-main">' +
                   '<img class="ep-cover abb-cover" alt="" loading="lazy" referrerpolicy="no-referrer">' +
@@ -1167,7 +1252,6 @@ const App = {
             });
             ul.appendChild(li);
         }
-        out.appendChild(ul);
     },
 
     async abbLoadRdList() {
