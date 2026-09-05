@@ -154,6 +154,15 @@ paths) are intentionally left out of this repo; keep them in private notes.
 
 Testing gestures in a background tab: **fabricate `event.timeStamp`** rather than sleeping between synthetic touches. Chrome throttles a background tab's timers to about one a second, so a realistic 16ms-per-move drag never completes.
 
+## Content gestures: back, and pull to search (2026-09-06)
+
+`_wireContentGestures()` puts two finger-following drags on `#content`, and one touch picks between them once, at 12px of movement:
+
+- **Drag right from within 28px of the left edge → back.** Commits past 30% of the width or on a flick; the outgoing page slides out and `goBack()` renders the previous one. Only armed when the header's back button is showing (or on the Add screen, which `goBack` handles specially).
+- **Drag down while `#content.scrollTop <= 0` → search.** Damped to 110px of travel, with `#pull-hint` fading in beneath the header ("Pull to search" → "Release to search"), and `showSearch()` on release past the threshold. Not armed on the Add screen or when the search overlay is already open.
+
+A drag starting inside a `.h-scroll` shelf is ignored outright — those are swiped constantly and would otherwise trigger the back gesture from the left edge. Anything not matching either shape releases the touch back to normal scrolling.
+
 ## Player Quirks Learned
 
 - **Don't add a buffering "recovery" that nudges `currentTime` after a stall** — it forcibly seeks during normal short buffer underruns and causes louder glitches than the brief stall would have. (Removed in 49924c9.)

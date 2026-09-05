@@ -578,6 +578,7 @@ const App = {
         });
         document.getElementById('fs-chapters-back').addEventListener('click', () => this.showFsChapters(false));
         this._wireFsSwipe();
+        this._wireContentGestures();
 
         // Auto-reconnect when app resumes from background or regains network
         document.addEventListener('visibilitychange', () => {
@@ -3499,6 +3500,131 @@ const App = {
         };
         fs.addEventListener('touchend', end, { passive: true });
         fs.addEventListener('touchcancel', end, { passive: true });
+    },
+
+    // Two gestures on the content area, both finger-following like the
+    // chapter page:
+    //   • drag right from the left edge → go back (the header's back button)
+    //   • drag down when already at the top → reveal search
+    // They're wired together because one touch has to choose between them:
+    // the axis is decided once, at 12px of movement, and never revisited.
+    //
+    // Deliberately narrow: the back drag must start within 28px of the left
+    // edge (the platform convention, and it keeps horizontal shelves usable),
+    // and the pull only arms when the content is already scrolled to the top,
+    // so it can never fight a normal scroll.
+    _wireContentGestures() {
+        const content = document.getElementById('content');
+        const hint = document.getElementById('pull-hint');
+        const hintText = document.getElementById('pull-hint-text');
+        const EDGE_PX = 28;
+        const ENGAGE_PX = 12;
+        const BACK_SETTLE = 0.3;      // fraction of the width that commits the back
+        const PULL_TRIGGER_PX = 72;   // drag further than this and search opens
+        const PULL_MAX_PX = 110;
+        const FLICK_PX_PER_MS = 0.8;
+
+        let startX = 0, startY = 0, lastX = 0, lastT = 0, velocity = 0;
+        let width = 1, mode = null, active = false;
+
+        const canGoBack = () =>
+            !document.getElementById('back-btn').classList.contains('hidden') || this.currentTab === 'add';
+        const canPull = () =>
+            content.scrollTop <= 0
+            && this.currentTab !== 'add'
+            && document.getElementById('search-overlay').classList.contains('hidden');
+
+        const reset = (animate) => {
+            content.classList.remove('dragging');
+            if (animate) {
+                content.classList.add('settling');
+                setTimeout(() => content.classList.remove('settling'), 240);
+            }
+            content.style.transform = '';
+            hint.style.opacity = '0';
+            hint.classList.remove('armed');
+        };
+
+        content.addEventListener('touchstart', (e) => {
+            active = false; mode = null;
+            if (e.touches.length !== 1) return;
+            // Never hijack a drag that starts on something horizontally
+            // scrollable — those shelves are swiped constantly.
+            if (e.target.closest('.h-scroll')) return;
+            const t = e.touches[0];
+            startX = lastX = t.clientX;
+            startY = t.clientY;
+            lastT = e.timeStamp;
+            velocity = 0;
+            width = content.clientWidth || 1;
+            active = true;
+        }, { passive: true });
+
+        content.addEventListener('touchmove', (e) => {
+            if (!active) return;
+            const t = e.touches[0];
+            if (!t) return;
+            const dx = t.clientX - startX, dy = t.clientY - startY;
+            if (!mode) {
+                if (Math.abs(dx) < ENGAGE_PX && Math.abs(dy) < ENGAGE_PX) return;
+                if (Math.abs(dx) > Math.abs(dy) && dx > 0 && startX <= EDGE_PX && canGoBack()) {
+                    mode = 'back';
+                } else if (Math.abs(dy) > Math.abs(dx) && dy > 0 && canPull()) {
+                    mode = 'pull';
+                    hint.style.top = document.getElementById('header').getBoundingClientRect().bottom + 'px';
+                } else {
+                    active = false;   // an ordinary scroll — leave it alone
+                    return;
+                }
+                content.classList.remove('settling');
+                content.classList.add('dragging');
+            }
+            const dt = e.timeStamp - lastT;
+            if (mode === 'back') {
+                if (dt > 0) velocity = (t.clientX - lastX) / dt;   // only the back drag flicks
+                content.style.transform = 'translateX(' + Math.max(0, Math.min(width, dx)) + 'px)';
+            } else {
+                // Damped: 110px of travel for an ever-longer drag.
+                const pulled = Math.min(PULL_MAX_PX, dy * 0.55);
+                content.style.transform = 'translateY(' + pulled + 'px)';
+                const armed = pulled >= PULL_TRIGGER_PX * 0.55;
+                hint.style.opacity = String(Math.min(1, pulled / (PULL_TRIGGER_PX * 0.55)));
+                hint.classList.toggle('armed', armed);
+                hintText.textContent = armed ? 'Release to search' : 'Pull to search';
+            }
+            lastX = t.clientX;
+            lastT = e.timeStamp;
+            if (e.cancelable) e.preventDefault();
+        }, { passive: false });
+
+        const end = (e) => {
+            if (!active) return;
+            active = false;
+            const m = mode;
+            mode = null;
+            if (!m) return;
+            const t = e.changedTouches && e.changedTouches[0];
+            const dx = t ? t.clientX - startX : 0;
+            const dy = t ? t.clientY - startY : 0;
+            if (m === 'back') {
+                const commit = (velocity > FLICK_PX_PER_MS && dx > 40) || dx > width * BACK_SETTLE;
+                if (commit) {
+                    // Slide the outgoing page away, then render the previous
+                    // one — goBack() replaces the content wholesale.
+                    content.classList.add('settling');
+                    content.style.transform = 'translateX(' + width + 'px)';
+                    setTimeout(() => { reset(false); this.goBack(); }, 180);
+                    return;
+                }
+            } else if (m === 'pull' && dy * 0.55 >= PULL_TRIGGER_PX * 0.55) {
+                reset(true);
+                this.showSearch();
+                return;
+            }
+            reset(true);
+        };
+        content.addEventListener('touchend', end, { passive: true });
+        content.addEventListener('touchcancel', end, { passive: true });
     },
 
     // Render the chapter rows without moving the panel — used mid-drag so the

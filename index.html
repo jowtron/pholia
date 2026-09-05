@@ -154,6 +154,13 @@
                 <select id="library-select"></select>
             </div>
 
+            <!-- Revealed by dragging the content down from the top (see
+                 _wireContentGestures) — the search overlay opens on release. -->
+            <div id="pull-hint" class="pull-hint" aria-hidden="true">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+                <span id="pull-hint-text">Pull to search</span>
+            </div>
+
             <!-- Content area -->
             <main id="content"></main>
 
