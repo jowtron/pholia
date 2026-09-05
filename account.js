@@ -201,11 +201,15 @@ const Account = {
         return data.servers || [];
     },
 
-    async saveServer({ server_url, username, password, label }) {
+    // Saves a password, a token, or both. Token-only entries come from the
+    // ABS_shim hand-off (no password ever passes through Pholia there);
+    // loginFromAccount rotates such a token on every sign-in so the entry
+    // stays alive as long as the app is opened within the token's lifetime.
+    async saveServer({ server_url, username, password, token, label }) {
         const res = await fetch('/api/servers', {
             method: 'POST',
             headers: this._authHeaders(),
-            body: JSON.stringify({ server_url, username, password, label }),
+            body: JSON.stringify({ server_url, username, password, token, label }),
         });
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));

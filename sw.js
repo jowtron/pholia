@@ -272,6 +272,12 @@ self.addEventListener('fetch', e => {
         const cacheKey = (() => {
             const u = new URL(e.request.url);
             u.searchParams.delete('v');
+            // The installed app launches on the manifest's start_url, which
+            // carries `?server=&u=` (functions/manifest.json.js). Collapse it
+            // onto the precached './' so an offline launch still finds the
+            // shell, and so it doesn't leak one cache entry per server.
+            u.searchParams.delete('server');
+            u.searchParams.delete('u');
             return u.toString();
         })();
         e.respondWith(

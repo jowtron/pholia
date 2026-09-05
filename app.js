@@ -638,10 +638,35 @@ const App = {
         const server = String(data.s).replace(/\/+$/, '');
         ABS.saveCredentials(server, data.u || '', data.t);
         ABS.init(server, data.t);
+        // The user is signed in but has no idea what their "server" is, and
+        // the home-screen app they're about to install won't inherit this
+        // session (separate storage partition). A passkey is the one thing
+        // that crosses that boundary, so offer it now while we hold a token
+        // to put in the vault. tryAutoLogin() shows the main UI first.
+        this._pendingHandoffOffer = { serverUrl: server, username: data.u || '', token: data.t };
         return true;
     },
 
+    // The installed app launches on the manifest's start_url, which carries
+    // the server (and username) the user was signed into in Safari — see
+    // functions/manifest.json.js. Adopt it as the login-form prefill unless
+    // this partition already knows a server, and strip it from the URL.
+    _consumeInstallHint() {
+        const qs = new URLSearchParams(location.search || '');
+        const server = (qs.get('server') || '').trim();
+        if (!server) return;
+        const user = (qs.get('u') || '').trim();
+        if (/^https?:\/\//i.test(server) && !localStorage.getItem('pholia_server')) {
+            localStorage.setItem('pholia_server', server.replace(/\/+$/, ''));
+            if (user) localStorage.setItem('pholia_username', user);
+        }
+        qs.delete('server'); qs.delete('u');
+        const rest = qs.toString();
+        try { history.replaceState(null, '', location.pathname + (rest ? '?' + rest : '') + location.hash); } catch (e) {}
+    },
+
     async tryAutoLogin() {
+        this._consumeInstallHint();
         const savedServer = localStorage.getItem('pholia_server');
         const savedUser = localStorage.getItem('pholia_username');
         if (savedServer) document.getElementById('server-url').value = savedServer;
@@ -655,6 +680,10 @@ const App = {
                 this.setupLibrarySelector();
                 this.showMain();
                 this.switchTab('home');
+                const offer = this._pendingHandoffOffer;
+                this._pendingHandoffOffer = null;
+                if (offer) setTimeout(() => this._maybeOfferSaveToAccount({ ...offer, handoff: true }), 400);
+                else this._maybeRotateToken(creds);
                 return;
             } catch (e) {
                 if (e.status === 401 || e.status === 403) {
@@ -704,6 +733,37 @@ const App = {
         await this.setupPasskeyButton();
     },
 
+    // Keep a token-based session alive. A token from the ABS_shim hand-off
+    // is the only credential a hand-off user has, locally AND in the vault,
+    // and both copies expire on the same day — rotating only at vault
+    // sign-in (loginFromAccount) would never run before that. So once the
+    // local token is inside its last 20 days, trade it for a fresh one via
+    // /api/authorize and push the new one into the vault entry too (only
+    // where one already exists — a declined "save to account" must stay
+    // declined). Tokens without a readable JWT exp are left alone.
+    async _maybeRotateToken(creds) {
+        const exp = this._tokenExpiry(creds.token);
+        if (!exp || exp - Date.now() > 20 * 86400e3) return;
+        try {
+            await ABS.authorize(creds.serverUrl, creds.token);
+        } catch { return; }
+        if (!ABS.token || ABS.token === creds.token) return;
+        ABS.saveCredentials(creds.serverUrl, creds.username, ABS.token);
+        if (!Account.token()) return;
+        try {
+            const servers = await Account.listServers();
+            const saved = servers.find(s => s.server_url === creds.serverUrl && s.username === creds.username);
+            if (saved) await Account.saveServer({ server_url: creds.serverUrl, username: creds.username, token: ABS.token });
+        } catch { /* vault unreachable — the local rotation still happened */ }
+    },
+
+    _tokenExpiry(token) {
+        try {
+            const payload = JSON.parse(atob(String(token).split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+            return payload.exp ? payload.exp * 1000 : null;
+        } catch { return null; }
+    },
+
     // Try to silently re-login to ABS using a password stored in the Pholia
     // account, without ever bouncing the user to the login screen. Returns
     // true on success.
@@ -728,7 +788,19 @@ const App = {
             return;
         }
         try {
-            await ABS.login(creds.server_url, creds.username, creds.password);
+            if (creds.password) {
+                await ABS.login(creds.server_url, creds.username, creds.password);
+            } else if (creds.token) {
+                // Token-only entry (ABS_shim hand-off). /api/authorize hands
+                // back a fresh token, so re-save it: each sign-in pushes the
+                // entry's expiry out by a full token lifetime.
+                await ABS.authorize(creds.server_url, creds.token);
+                if (ABS.token && ABS.token !== creds.token) {
+                    Account.saveServer({ server_url: creds.server_url, username: creds.username, token: ABS.token }).catch(() => {});
+                }
+            } else {
+                throw new Error('No saved credentials for this server.');
+            }
             ABS.saveCredentials(creds.server_url, creds.username, ABS.token);
             this.libraries = await ABS.getLibraries();
             this._offlineMode = false;
@@ -930,13 +1002,30 @@ const App = {
     // a Pholia account. If the user is already logged into a Pholia account,
     // save silently (they're adding another server). Otherwise show a modal
     // asking if they want to create one with a passkey.
-    async _maybeOfferSaveToAccount({ serverUrl, username, password }) {
+    //
+    // `token` instead of `password` is the hand-off case: the shim signed us
+    // in with a token and there is no password to save. `handoff` rewords
+    // the prompt for someone who arrived from their server's page and is
+    // about to add Pholia to their Home Screen.
+    async _maybeOfferSaveToAccount({ serverUrl, username, password, token, handoff }) {
         if (Account.token()) {
-            try { await Account.saveServer({ server_url: serverUrl, username, password }); } catch {}
+            try { await Account.saveServer({ server_url: serverUrl, username, password, token }); } catch {}
             return;
         }
         if (!await Account.isPasskeyAvailable()) return;
-        this._pendingServerSave = { serverUrl, username, password };
+        this._pendingServerSave = { serverUrl, username, password, token };
+        const title = document.getElementById('save-account-title');
+        const text = document.getElementById('save-account-text');
+        if (!this._saveAccountCopy) this._saveAccountCopy = { title: title.textContent, text: text.textContent };
+        if (handoff) {
+            title.textContent = 'Sign in with Face ID next time?';
+            text.textContent = 'You\u2019re signed in from your server. Set up Face ID now and Pholia will ' +
+                'sign you in without a password \u2014 including after you add it to your Home Screen ' +
+                '(Share \u2192 Add to Home Screen), which otherwise starts signed out.';
+        } else {
+            title.textContent = this._saveAccountCopy.title;
+            text.textContent = this._saveAccountCopy.text;
+        }
         document.getElementById('save-account-modal').classList.remove('hidden');
     },
 
@@ -954,6 +1043,7 @@ const App = {
                 server_url: pending.serverUrl,
                 username: pending.username,
                 password: pending.password,
+                token: pending.token,
             });
         } catch (e) {
             const msg = e?.message || '';

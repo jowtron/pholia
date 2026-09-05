@@ -13,14 +13,17 @@ export async function onRequestGet({ request, env, params }) {
     if (!userId) return errorResponse('Not authenticated', 401);
 
     const row = await env.DB.prepare(
-        'SELECT server_url, username, encrypted_password, label FROM abs_servers WHERE id = ? AND user_id = ?'
+        'SELECT server_url, username, encrypted_password, encrypted_token, label FROM abs_servers WHERE id = ? AND user_id = ?'
     ).bind(params.id, userId).first();
     if (!row) return errorResponse('Not found', 404);
 
     if (!env.ENCRYPTION_KEY) return errorResponse('Server misconfigured (no ENCRYPTION_KEY)', 500);
-    let password;
+    // Either may be absent: token-only rows (ABS_shim hand-off) store '' as
+    // the password, password rows predate the token column.
+    let password = null, token = null;
     try {
-        password = await decryptSecret(row.encrypted_password, env.ENCRYPTION_KEY);
+        if (row.encrypted_password) password = await decryptSecret(row.encrypted_password, env.ENCRYPTION_KEY);
+        if (row.encrypted_token) token = await decryptSecret(row.encrypted_token, env.ENCRYPTION_KEY);
     } catch (e) {
         return errorResponse(`Decrypt failed: ${e.message}`, 500);
     }
@@ -34,6 +37,7 @@ export async function onRequestGet({ request, env, params }) {
         server_url: row.server_url,
         username: row.username,
         password,
+        token,
         label: row.label,
     });
 }

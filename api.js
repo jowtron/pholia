@@ -140,6 +140,33 @@ const ABS = {
         return data;
     },
 
+    // Sign in with an existing ABS access token instead of a password —
+    // the shape a saved token-only server (ABS_shim hand-off) needs. ABS's
+    // /api/authorize re-validates the token and hands back a fresh one.
+    async authorize(serverUrl, token) {
+        const clean = serverUrl.replace(/\/+$/, '');
+        const url = this._proxyUrl(`${clean}/api/authorize?token=${encodeURIComponent(token)}`);
+        let res;
+        try {
+            res = await fetch(url, { method: 'POST', credentials: 'omit' });
+        } catch (e) {
+            throw new Error(
+                `Could not connect to server. <a href="${clean}" target="_blank" style="color:var(--accent)">Tap here to open your server</a> first, then try again.`
+            );
+        }
+        if (!res.ok) {
+            const err = new Error(res.status === 401 || res.status === 403
+                ? 'Your saved sign-in has expired. Enter your password to sign in again.'
+                : `Sign-in failed (${res.status}).`);
+            err.status = res.status;
+            throw err;
+        }
+        const data = await res.json();
+        this.serverUrl = clean;
+        this.token = (data.user && (data.user.accessToken || data.user.token)) || token;
+        return data;
+    },
+
     // Libraries
     async getLibraries() {
         const data = await this.request('/api/libraries');
@@ -274,6 +301,30 @@ const ABS = {
         localStorage.setItem('pholia_server', serverUrl);
         localStorage.setItem('pholia_username', username);
         localStorage.setItem('pholia_token', token);
+        this.setInstallHint(serverUrl, username);
+    },
+
+    // Tell the manifest which server to open on. An iOS home-screen app has
+    // its own storage partition — none of the localStorage above reaches
+    // it — but the manifest's start_url does, so functions/manifest.json.js
+    // bakes `?server=&u=` into it. The hint travels both as the manifest
+    // link's query and as a cookie (see that file for why both). Never
+    // cleared on logout: the login form prefills the last server there too.
+    setInstallHint(serverUrl, username) {
+        const payload = JSON.stringify({ s: serverUrl, u: username || '' });
+        try {
+            const link = document.querySelector('link[rel="manifest"]');
+            if (link) {
+                const qs = new URLSearchParams({ s: serverUrl });
+                if (username) qs.set('u', username);
+                link.href = 'manifest.json?' + qs.toString();
+            }
+        } catch (e) { /* no DOM (tests) */ }
+        try {
+            document.cookie = 'pholia_install=' + encodeURIComponent(payload) +
+                '; Path=/; Max-Age=31536000; SameSite=Lax' +
+                (location.protocol === 'https:' ? '; Secure' : '');
+        } catch (e) { /* cookies blocked */ }
     },
 
     loadCredentials() {

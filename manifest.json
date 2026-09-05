@@ -1,4 +1,5 @@
 {
+    "id": "/",
     "name": "Pholia",
     "short_name": "Pholia",
     "description": "Audiobookshelf & Subsonic client",
