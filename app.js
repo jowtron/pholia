@@ -1518,13 +1518,25 @@ const App = {
             // one-file-per-torrent grab reports "Book-Part04.mp3" as the
             // name; using that as the folder scattered one book across three
             // directories. `originalFilename` is the torrent's own name.
-            const plan = this.abbPlanDest(san(infos[0].originalFilename || g.filename), chosen.filter(f => byFile.has(f.id)));
+            let groupName = san(infos[0].originalFilename || g.filename);
+            // Finishing a release from the On Real-Debrid panel because the
+            // first pass missed tracks: reuse the folder it went to, so the
+            // stragglers join the book instead of starting a second copy.
+            const groupHash = (infos[0].hash || g.hash || '').toLowerCase();
+            try {
+                const prior = await this._shimCall('/api/admin/abb/grabs?hash=' + encodeURIComponent(groupHash));
+                if (prior && prior.previous && prior.previous.dest) {
+                    groupName = prior.previous.dest;
+                    row.setStatus(`Topping up “${groupName}” — where this release went before`);
+                }
+            } catch (e) { /* courtesy check only */ }
+            const plan = this.abbPlanDest(groupName, chosen.filter(f => byFile.has(f.id)));
             const byTorrent = new Map();
             for (const p of plan) { const tid = byFile.get(p.id); if (!byTorrent.has(tid)) byTorrent.set(tid, p.dest); }
             const torrents = [...byTorrent].map(([id, dest]) => ({ id, dest }));
             if (!torrents.length) throw new Error('Nothing to track');
             row.setStatus(`${torrents.length} torrent(s) — waiting for Real-Debrid`);
-            await this.abbTrackTorrents(torrents, this.abbFolderId, listEl, row);
+            await this.abbTrackTorrents(torrents, this.abbFolderId, listEl, row, { hash: groupHash, title: groupName });
         } catch (e) {
             row.fail(e.message || String(e));
         }
@@ -1681,6 +1693,13 @@ const App = {
         }
     },
 
+    // The 40-hex info hash from a magnet — how a release is recognised on a
+    // later pass, whatever Real-Debrid is calling it by then.
+    _abbHash(magnet) {
+        const m = /btih:([0-9a-fA-F]{40})/.exec(magnet || '');
+        return m ? m[1].toLowerCase() : '';
+    },
+
     async abbGrab(res, listEl) {
         const folderId = this.abbFolderId;
         const row = this._abbRow(listEl, 'Real-Debrid', res.magnet ? 'Reading magnet…' : 'Resolving on AudioBookBay…');
@@ -1696,7 +1715,29 @@ const App = {
                 chosen = await this.abbPickFiles(peek.name || m.title, candidates);
                 if (!chosen) { row.fail('Cancelled'); return false; }
             }
-            const plan = this.abbPlanDest(m.folderName, chosen);
+            // Been here before? A second pass to pick up tracks the first one
+            // missed has to go back to the SAME folder, or the library gains a
+            // second, differently-incomplete copy of the book.
+            const hash = this._abbHash(m.magnet);
+            let dest = m.folderName;
+            let prior = null;
+            try {
+                prior = await this._shimCall('/api/admin/abb/grabs?hash=' + encodeURIComponent(hash)
+                    + '&title=' + encodeURIComponent(m.title || '')
+                    + '&folderName=' + encodeURIComponent(m.folderName || ''));
+            } catch (e) { /* courtesy check — never block a grab on it */ }
+            if (prior && prior.previous && prior.previous.dest) {
+                dest = prior.previous.dest;
+                row.setStatus(`Already grabbed before — topping up “${dest}”`);
+            } else if (prior && prior.matches && prior.matches.length) {
+                const lines = prior.matches.map(mm => `• ${mm.topFolder} (${mm.files} file(s), ${(mm.seconds/3600).toFixed(1)}h) — ${mm.reason}`);
+                if (!confirm('This looks like a book you already have:\n\n' + lines.join('\n')
+                    + '\n\nGrab it again anyway? It will download a second copy to pCloud.')) {
+                    row.fail('Cancelled — already in the library');
+                    return false;
+                }
+            }
+            const plan = this.abbPlanDest(dest, chosen);
             row.setStatus(`Adding ${plan.length} torrent(s) to Real-Debrid…`);
             // A manual Retry is still offered once the automatic ladder above
             // gives up, since by then something other than pacing is wrong.
@@ -1706,7 +1747,7 @@ const App = {
                 const retry = () => {
                     r.setStatus('Adding to Real-Debrid…');
                     this._abbAddPaced(m.magnet, p.id, r, 'Adding')
-                        .then((a) => { removeBtn(); return this.abbTrackTorrents([{ id: a.id, dest: p.dest }], folderId, listEl, r); })
+                        .then((a) => { removeBtn(); return this.abbTrackTorrents([{ id: a.id, dest: p.dest }], folderId, listEl, r, { hash, title: m.title }); })
                         .then((ok) => { this.abbLoadRdList(); if (ok) this._tabCache = {}; })
                         .catch((e) => r.fail('Add failed: ' + e.message));
                 };
@@ -1728,7 +1769,7 @@ const App = {
             }
             if (!torrents.length) throw new Error('Nothing could be added to Real-Debrid');
             row.setStatus(`${torrents.length} torrent(s) — waiting for Real-Debrid`);
-            return await this.abbTrackTorrents(torrents, folderId, listEl, row);
+            return await this.abbTrackTorrents(torrents, folderId, listEl, row, { hash, title: m.title });
         } catch (e) {
             row.fail(e.message || String(e));
             return false;
@@ -1737,7 +1778,7 @@ const App = {
 
     // Shared tail of a grab (also used to resume a torrent this tab didn't
     // start): poll, hand finished files to pCloud, delete on RD, scan.
-    async abbTrackTorrents(torrents, folderId, listEl, row) {
+    async abbTrackTorrents(torrents, folderId, listEl, row, source) {
         try {
             // Cancel deletes whatever is still on RD; a torrent whose progress
             // hasn't moved for 20 min (no seeders) is given up on the same way.
@@ -1782,7 +1823,7 @@ const App = {
                                     this._abbRow(listEl, d.filename, '').fail(`Real-Debrid produced a ${d.ext}; extract it via the shim's browser upload`);
                                     continue;
                                 }
-                                const registered = await this.abbFetchToPcloud(folderId, d.download, p.dest, listEl);
+                                const registered = await this.abbFetchToPcloud(folderId, d.download, p.dest, listEl, source);
                                 if (!registered) needsScan = true;
                             }
                         })());
@@ -1908,7 +1949,7 @@ const App = {
     },
 
     // pCloud pulls the file itself; we poll the shim, which stat()s the target.
-    async abbFetchToPcloud(folderId, url, relPath, listEl) {
+    async abbFetchToPcloud(folderId, url, relPath, listEl, source) {
         const row = this._abbRow(listEl, relPath.split('/').pop(), 'Queueing on pCloud…');
         try {
             const base = `/api/admin/storage/folder/${encodeURIComponent(folderId)}/fetch-url`;
@@ -1920,7 +1961,12 @@ const App = {
                 `Queueing on pCloud… ${Math.round((Date.now() - t0q) / 1000)}s (checking for an existing copy — pCloud can be slow here)`), 3000);
             let started;
             try {
-                started = await this._shimCall(base + '/start', { method: 'POST', body: JSON.stringify({ url, relPath }) });
+                started = await this._shimCall(base + '/start', { method: 'POST', body: JSON.stringify({
+                    url, relPath,
+                    // Records where this release lands, so a later pass to
+                    // collect missing tracks comes back to the same folder.
+                    sourceHash: source && source.hash, sourceTitle: source && source.title,
+                }) });
             } finally {
                 clearInterval(qTimer);
             }
