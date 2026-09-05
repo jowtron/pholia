@@ -3445,12 +3445,17 @@ const App = {
         const fs = document.getElementById('fs-player');
         const panel = document.getElementById('fs-chapters-panel');
         const ENGAGE_PX = 12;         // movement before we claim the gesture
-        const SETTLE_FRACTION = 0.3;  // dragged this far across, it settles open
+        const SETTLE_FRACTION = 0.3;  // dragged this far across, it settles
         const FLICK_PX_PER_MS = 0.8;  // a real flick; a careful drag is far slower
         const FLICK_MIN_PX = 40;      // ...and has to have gone somewhere
 
         let startX = 0, startY = 0, lastX = 0, lastT = 0, velocity = 0;
         let width = 1, base = 0, active = false, engaged = false, wasOpen = false;
+        // 'chapters' drags the chapter page; 'dismiss' drags the whole player
+        // away to the right, which is the way back to whatever opened it —
+        // tapping something in Continue listening lands you here, and the
+        // close button is a long reach from the bottom of a phone.
+        let kind = 'chapters';
 
         fs.addEventListener('touchstart', (e) => {
             active = false; engaged = false;
@@ -3478,14 +3483,25 @@ const App = {
                 if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > ENGAGE_PX) { active = false; return; }
                 if (Math.abs(dx) < ENGAGE_PX) return;
                 engaged = true;
-                panel.classList.add('dragging');
-                if (!wasOpen) this._prepareFsChapters();   // don't slide in a blank page
+                // Rightward with the chapter page already shut means "leave",
+                // not "close the thing that is already closed".
+                kind = (!wasOpen && dx > 0) ? 'dismiss' : 'chapters';
+                if (kind === 'dismiss') {
+                    fs.classList.add('dismissing');
+                } else {
+                    panel.classList.add('dragging');
+                    if (!wasOpen) this._prepareFsChapters();   // don't slide in a blank page
+                }
             }
             const dt = e.timeStamp - lastT;
             if (dt > 0) velocity = (t.clientX - lastX) / dt;
             lastX = t.clientX;
             lastT = e.timeStamp;
-            panel.style.transform = 'translateX(' + Math.max(0, Math.min(width, base + dx)) + 'px)';
+            if (kind === 'dismiss') {
+                fs.style.transform = 'translateX(' + Math.max(0, dx) + 'px)';
+            } else {
+                panel.style.transform = 'translateX(' + Math.max(0, Math.min(width, base + dx)) + 'px)';
+            }
             if (e.cancelable) e.preventDefault();
         }, { passive: false });
 
@@ -3496,8 +3512,31 @@ const App = {
             engaged = false;
             const t = e.changedTouches && e.changedTouches[0];
             const dx = t ? t.clientX - startX : 0;
-            const x = Math.max(0, Math.min(width, base + dx));
             const flick = Math.abs(velocity) > FLICK_PX_PER_MS && Math.abs(dx) > FLICK_MIN_PX;
+
+            if (kind === 'dismiss') {
+                // A flick alone isn't enough to throw the player away: a brisk
+                // 10% swipe while reaching for the scrubber shouldn't close
+                // what you're listening to. It has to have travelled too.
+                const flickFar = flick && velocity > 0 && dx > Math.max(60, width * 0.12);
+                const leave = flickFar || dx > width * SETTLE_FRACTION;
+                if (leave) {
+                    fs.classList.add('settling');
+                    fs.style.transform = 'translateX(' + width + 'px)';
+                    setTimeout(() => {
+                        this.closeFullscreen();
+                        fs.classList.remove('dismissing', 'settling');
+                        fs.style.transform = '';
+                    }, 180);
+                    return;
+                }
+                fs.classList.add('settling');
+                fs.style.transform = '';
+                setTimeout(() => fs.classList.remove('dismissing', 'settling'), 220);
+                return;
+            }
+
+            const x = Math.max(0, Math.min(width, base + dx));
             const open = flick ? velocity < 0 : x < width * (1 - SETTLE_FRACTION);
             panel.classList.remove('dragging');
             panel.style.transform = '';
