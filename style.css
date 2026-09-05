@@ -701,6 +701,9 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
     transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1), visibility 0.28s;
 }
 .fs-player.chapters-open .fs-chapters-panel { transform: none; visibility: visible; }
+/* Mid-drag the panel follows the finger via an inline transform, so the
+   transition has to be off and it must be visible while still closed. */
+.fs-chapters-panel.dragging { transition: none; visibility: visible; }
 .fs-chapters-head {
     flex-shrink: 0; display: flex; align-items: center; gap: 8px;
     padding: 10px 12px; padding-top: calc(10px + env(safe-area-inset-top, 0px));

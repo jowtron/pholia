@@ -2735,7 +2735,20 @@ const App = {
         if (files.length > 1) parts.push(`${files.length} files`);
         const br = files[0].bitRate;
         if (br) parts.push(`${Math.round(br / 1000)} kbps`);
+        // Which storage backend it's on (ABS_shim only — stock ABS doesn't
+        // send `storage`). With several backends attached, the same title can
+        // exist twice and nothing else on the page tells them apart.
+        const store = this._storageName(files[0]);
+        if (store) parts.push(store);
         return parts.filter(Boolean).join(' · ');
+    },
+
+    // "pCloud", "dav.example.com", a bucket name. Empty for a stock ABS
+    // server, which sends no storage field at all.
+    _storageName(file) {
+        const s = file && file.storage;
+        if (!s || !s.name) return '';
+        return s.name;
     },
 
     async showBookDetail(item) {
@@ -3363,6 +3376,8 @@ const App = {
         add('Container', mimeType);
         add('Duration', duration ? formatTime(duration) : null);
         add('Size', fmtSize(size));
+        const store = cur && cur.storage;
+        if (store && store.name) add('Storage', store.detail ? store.name + ' / ' + store.detail : store.name);
         if (trackCount > 1) add('Track', `${(Player.currentTrackIndex ?? 0) + 1} of ${trackCount}`);
         add('File', filename);
 
@@ -3408,32 +3423,89 @@ const App = {
         if (open) this.renderFsChapters();
     },
 
-    // Swipe left for the chapter page, right for the player. Two fingers work
-    // anywhere in the player; one finger only from the artwork area and the
-    // chapters header, because a one-finger horizontal drag over the scrubber
-    // is a seek and over a chapter row is a tap-to-position.
+    // Drag the chapter page in and out with your finger, like turning a page
+    // or switching desktops: the panel tracks the touch 1:1 and settles to
+    // whichever side it was heading for on release. Two fingers work anywhere
+    // in the player; one finger only from the artwork area and the chapters
+    // header, because a one-finger horizontal drag over the scrubber is a
+    // seek and over a chapter row is a tap-to-position.
+    //
+    // The gesture only engages once movement is clearly horizontal, so a
+    // vertical scroll of the artwork or the chapter list still scrolls. While
+    // dragging, the panel gets `.dragging` (transition off, visible even when
+    // closed) plus an inline transform; both are dropped on release so the
+    // CSS class animates the last stretch.
     _wireFsSwipe() {
         const fs = document.getElementById('fs-player');
-        let sx = 0, sy = 0, tracking = false;
+        const panel = document.getElementById('fs-chapters-panel');
+        const ENGAGE_PX = 12;         // movement before we claim the gesture
+        const SETTLE_FRACTION = 0.3;  // dragged this far across, it settles open
+        const FLICK_PX_PER_MS = 0.8;  // a real flick; a careful drag is far slower
+        const FLICK_MIN_PX = 40;      // ...and has to have gone somewhere
+
+        let startX = 0, startY = 0, lastX = 0, lastT = 0, velocity = 0;
+        let width = 1, base = 0, active = false, engaged = false, wasOpen = false;
+
         fs.addEventListener('touchstart', (e) => {
-            tracking = false;
+            active = false; engaged = false;
             if (e.touches.length > 2) return;
-            const oneFinger = e.touches.length === 1;
-            if (oneFinger && !e.target.closest('.fs-scroll, .fs-chapters-head')) return;
-            sx = e.touches[0].clientX;
-            sy = e.touches[0].clientY;
-            tracking = true;
+            if (e.touches.length === 1 && !e.target.closest('.fs-scroll, .fs-chapters-head')) return;
+            const t = e.touches[0];
+            startX = lastX = t.clientX;
+            startY = t.clientY;
+            lastT = e.timeStamp;
+            velocity = 0;
+            width = fs.clientWidth || 1;
+            wasOpen = fs.classList.contains('chapters-open');
+            base = wasOpen ? 0 : width;
+            active = true;
         }, { passive: true });
-        fs.addEventListener('touchend', (e) => {
-            if (!tracking) return;
-            tracking = false;
-            const t = e.changedTouches[0];
+
+        fs.addEventListener('touchmove', (e) => {
+            if (!active) return;
+            const t = e.touches[0];
             if (!t) return;
-            const dx = t.clientX - sx, dy = t.clientY - sy;
-            // Dominantly horizontal, and far enough to be deliberate.
-            if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
-            this.showFsChapters(dx < 0);
-        }, { passive: true });
+            const dx = t.clientX - startX, dy = t.clientY - startY;
+            if (!engaged) {
+                // A vertical scroll wins outright; only clear horizontal
+                // movement claims the gesture.
+                if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > ENGAGE_PX) { active = false; return; }
+                if (Math.abs(dx) < ENGAGE_PX) return;
+                engaged = true;
+                panel.classList.add('dragging');
+                if (!wasOpen) this._prepareFsChapters();   // don't slide in a blank page
+            }
+            const dt = e.timeStamp - lastT;
+            if (dt > 0) velocity = (t.clientX - lastX) / dt;
+            lastX = t.clientX;
+            lastT = e.timeStamp;
+            panel.style.transform = 'translateX(' + Math.max(0, Math.min(width, base + dx)) + 'px)';
+            if (e.cancelable) e.preventDefault();
+        }, { passive: false });
+
+        const end = (e) => {
+            if (!active) return;
+            active = false;
+            if (!engaged) return;
+            engaged = false;
+            const t = e.changedTouches && e.changedTouches[0];
+            const dx = t ? t.clientX - startX : 0;
+            const x = Math.max(0, Math.min(width, base + dx));
+            const flick = Math.abs(velocity) > FLICK_PX_PER_MS && Math.abs(dx) > FLICK_MIN_PX;
+            const open = flick ? velocity < 0 : x < width * (1 - SETTLE_FRACTION);
+            panel.classList.remove('dragging');
+            panel.style.transform = '';
+            this.showFsChapters(open);
+        };
+        fs.addEventListener('touchend', end, { passive: true });
+        fs.addEventListener('touchcancel', end, { passive: true });
+    },
+
+    // Render the chapter rows without moving the panel — used mid-drag so the
+    // page isn't blank as it slides in.
+    _prepareFsChapters() {
+        document.getElementById('fs-chapter-list').classList.remove('hidden');
+        this.renderFsChapters();
     },
 
     renderFsChapters() {
