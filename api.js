@@ -308,8 +308,11 @@ const ABS = {
     // its own storage partition — none of the localStorage above reaches
     // it — but the manifest's start_url does, so functions/manifest.json.js
     // bakes `?server=&u=` into it. The hint travels both as the manifest
-    // link's query and as a cookie (see that file for why both). Never
-    // cleared on logout: the login form prefills the last server there too.
+    // link's query and as a cookie (see that file for why both). The link
+    // itself is written by the inline head script in index.html, which is
+    // what "Add to Home Screen" actually reads; this keeps it current if
+    // the user switches server in the same page load. Never cleared on
+    // logout: the login form prefills the last server there too.
     setInstallHint(serverUrl, username) {
         const payload = JSON.stringify({ s: serverUrl, u: username || '' });
         try {

@@ -19,7 +19,44 @@
     <meta name="twitter:title" content="Pholia — Audiobookshelf Client">
     <meta name="twitter:description" content="A fast, offline-first Audiobookshelf player for the web. Passkey sign-in, download-for-offline, installable PWA.">
     <meta name="twitter:image" content="https://pholia.jderrick.app/og.png">
-    <link rel="manifest" href="manifest.json">
+    <script>
+        // The manifest link is written here, by the parser, and not as a
+        // static tag: iOS resolves the manifest from the link as parsed and
+        // fetches it without cookies unless crossorigin="use-credentials",
+        // so the hint app.js sets later (ABS.setInstallHint) came too late
+        // to reach "Add to Home Screen" (2026-09-05: installed app opened
+        // with an empty login form). The server comes from the ABS_shim
+        // hand-off fragment (#connect=) on that very page load, or from the
+        // last saved session. functions/manifest.json.js bakes it into
+        // start_url. The token in the fragment is never used here.
+        (function () {
+            var s = '', u = '';
+            try {
+                var m = (location.hash || '').match(/[#&]connect=([^&]+)/);
+                if (m) {
+                    var b = m[1].replace(/-/g, '+').replace(/_/g, '/');
+                    while (b.length % 4) b += '=';
+                    var d = JSON.parse(decodeURIComponent(escape(atob(b))));
+                    s = String(d.s || ''); u = String(d.u || '');
+                }
+            } catch (e) { s = ''; u = ''; }
+            if (!s) {
+                try {
+                    s = localStorage.getItem('pholia_server') || '';
+                    u = localStorage.getItem('pholia_username') || '';
+                } catch (e) {}
+            }
+            var href = 'manifest.json';
+            if (s) {
+                href += '?s=' + encodeURIComponent(s) + (u ? '&u=' + encodeURIComponent(u) : '');
+                try {
+                    document.cookie = 'pholia_install=' + encodeURIComponent(JSON.stringify({ s: s, u: u })) +
+                        '; Path=/; Max-Age=31536000; SameSite=Lax' + (location.protocol === 'https:' ? '; Secure' : '');
+                } catch (e) {}
+            }
+            document.write('<link rel="manifest" href="' + href.replace(/"/g, '&quot;') + '" crossorigin="use-credentials">');
+        })();
+    </script>
     <link rel="icon" href="favicon.ico" sizes="any">
     <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32x32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16x16.png">
