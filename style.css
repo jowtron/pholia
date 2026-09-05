@@ -732,9 +732,13 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
 /* The way back sits where the button that opened the page was: bottom
    centre, under the same thumb. The header keeps its own back control for
    anyone reaching from the top. */
+/* A wrapper, not the button: .text-btn's own padding would win over
+   anything set on the button itself. The bottom inset matches .fs-bottom's,
+   so this button lands at exactly the height of the Chapters button that
+   opened the page — the page turns under a thumb that doesn't move. */
 .fs-chapters-foot {
-    flex-shrink: 0; padding: 0.6rem 1rem;
-    padding-bottom: calc(0.6rem + var(--safe-bottom));
+    flex-shrink: 0; text-align: center;
+    padding-bottom: calc(28px + var(--safe-bottom));
     border-top: 1px solid var(--border);
 }
 .fs-chapters-panel .fs-chapter-list {

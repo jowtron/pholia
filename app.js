@@ -2092,16 +2092,21 @@ const App = {
         }
     },
 
+    // Any pushed view has somewhere to go back to: the tab it was opened
+    // from. This used to require a stack of 2+, so a book opened from Home
+    // showed no back button and neither the button nor the swipe did
+    // anything — the only way out was to tap a bottom tab.
     pushNav(title) {
         this.checkForSwUpdate();
         this.navStack.push(title);
         document.getElementById('header-title').textContent = title;
-        document.getElementById('back-btn').classList.toggle('hidden', this.navStack.length <= 1);
+        document.getElementById('back-btn').classList.toggle('hidden', this.navStack.length < 1);
     },
 
     goBack() {
-        if (this.navStack.length > 1) {
+        if (this.navStack.length) {
             this.navStack.pop();
+            // switchTab re-renders the tab's own view and clears the stack.
             this.switchTab(this.currentTab);
         } else if (this.currentTab === 'add') {
             this.switchTab(this._addReturnTab);
