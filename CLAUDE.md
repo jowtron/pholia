@@ -78,6 +78,8 @@ The SW reassembles chunks on the fly when the audio element makes Range requests
 
 ### Cache versions
 
+**A no-cors `<img>` response is opaque: `status` is 0 and `ok` is false whether the server said 200 or 404.** `handleCover` cached opaque responses (it has to, or the cover cache never fills from normal UI loads), so a cover that 404'd once — every mp3 book with no embedded art — stayed a broken image on that device forever, even after the server learned to serve one. It now asks with `mode: 'cors'` first, which the shim allows on covers, and caches only a real 200; a genuine 404 is returned uncached so the next view asks again. `COVERS_CACHE` went to v2 to drop the entries poisoned by the old rule.
+
 - `pholia-v5` — app shell
 - `pholia-offline-audio-v2` — chunked audio + covers (v1 used the broken fragment keys; v2 is auto-cleaned by activate)
 - `pholia-offline-meta-v1` — per-book metadata JSON

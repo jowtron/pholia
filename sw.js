@@ -1,7 +1,11 @@
 const CACHE_NAME = 'pholia-v5';
 const OFFLINE_AUDIO_CACHE = 'pholia-offline-audio-v2';
 const OFFLINE_META_CACHE = 'pholia-offline-meta-v1';
-const COVERS_CACHE = 'pholia-covers-v1';
+// v2: v1 cached opaque error responses as if they were images (see
+// handleCover), so a cover that 404'd once — every mp3 book with no embedded
+// art, before the server learned to fall back to the AudioBookBay listing —
+// stayed a broken image forever. Bumping the name drops those on activate.
+const COVERS_CACHE = 'pholia-covers-v2';
 // Tiny persisted SW settings (see loadConfig) — must survive activate's cache sweep.
 const CONFIG_CACHE = 'pholia-sw-config-v1';
 const CONFIG_KEY = 'https://pholia.local/sw-config';
@@ -418,10 +422,20 @@ async function handleCover(request) {
     const cached = await cache.match(key);
     if (cached) return cached;
     try {
-        const res = await fetch(request);
-        // <img>-initiated requests are no-cors, so the response is opaque and
-        // res.ok is false even on success — cache those too or the cover cache
-        // never populates from normal UI loads.
+        // Ask with CORS first so the STATUS is visible. An <img> request is
+        // no-cors, and an opaque response reports status 0 whether the server
+        // said 200 or 404 — caching those blind is how a book that had no
+        // cover at the time kept a broken image for good, even after the
+        // server started serving one.
+        let res = null;
+        try {
+            const corsRes = await fetch(request.url, { mode: 'cors', credentials: 'omit' });
+            if (corsRes.ok) res = corsRes;
+            else return corsRes;          // a real 404: don't cache, ask again next time
+        } catch (e) {
+            res = null;                   // no CORS headers (another server) — fall back
+        }
+        if (!res) res = await fetch(request);
         if (res.ok || res.type === 'opaque') {
             cache.put(key, res.clone()).then(() => evictCovers(cache)).catch(() => {});
         }
