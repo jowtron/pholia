@@ -577,6 +577,7 @@ const App = {
             this.showFsChapters(!document.getElementById('fs-player').classList.contains('chapters-open'));
         });
         document.getElementById('fs-chapters-back').addEventListener('click', () => this.showFsChapters(false));
+        document.getElementById('fs-chapters-back-foot').addEventListener('click', () => this.showFsChapters(false));
         this._wireFsSwipe();
         this._wireContentGestures();
         this._wireInlineSearch();
@@ -3506,12 +3507,19 @@ const App = {
         fs.addEventListener('touchstart', (e) => {
             active = false; engaged = false;
             if (e.touches.length > 2) return;
-            if (e.touches.length === 1 && !e.target.closest('.fs-scroll, .fs-chapters-head')) return;
+            // One finger works anywhere except the scrubber, where a
+            // horizontal drag is a seek. It used to be limited to the artwork
+            // and the chapters header, which meant you could swipe TO the
+            // chapter list with one finger but needed two to get back — the
+            // chapter rows filled the screen. A drag over a row is now
+            // suppressed as a tap instead (see renderFsChapters).
+            if (e.touches.length === 1 && e.target.closest('#fs-seek')) return;
             const t = e.touches[0];
             startX = lastX = t.clientX;
             startY = t.clientY;
             lastT = e.timeStamp;
             velocity = 0;
+            this._fsDragged = false;
             width = fs.clientWidth || 1;
             wasOpen = fs.classList.contains('chapters-open');
             base = wasOpen ? 0 : width;
@@ -3529,6 +3537,9 @@ const App = {
                 if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > ENGAGE_PX) { active = false; return; }
                 if (Math.abs(dx) < ENGAGE_PX) return;
                 engaged = true;
+                // Tells the chapter rows to ignore the click this touch will
+                // fire when it lands on one.
+                this._fsDragged = true;
                 // Rightward with the chapter page already shut means "leave",
                 // not "close the thing that is already closed".
                 kind = (!wasOpen && dx > 0) ? 'dismiss' : 'chapters';
@@ -3601,14 +3612,14 @@ const App = {
     // They're wired together because one touch has to choose between them:
     // the axis is decided once, at 12px of movement, and never revisited.
     //
-    // The back drag must start within 40px of the left edge — the platform
-    // convention, and it keeps the middle of the screen free. **In a browser
-    // tab iOS claims that edge for its own back gesture, so this only works
-    // in the installed app**; the button in the header is always there.
+    // The back drag works from anywhere on the page, not just the left edge:
+    // an edge-only gesture is hard to hit and, in a browser tab, iOS claims
+    // that edge for its own back gesture so ours never sees the touch. It is
+    // only armed when there is somewhere to go back to, so on a tab's own
+    // home screen it does nothing.
     _wireContentGestures() {
         const content = document.getElementById('content');
         const bar = document.getElementById('inline-search');
-        const EDGE_PX = 40;
         const ENGAGE_PX = 12;
         const BACK_SETTLE = 0.3;      // fraction of the width that commits the back
         const FLICK_PX_PER_MS = 0.8;
@@ -3662,7 +3673,7 @@ const App = {
             const dx = t.clientX - startX, dy = t.clientY - startY;
             if (!mode) {
                 if (Math.abs(dx) < ENGAGE_PX && Math.abs(dy) < ENGAGE_PX) return;
-                if (Math.abs(dx) > Math.abs(dy) && dx > 0 && startX <= EDGE_PX && canGoBack()) {
+                if (Math.abs(dx) > Math.abs(dy) && dx > 0 && canGoBack()) {
                     mode = 'back';
                     content.classList.remove('settling');
                     content.classList.add('dragging');
@@ -3785,6 +3796,9 @@ const App = {
         list.innerHTML = html;
         list.querySelectorAll('.tracklist-item').forEach(el => {
             el.querySelector('.tracklist-play').addEventListener('click', (e) => {
+                // A horizontal drag across the list is the back gesture, and
+                // it still fires a click on release — don't seek because of it.
+                if (this._fsDragged) { this._fsDragged = false; return; }
                 const rect = el.getBoundingClientRect();
                 const fraction = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
                 Player.seekChapterByTap(parseInt(el.dataset.index), fraction);

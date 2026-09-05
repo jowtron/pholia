@@ -729,9 +729,19 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
     font-size: 0.95rem; padding: 4px 6px;
 }
 .fs-chapters-heading { font-weight: 600; }
+/* The way back sits where the button that opened the page was: bottom
+   centre, under the same thumb. The header keeps its own back control for
+   anyone reaching from the top. */
+.fs-chapters-foot {
+    flex-shrink: 0; padding: 0.6rem 1rem;
+    padding-bottom: calc(0.6rem + var(--safe-bottom));
+    border-top: 1px solid var(--border);
+}
 .fs-chapters-panel .fs-chapter-list {
-    flex: 1; width: 100%; max-width: 640px; max-height: none;
-    margin: 0 auto; padding: 8px 12px calc(12px + var(--safe-bottom));
+    /* min-height:0 or the list refuses to shrink below its content and
+       pushes the footer button off the bottom of the screen. */
+    flex: 1; min-height: 0; width: 100%; max-width: 640px; max-height: none;
+    margin: 0 auto; padding: 8px 12px;
 }
 @media (prefers-reduced-motion: reduce) {
     .fs-chapters-panel { transition: none; }

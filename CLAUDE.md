@@ -154,6 +154,10 @@ paths) are intentionally left out of this repo; keep them in private notes.
 
 **Swipe right with the chapter page already shut and the whole player drags away**, closing back to whatever opened it (`kind = 'dismiss'` in `_wireFsSwipe`). Tapping something in Continue listening lands you in the player, and the × is a long reach on a phone. It needs both speed and distance — a flick has to have covered `max(60px, 12% of the width)` — so a brisk swipe while reaching for the scrubber doesn't throw the player away.
 
+The way back sits at **both ends**: `#fs-chapters-back` in the header and `#fs-chapters-back-foot` at the bottom, where the Chapters button that opened the page was — the same thumb that opened it closes it. The list needs `min-height: 0` or it refuses to shrink below its content and pushes that footer off the screen.
+
+**One finger works everywhere in the player except `#fs-seek`.** It was limited to the artwork and the chapters header, which meant one finger got you TO the chapter list but two were needed to come back, because the rows filled the screen. A drag that crosses a chapter row sets `_fsDragged`, and the row's click handler ignores exactly one click after it, so a swipe doesn't seek.
+
 `_wireFsSwipe()` makes it **drag with the finger**, not just react to a completed swipe: the panel tracks the touch 1:1 through an inline `transform`, and on release settles open past 30% of the width or on a flick (>0.8 px/ms and >40px). Two fingers work anywhere in the player, one finger only from `.fs-scroll` (the artwork) or the chapters header — a one-finger horizontal drag on `#fs-seek` is a seek and on a chapter row is tap-to-position. The gesture only engages after 12px of clearly horizontal movement, so vertical scrolling still works; `.dragging` on the panel turns the transition off and forces visibility mid-drag, and both it and the inline transform are cleared on release so the CSS class animates the last stretch. `_prepareFsChapters()` fills the rows when the drag engages, so a page sliding in is never blank.
 
 Testing gestures in a background tab: **fabricate `event.timeStamp`** rather than sleeping between synthetic touches. Chrome throttles a background tab's timers to about one a second, so a realistic 16ms-per-move drag never completes.
@@ -162,12 +166,12 @@ Testing gestures in a background tab: **fabricate `event.timeStamp`** rather tha
 
 `_wireContentGestures()` puts two finger-following drags on `#content`, and one touch picks between them once, at 12px of movement:
 
-- **Drag right from within 28px of the left edge → back.** Commits past 30% of the width or on a flick; the outgoing page slides out and `goBack()` renders the previous one. Only armed when the header's back button is showing (or on the Add screen, which `goBack` handles specially).
+- **Drag right anywhere on the page → back.** Commits past 30% of the width or on a flick; the outgoing page slides out and `goBack()` renders the previous one. Only armed when the header's back button is showing (or on the Add screen, which `goBack` handles specially), so a tab's own home screen ignores it. It was edge-only at first, which was both hard to hit and, in a browser tab, impossible — iOS claims that edge for its own back gesture.
 - **Drag down while `#content.scrollTop <= 0` → the inline search bar.** `#inline-search` sits in the flex column between the header and `#content`, height 0 until the drag grows it (damped, capped at 56px), so it pushes the list down instead of covering anything; dragging up puts it away. Typing runs `doSearch(q, contentEl)` — results replace the list, and Cancel or clearing restores it via `switchTab`. The header magnifier still opens the full-screen overlay; that path is untouched.
 
 A drag starting inside a `.h-scroll` shelf is left alone **only while that shelf can still scroll right** (`scrollLeft > 0`); one already at its left end can't use a rightward drag, so the back gesture may have it. Anything not matching either shape releases the touch back to normal scrolling.
 
-**In a browser tab, iOS keeps the left edge for its own back gesture, so the back drag only works in the installed app.** The header button always works.
+(The old edge-only version couldn't work in a browser tab at all, since iOS keeps that edge for its own back gesture. Starting the drag away from the edge avoids the conflict.)
 
 ## Player Quirks Learned
 
