@@ -1143,7 +1143,8 @@ const App = {
     // the rendered progress lives in a detached element that is re-attached
     // whenever the tab is shown; switching tabs mid-grab doesn't lose it.
     abbAvailable: false,
-    isShim: false,     // server answers /api/admin/abb/settings → ABS_shim (enables delete-from-pCloud)
+    isShim: false,     // server answers /api/admin/abb/settings → ABS_shim (enables the rescan setting)
+    shimCanDelete: false, // …and says canDelete (tenant owner) → long-press delete-from-pCloud
     abbFolderId: null,
     abbLibraryId: null,
     _abbRoot: null,
@@ -1154,7 +1155,10 @@ const App = {
         try {
             const s = await ABS.request('/api/admin/abb/settings');
             this.isShim = !!s;
-            if (s && s.rdTokenSet) {
+            // Older shims don't send the flags: treat missing as allowed so a
+            // shim from before 2026-09-05 keeps working; the shim 403s anyway.
+            this.shimCanDelete = !!s && s.canDelete !== false;
+            if (s && s.rdTokenSet && s.canGrab !== false) {
                 const st = await ABS.request('/api/admin/storage/status');
                 const folders = (st?.folders || []).filter(f => f.provider === 'pcloud_oauth');
                 const mine = folders.find(f => f.libraryId === this.currentLibraryId) || folders[0];
@@ -2597,7 +2601,7 @@ const App = {
         document.querySelectorAll('.grid-item[data-id], .card[data-id]').forEach(el => {
             const type = el.dataset.type;
             // Long-press a book → "delete from pCloud?" (ABS_shim servers only).
-            if (this.isShim && !el.dataset.episodeId && type !== 'series' && type !== 'authors') {
+            if (this.shimCanDelete && !el.dataset.episodeId && type !== 'series' && type !== 'authors') {
                 this._wireLongPress(el, () => this.confirmDeleteItem(el.dataset.id, el.dataset.title || el.querySelector('.card-title, .item-title')?.textContent || 'this book'));
             }
             el.addEventListener('click', () => {
@@ -2744,7 +2748,7 @@ const App = {
         const finished = !!progress?.isFinished;
         const finishedLabel = finished ? 'Mark as not started' : 'Mark as finished';
         html += `<button class="text-btn detail-finish-btn" id="detail-finish">${finishedLabel}</button>`;
-        if (this.isShim) html += `<button class="text-btn detail-delete-btn" id="detail-delete">Delete from pCloud…</button>`;
+        if (this.shimCanDelete) html += `<button class="text-btn detail-delete-btn" id="detail-delete">Delete from pCloud…</button>`;
         html += `<div id="offline-controls" class="offline-controls"></div>`;
 
         if (chapters.length) {

@@ -180,7 +180,7 @@ When the server is an ABS_shim with a Real-Debrid token (`GET /api/admin/abb/set
 
 **Delete from pCloud** (`App.isShim` only): long-press a book card (`_wireLongPress`, 550 ms; right-click on desktop) or tap "Delete from pCloud…" on the book page → `confirmDeleteItem` (shows format/length) → `DELETE /api/admin/items/:id?deleteFiles=1`. Irreversible: removes the audio files from pCloud and the library entry.
 
-Renaming any of those routes on the shim hides/breaks this screen silently — change both repos together. Stock ABS 404s the first probe, so the icon never shows there.
+Renaming any of those routes on the shim hides/breaks this screen silently — change both repos together. Stock ABS 404s the first probe, so the icon never shows there. Since 2026-09-05 the probe also carries the caller's permissions: `canGrab` (false for a member whose owner hasn't turned on "members can add books" → no Add screen) and `canDelete` (owner only → no long-press / detail delete; `App.shimCanDelete`). Missing flags (older shim) are treated as allowed. A member's "On Real-Debrid" panel only lists torrents they added — the shim filters, Pholia just renders.
 
 ## AudioBookBay browse-by-category (2026-09-02)
 
