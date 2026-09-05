@@ -159,9 +159,11 @@ Testing gestures in a background tab: **fabricate `event.timeStamp`** rather tha
 `_wireContentGestures()` puts two finger-following drags on `#content`, and one touch picks between them once, at 12px of movement:
 
 - **Drag right from within 28px of the left edge → back.** Commits past 30% of the width or on a flick; the outgoing page slides out and `goBack()` renders the previous one. Only armed when the header's back button is showing (or on the Add screen, which `goBack` handles specially).
-- **Drag down while `#content.scrollTop <= 0` → search.** Damped to 110px of travel, with `#pull-hint` fading in beneath the header ("Pull to search" → "Release to search"), and `showSearch()` on release past the threshold. Not armed on the Add screen or when the search overlay is already open.
+- **Drag down while `#content.scrollTop <= 0` → the inline search bar.** `#inline-search` sits in the flex column between the header and `#content`, height 0 until the drag grows it (damped, capped at 56px), so it pushes the list down instead of covering anything; dragging up puts it away. Typing runs `doSearch(q, contentEl)` — results replace the list, and Cancel or clearing restores it via `switchTab`. The header magnifier still opens the full-screen overlay; that path is untouched.
 
-A drag starting inside a `.h-scroll` shelf is ignored outright — those are swiped constantly and would otherwise trigger the back gesture from the left edge. Anything not matching either shape releases the touch back to normal scrolling.
+A drag starting inside a `.h-scroll` shelf is left alone **only while that shelf can still scroll right** (`scrollLeft > 0`); one already at its left end can't use a rightward drag, so the back gesture may have it. Anything not matching either shape releases the touch back to normal scrolling.
+
+**In a browser tab, iOS keeps the left edge for its own back gesture, so the back drag only works in the installed app.** The header button always works.
 
 ## Player Quirks Learned
 

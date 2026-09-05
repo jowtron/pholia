@@ -579,6 +579,7 @@ const App = {
         document.getElementById('fs-chapters-back').addEventListener('click', () => this.showFsChapters(false));
         this._wireFsSwipe();
         this._wireContentGestures();
+        this._wireInlineSearch();
 
         // Auto-reconnect when app resumes from background or regains network
         document.addEventListener('visibilitychange', () => {
@@ -1513,7 +1514,11 @@ const App = {
                 }
             }
             const san = s => s.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120) || 'audiobook';
-            const plan = this.abbPlanDest(san(g.filename), chosen.filter(f => byFile.has(f.id)));
+            // RD renames a torrent to its selected file, so a resumed
+            // one-file-per-torrent grab reports "Book-Part04.mp3" as the
+            // name; using that as the folder scattered one book across three
+            // directories. `originalFilename` is the torrent's own name.
+            const plan = this.abbPlanDest(san(infos[0].originalFilename || g.filename), chosen.filter(f => byFile.has(f.id)));
             const byTorrent = new Map();
             for (const p of plan) { const tid = byFile.get(p.id); if (!byTorrent.has(tid)) byTorrent.set(tid, p.dest); }
             const torrents = [...byTorrent].map(([id, dest]) => ({ id, dest }));
@@ -2515,8 +2520,8 @@ const App = {
         sync();
     },
 
-    async doSearch(query) {
-        const resultsEl = document.getElementById('search-results');
+    async doSearch(query, target) {
+        const resultsEl = target || document.getElementById('search-results');
         if (!query || query.length < 2) { resultsEl.innerHTML = ''; return; }
         try {
             const data = await ABS.searchLibrary(this.currentLibraryId, query);
@@ -3504,59 +3509,64 @@ const App = {
 
     // Two gestures on the content area, both finger-following like the
     // chapter page:
-    //   • drag right from the left edge → go back (the header's back button)
-    //   • drag down when already at the top → reveal search
+    //   • drag right from the left edge → go back (what the header's back
+    //     button does)
+    //   • drag down at the top of a list → grow the inline search bar out
+    //     from under the header; drag up to put it away again
     // They're wired together because one touch has to choose between them:
     // the axis is decided once, at 12px of movement, and never revisited.
     //
-    // Deliberately narrow: the back drag must start within 28px of the left
-    // edge (the platform convention, and it keeps horizontal shelves usable),
-    // and the pull only arms when the content is already scrolled to the top,
-    // so it can never fight a normal scroll.
+    // The back drag must start within 40px of the left edge — the platform
+    // convention, and it keeps the middle of the screen free. **In a browser
+    // tab iOS claims that edge for its own back gesture, so this only works
+    // in the installed app**; the button in the header is always there.
     _wireContentGestures() {
         const content = document.getElementById('content');
-        const hint = document.getElementById('pull-hint');
-        const hintText = document.getElementById('pull-hint-text');
-        const EDGE_PX = 28;
+        const bar = document.getElementById('inline-search');
+        const EDGE_PX = 40;
         const ENGAGE_PX = 12;
         const BACK_SETTLE = 0.3;      // fraction of the width that commits the back
-        const PULL_TRIGGER_PX = 72;   // drag further than this and search opens
-        const PULL_MAX_PX = 110;
         const FLICK_PX_PER_MS = 0.8;
+        const BAR_H = 56;             // the bar's height when fully open
 
         let startX = 0, startY = 0, lastX = 0, lastT = 0, velocity = 0;
-        let width = 1, mode = null, active = false;
+        let width = 1, baseH = 0, mode = null, active = false;
 
+        const barOpen = () => bar.offsetHeight > BAR_H / 2;
         const canGoBack = () =>
             !document.getElementById('back-btn').classList.contains('hidden') || this.currentTab === 'add';
-        const canPull = () =>
-            content.scrollTop <= 0
-            && this.currentTab !== 'add'
-            && document.getElementById('search-overlay').classList.contains('hidden');
+        const canPull = () => content.scrollTop <= 0 && this.currentTab !== 'add';
 
-        const reset = (animate) => {
+        const settleBar = (open) => {
+            bar.classList.add('settling');
+            bar.style.height = open ? BAR_H + 'px' : '0px';
+            setTimeout(() => bar.classList.remove('settling'), 220);
+            if (!open) this.closeInlineSearch();
+        };
+        const resetContent = (animate) => {
             content.classList.remove('dragging');
             if (animate) {
                 content.classList.add('settling');
                 setTimeout(() => content.classList.remove('settling'), 240);
             }
             content.style.transform = '';
-            hint.style.opacity = '0';
-            hint.classList.remove('armed');
         };
 
         content.addEventListener('touchstart', (e) => {
             active = false; mode = null;
             if (e.touches.length !== 1) return;
-            // Never hijack a drag that starts on something horizontally
-            // scrollable — those shelves are swiped constantly.
-            if (e.target.closest('.h-scroll')) return;
+            // A shelf that can still scroll right keeps its own swipe; one
+            // already at its left end can't use a rightward drag anyway, so
+            // the back gesture may have it.
+            const shelf = e.target.closest('.h-scroll');
+            if (shelf && shelf.scrollLeft > 0) return;
             const t = e.touches[0];
             startX = lastX = t.clientX;
             startY = t.clientY;
             lastT = e.timeStamp;
             velocity = 0;
             width = content.clientWidth || 1;
+            baseH = bar.offsetHeight;
             active = true;
         }, { passive: true });
 
@@ -3569,28 +3579,26 @@ const App = {
                 if (Math.abs(dx) < ENGAGE_PX && Math.abs(dy) < ENGAGE_PX) return;
                 if (Math.abs(dx) > Math.abs(dy) && dx > 0 && startX <= EDGE_PX && canGoBack()) {
                     mode = 'back';
-                } else if (Math.abs(dy) > Math.abs(dx) && dy > 0 && canPull()) {
+                    content.classList.remove('settling');
+                    content.classList.add('dragging');
+                } else if (Math.abs(dy) > Math.abs(dx) && canPull() && (dy > 0 || baseH > 0)) {
                     mode = 'pull';
-                    hint.style.top = document.getElementById('header').getBoundingClientRect().bottom + 'px';
+                    bar.classList.remove('settling');
                 } else {
                     active = false;   // an ordinary scroll — leave it alone
                     return;
                 }
-                content.classList.remove('settling');
-                content.classList.add('dragging');
             }
             const dt = e.timeStamp - lastT;
             if (mode === 'back') {
-                if (dt > 0) velocity = (t.clientX - lastX) / dt;   // only the back drag flicks
+                if (dt > 0) velocity = (t.clientX - lastX) / dt;
                 content.style.transform = 'translateX(' + Math.max(0, Math.min(width, dx)) + 'px)';
             } else {
-                // Damped: 110px of travel for an ever-longer drag.
-                const pulled = Math.min(PULL_MAX_PX, dy * 0.55);
-                content.style.transform = 'translateY(' + pulled + 'px)';
-                const armed = pulled >= PULL_TRIGGER_PX * 0.55;
-                hint.style.opacity = String(Math.min(1, pulled / (PULL_TRIGGER_PX * 0.55)));
-                hint.classList.toggle('armed', armed);
-                hintText.textContent = armed ? 'Release to search' : 'Pull to search';
+                // The bar's height follows the finger, a bit damped, so it
+                // grows out from under the header instead of the whole page
+                // moving.
+                const h = Math.max(0, Math.min(BAR_H, baseH + dy * 0.7));
+                bar.style.height = h + 'px';
             }
             lastX = t.clientX;
             lastT = e.timeStamp;
@@ -3605,7 +3613,6 @@ const App = {
             if (!m) return;
             const t = e.changedTouches && e.changedTouches[0];
             const dx = t ? t.clientX - startX : 0;
-            const dy = t ? t.clientY - startY : 0;
             if (m === 'back') {
                 const commit = (velocity > FLICK_PX_PER_MS && dx > 40) || dx > width * BACK_SETTLE;
                 if (commit) {
@@ -3613,18 +3620,54 @@ const App = {
                     // one — goBack() replaces the content wholesale.
                     content.classList.add('settling');
                     content.style.transform = 'translateX(' + width + 'px)';
-                    setTimeout(() => { reset(false); this.goBack(); }, 180);
+                    setTimeout(() => { resetContent(false); this.goBack(); }, 180);
                     return;
                 }
-            } else if (m === 'pull' && dy * 0.55 >= PULL_TRIGGER_PX * 0.55) {
-                reset(true);
-                this.showSearch();
+                resetContent(true);
                 return;
             }
-            reset(true);
+            settleBar(barOpen());
         };
         content.addEventListener('touchend', end, { passive: true });
         content.addEventListener('touchcancel', end, { passive: true });
+    },
+
+    // The inline bar searches into the content area itself: results replace
+    // the list you pulled down from, and clearing or cancelling puts that
+    // list back. The full-screen overlay behind the header's magnifier is
+    // untouched.
+    _wireInlineSearch() {
+        const bar = document.getElementById('inline-search');
+        const input = document.getElementById('inline-search-input');
+        const run = debounce((v) => {
+            if (!v || v.length < 2) { if (this._inlineSearching) this._restoreAfterInlineSearch(); return; }
+            this._inlineSearching = true;
+            this.doSearch(v, document.getElementById('content'));
+        }, 300);
+        input.addEventListener('input', (e) => run(e.target.value));
+        this._wireSearchClear(input, document.getElementById('inline-search-clear'), () => {
+            this._restoreAfterInlineSearch();
+        });
+        document.getElementById('inline-search-cancel').addEventListener('click', () => {
+            bar.classList.add('settling');
+            bar.style.height = '0px';
+            setTimeout(() => bar.classList.remove('settling'), 220);
+            this.closeInlineSearch();
+        });
+    },
+
+    closeInlineSearch() {
+        const input = document.getElementById('inline-search-input');
+        if (input.value) input.value = '';
+        input.dispatchEvent(new Event('input'));
+        input.blur();
+        this._restoreAfterInlineSearch();
+    },
+
+    _restoreAfterInlineSearch() {
+        if (!this._inlineSearching) return;
+        this._inlineSearching = false;
+        this.switchTab(this.currentTab);
     },
 
     // Render the chapter rows without moving the panel — used mid-drag so the

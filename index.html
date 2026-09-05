@@ -154,11 +154,18 @@
                 <select id="library-select"></select>
             </div>
 
-            <!-- Revealed by dragging the content down from the top (see
-                 _wireContentGestures) — the search overlay opens on release. -->
-            <div id="pull-hint" class="pull-hint" aria-hidden="true">
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-                <span id="pull-hint-text">Pull to search</span>
+            <!-- Search bar revealed by dragging the list down from the top
+                 (see _wireContentGestures); dragging up puts it away again.
+                 It sits in the flex column, so it pushes the content down
+                 rather than covering it. -->
+            <div id="inline-search" class="inline-search">
+                <div class="search-bar">
+                    <span class="search-wrap">
+                        <input type="text" id="inline-search-input" placeholder="Search this library…" style="font-size:16px">
+                        <button type="button" id="inline-search-clear" class="search-clear" aria-label="Clear search">×</button>
+                    </span>
+                    <button id="inline-search-cancel" class="text-btn">Cancel</button>
+                </div>
             </div>
 
             <!-- Content area -->

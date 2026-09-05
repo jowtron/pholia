@@ -244,17 +244,13 @@ header h2 { font-size: 1.125rem; font-weight: 600; }
 #search-results { flex: 1; overflow-y: auto; padding: 1rem; }
 
 /* ── Content ── */
-/* Pull-down-to-search hint: sits behind the content, revealed as the content
-   slides down under the finger. `top` is set inline from the header's bottom
-   edge, which varies with the safe-area inset. */
-.pull-hint {
-    position: fixed; left: 0; right: 0; z-index: 1;
-    display: flex; align-items: center; justify-content: center; gap: 0.4rem;
-    height: 44px; font-size: 0.85rem; color: var(--text-muted);
-    opacity: 0; pointer-events: none;
-}
-.pull-hint.armed { color: var(--accent); }
-/* Dropped the moment a drag starts so the content tracks the finger. */
+/* Inline search bar: height 0 until pulled down, and its height tracks the
+   drag so it grows out from under the header. Content below simply moves
+   down with it — no overlay, nothing covered. */
+.inline-search { height: 0; overflow: hidden; flex-shrink: 0; }
+.inline-search.settling { transition: height 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
+.inline-search .search-bar { padding: 0.5rem 1rem; }
+/* Dropped the moment a back-drag starts so the content tracks the finger. */
 main.dragging { transition: none; }
 main.settling { transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1); }
 
