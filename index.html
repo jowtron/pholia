@@ -392,7 +392,17 @@
                         <button id="fs-sleep-cancel" style="display:none">Cancel timer</button>
                     </div>
                 </div>
-                <button class="text-btn" id="fs-toggle-chapters">Chapters</button>
+                <button class="text-btn" id="fs-toggle-chapters">Chapters &rsaquo;</button>
+            </div>
+            <!-- Chapters as a page to the right of the player: swipe left to
+                 open it (two fingers anywhere, one finger on the artwork), or
+                 tap Chapters. Full height, so a long book shows more than the
+                 handful of rows the old inline panel had room for. -->
+            <div class="fs-chapters-panel" id="fs-chapters-panel" aria-hidden="true">
+                <div class="fs-chapters-head">
+                    <button class="fs-chapters-back" id="fs-chapters-back" aria-label="Back to player">&lsaquo; Player</button>
+                    <span class="fs-chapters-heading">Chapters</span>
+                </div>
                 <div id="fs-chapter-list" class="fs-chapter-list hidden"></div>
             </div>
         </div>

@@ -572,12 +572,12 @@ const App = {
             btn.textContent = collapsed ? 'Read more' : 'Show less';
         });
 
-        // FS chapters
+        // FS chapters (a page to the right — see showFsChapters)
         document.getElementById('fs-toggle-chapters').addEventListener('click', () => {
-            const el = document.getElementById('fs-chapter-list');
-            el.classList.toggle('hidden');
-            if (!el.classList.contains('hidden')) this.renderFsChapters();
+            this.showFsChapters(!document.getElementById('fs-player').classList.contains('chapters-open'));
         });
+        document.getElementById('fs-chapters-back').addEventListener('click', () => this.showFsChapters(false));
+        this._wireFsSwipe();
 
         // Auto-reconnect when app resumes from background or regains network
         document.addEventListener('visibilitychange', () => {
@@ -1506,8 +1506,9 @@ const App = {
                 row.setStatus(`Adding ${missing.length} torrent(s) to Real-Debrid…`);
                 const magnet = 'magnet:?xt=urn:btih:' + hash + '&dn=' + encodeURIComponent(g.filename);
                 for (const f of missing) {
-                    try { const a = await this._shimCall('/api/admin/abb/torrents', { method: 'POST', body: JSON.stringify({ magnet, fileId: f.id }) }); byFile.set(f.id, a.id); }
+                    try { const a = await this._abbAddPaced(magnet, f.id, row, `Adding ${missing.indexOf(f) + 1} / ${missing.length}`); byFile.set(f.id, a.id); }
                     catch (e) { this._abbRow(listEl, f.path, '').fail('Add failed: ' + e.message); }
+                    await this._sleep(this._RD_ADD_PACE_MS);
                 }
             }
             const san = s => s.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120) || 'audiobook';
@@ -1645,6 +1646,35 @@ const App = {
         };
     },
 
+    // Real-Debrid's torrents endpoints allow roughly one request a second
+    // per API key and one add spends several of them (addMagnet, info polls,
+    // selectFiles). A 29-file release added two at a time lost most of its
+    // files to "Real-Debrid 429: too_many_requests" (2026-09-05), each
+    // needing a manual Retry tap. So adds go one at a time with a gap, and a
+    // 429 waits it out and retries itself — the user is not the retry
+    // mechanism. The shim already retries a 429 four times over ~37 s, so
+    // this ladder waits in minutes.
+    _RD_ADD_PACE_MS: 1200,
+    _RD_RETRY_WAITS_MS: [15000, 30000, 60000, 60000, 120000],
+
+    _sleep(ms) { return new Promise(r => setTimeout(r, ms)); },
+
+    async _abbAddPaced(magnet, fileId, row, label) {
+        const add = () => this._shimCall('/api/admin/abb/torrents', { method: 'POST', body: JSON.stringify({ magnet, fileId }) });
+        for (let attempt = 0; ; attempt++) {
+            try { return await add(); }
+            catch (e) {
+                const rate = /429|too_many/i.test(e?.message || '');
+                const wait = rate ? this._RD_RETRY_WAITS_MS[attempt] : null;
+                if (wait == null) throw e;
+                for (let left = Math.round(wait / 1000); left > 0; left--) {
+                    row.setStatus(`${label} — Real-Debrid is rate-limiting, retrying in ${left}s`);
+                    await this._sleep(1000);
+                }
+            }
+        }
+    },
+
     async abbGrab(res, listEl) {
         const folderId = this.abbFolderId;
         const row = this._abbRow(listEl, 'Real-Debrid', res.magnet ? 'Reading magnet…' : 'Resolving on AudioBookBay…');
@@ -1662,16 +1692,14 @@ const App = {
             }
             const plan = this.abbPlanDest(m.folderName, chosen);
             row.setStatus(`Adding ${plan.length} torrent(s) to Real-Debrid…`);
-            const add = (fileId) => this._shimCall('/api/admin/abb/torrents', { method: 'POST', body: JSON.stringify({ magnet: m.magnet, fileId }) });
-            // Two adds at a time (each is ~10 RD API calls; four in parallel drew a
-            // 429 on 2026-09-02). A failed add gets a Retry that re-adds just that
-            // file and tracks it to the library on its own.
+            // A manual Retry is still offered once the automatic ladder above
+            // gives up, since by then something other than pacing is wrong.
             const torrents = [];
             const retryAdd = (p) => {
                 const r = this._abbRow(listEl, p.dest, '');
                 const retry = () => {
                     r.setStatus('Adding to Real-Debrid…');
-                    add(p.id)
+                    this._abbAddPaced(m.magnet, p.id, r, 'Adding')
                         .then((a) => { removeBtn(); return this.abbTrackTorrents([{ id: a.id, dest: p.dest }], folderId, listEl, r); })
                         .then((ok) => { this.abbLoadRdList(); if (ok) this._tabCache = {}; })
                         .catch((e) => r.fail('Add failed: ' + e.message));
@@ -1679,13 +1707,18 @@ const App = {
                 let removeBtn = r.addButton('Retry', retry);
                 return r;
             };
-            for (let i = 0; i < plan.length; i += 2) {
-                const added = await Promise.all(plan.slice(i, i + 2).map(p => add(p.id).then(a => ({ ...a, dest: p.dest, plan: p })).catch(e => ({ error: e.message, dest: p.dest, plan: p }))));
-                for (const a of added) {
-                    if (a.error) retryAdd(a.plan).fail('Add failed: ' + a.error);
-                    else torrents.push({ id: a.id, dest: a.dest });
+            for (let i = 0; i < plan.length; i++) {
+                const p = plan[i];
+                const label = `Adding ${i + 1} / ${plan.length}`;
+                row.setStatus(label + '…');
+                try {
+                    const a = await this._abbAddPaced(m.magnet, p.id, row, label);
+                    torrents.push({ id: a.id, dest: p.dest });
+                } catch (e) {
+                    retryAdd(p).fail('Add failed: ' + e.message);
                 }
                 row.setStatus(`Added ${torrents.length} / ${plan.length} torrent(s)…`);
+                if (i + 1 < plan.length) await this._sleep(this._RD_ADD_PACE_MS);
             }
             if (!torrents.length) throw new Error('Nothing could be added to Real-Debrid');
             row.setStatus(`${torrents.length} torrent(s) — waiting for Real-Debrid`);
@@ -3356,8 +3389,51 @@ const App = {
         });
     },
     closeFullscreen() {
+        // Leave the player on its first page, or reopening lands on chapters.
+        this.showFsChapters(false);
         document.getElementById('fs-player').classList.add('hidden');
         document.body.classList.remove('fs-open');
+    },
+
+    // The chapter list keeps its own `hidden` class because Player's tick
+    // reads it to decide whether the rows are worth repainting — don't drop
+    // it in favour of the panel class alone.
+    showFsChapters(open) {
+        const fs = document.getElementById('fs-player');
+        const list = document.getElementById('fs-chapter-list');
+        const panel = document.getElementById('fs-chapters-panel');
+        fs.classList.toggle('chapters-open', !!open);
+        panel.setAttribute('aria-hidden', open ? 'false' : 'true');
+        list.classList.toggle('hidden', !open);
+        if (open) this.renderFsChapters();
+    },
+
+    // Swipe left for the chapter page, right for the player. Two fingers work
+    // anywhere in the player; one finger only from the artwork area and the
+    // chapters header, because a one-finger horizontal drag over the scrubber
+    // is a seek and over a chapter row is a tap-to-position.
+    _wireFsSwipe() {
+        const fs = document.getElementById('fs-player');
+        let sx = 0, sy = 0, tracking = false;
+        fs.addEventListener('touchstart', (e) => {
+            tracking = false;
+            if (e.touches.length > 2) return;
+            const oneFinger = e.touches.length === 1;
+            if (oneFinger && !e.target.closest('.fs-scroll, .fs-chapters-head')) return;
+            sx = e.touches[0].clientX;
+            sy = e.touches[0].clientY;
+            tracking = true;
+        }, { passive: true });
+        fs.addEventListener('touchend', (e) => {
+            if (!tracking) return;
+            tracking = false;
+            const t = e.changedTouches[0];
+            if (!t) return;
+            const dx = t.clientX - sx, dy = t.clientY - sy;
+            // Dominantly horizontal, and far enough to be deliberate.
+            if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+            this.showFsChapters(dx < 0);
+        }, { passive: true });
     },
 
     renderFsChapters() {

@@ -687,9 +687,36 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
 }
 .fs-sleep-menu button:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 
-/* FS chapters */
+/* FS chapters — a page sitting to the right of the player, slid in on
+   demand. It has to be a sibling of .fs-bottom (not inside it): the old
+   inline list was capped at 250px under the controls, so a 40-chapter book
+   showed five rows in the bottom third of the screen. */
 .fs-chapter-list {
     width: 100%; max-width: 400px; max-height: 250px; overflow-y: auto; margin-top: 0.5rem;
+}
+.fs-chapters-panel {
+    position: absolute; inset: 0; z-index: 3; background: var(--bg);
+    display: flex; flex-direction: column;
+    transform: translateX(100%); visibility: hidden;
+    transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1), visibility 0.28s;
+}
+.fs-player.chapters-open .fs-chapters-panel { transform: none; visibility: visible; }
+.fs-chapters-head {
+    flex-shrink: 0; display: flex; align-items: center; gap: 8px;
+    padding: 10px 12px; padding-top: calc(10px + env(safe-area-inset-top, 0px));
+    border-bottom: 1px solid var(--border);
+}
+.fs-chapters-back {
+    background: none; border: none; color: var(--accent); cursor: pointer;
+    font-size: 0.95rem; padding: 4px 6px;
+}
+.fs-chapters-heading { font-weight: 600; }
+.fs-chapters-panel .fs-chapter-list {
+    flex: 1; width: 100%; max-width: 640px; max-height: none;
+    margin: 0 auto; padding: 8px 12px calc(12px + var(--safe-bottom));
+}
+@media (prefers-reduced-motion: reduce) {
+    .fs-chapters-panel { transition: none; }
 }
 
 .text-btn {

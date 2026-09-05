@@ -146,6 +146,12 @@ paths) are intentionally left out of this repo; keep them in private notes.
 - **Playback sessions:** `POST /api/items/{id}/play/{episodeId}` for podcasts. Session has `audioTracks` with `contentUrl` and `startOffset`.
 - **HEAD on file endpoints:** ABS responds with correct `Content-Length` (the full file size). Use this for chunked download size discovery.
 
+## Fullscreen player: chapters are a page, not a drawer (2026-09-05)
+
+`#fs-chapter-list` used to live inside `.fs-bottom` capped at 250px, so tapping Chapters filled the bottom third with about five rows. It now sits in `#fs-chapters-panel`, a sibling of `.fs-bottom` positioned `inset: 0` and slid in from the right by `.fs-player.chapters-open`. `App.showFsChapters(bool)` drives it and is the only thing that should toggle either class — **it must keep the `hidden` class on the list itself in sync**, because `Player`'s tick reads `#fs-chapter-list.hidden` to decide whether repainting the rows is worth it. `closeFullscreen` resets to the player page.
+
+`_wireFsSwipe()` opens it on a leftward swipe and closes it on a rightward one: two fingers anywhere in the player, one finger only from `.fs-scroll` (the artwork) or the chapters header. One finger is deliberately not accepted over the rest of `.fs-bottom` — a horizontal drag on `#fs-seek` is a seek, and one on a chapter row is tap-to-position. A swipe must be ≥60px and more horizontal than vertical (1.5×).
+
 ## Player Quirks Learned
 
 - **Don't add a buffering "recovery" that nudges `currentTime` after a stall** — it forcibly seeks during normal short buffer underruns and causes louder glitches than the brief stall would have. (Removed in 49924c9.)
@@ -177,6 +183,8 @@ paths) are intentionally left out of this repo; keep them in private notes.
 ## "Add audiobook" (ABS_shim only)
 
 When the server is an ABS_shim with a Real-Debrid token (`GET /api/admin/abb/settings` → `rdTokenSet:true`) and a `pcloud_oauth` folder, `App.checkAbbSupport()` unhides `#abb-btn` — the ABB-logo icon (`icons/abb.svg`, traced from Joseph's PNG; 17 paths) in the header beside search. It opens the Add screen (`App.showAdd()`, internal tab state `'add'` with no bottom tab; back arrow / tapping the icon again returns to the previous tab). The grab flow (`abbGrab` → `abbFetchToPcloud` → `abbExtractZip`) drives shim routes `/api/admin/abb/*` (`search`, `details`, `resolve`, `torrents`), `/api/admin/storage/folder/:id/fetch-url/*`, `extract/*`, and finishes with `POST /api/admin/libraries/:id/scan` (the shim only auto-registers single m4b files; mp3 releases need the scan). A release with more than one audio/archive file opens a directory-grouped picker (`abbPickFiles`) and one RD torrent is added per chosen file; `abbPlanDest` keeps the torrent's sub-folders on pCloud (one book per folder). The search box also accepts a pasted `magnet:` link. An "On Real-Debrid" `<details>` under the results lists the account's torrents grouped by hash (video-looking names hidden by default) with Choose files… / Watch / Finish / Delete — the grab loop runs in the tab, so this is how a grab interrupted by closing the app is resumed (`abbTrackTorrents`). Resumed/in-flight rows render in the "In progress" block above the results.
+
+**Real-Debrid pacing** (`_abbAddPaced`, 2026-09-05). RD's torrents endpoints allow roughly one request a second per API key and one add spends several (addMagnet, info polls, selectFiles). Adding two at a time cost a 29-file release most of its files to `Real-Debrid 429: too_many_requests`, each row left with a manual Retry. Adds are now sequential with a 1.2 s gap, and a 429 counts down and retries itself (15 s, 30 s, 60 s, 60 s, 120 s) before the manual Retry button reappears. The shim retries a 429 four times over ~37 s underneath this. Don't restore parallel adds — the wall-clock saving was minutes and the cost was lost files. Same code in the shim's /admin (`abbAddPaced`).
 
 **Delete from pCloud** (`App.isShim` only): long-press a book card (`_wireLongPress`, 550 ms; right-click on desktop) or tap "Delete from pCloud…" on the book page → `confirmDeleteItem` (shows format/length) → `DELETE /api/admin/items/:id?deleteFiles=1`. Irreversible: removes the audio files from pCloud and the library entry.
 
