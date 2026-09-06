@@ -256,6 +256,19 @@ const ABS = {
         }
     },
 
+    // Listening stats and the year in review. The shim stamps sessions with
+    // calendar dates in the zone passed here (a Worker has no local time);
+    // real ABS ignores the parameter and uses its own server clock.
+    _tzQuery() {
+        try { return 'tz=' + encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'); } catch { return 'tz=UTC'; }
+    },
+    async getListeningStats() {
+        return this.request(`/api/me/listening-stats?${this._tzQuery()}`);
+    },
+    async getYearStats(year) {
+        return this.request(`/api/me/stats/year/${year}?${this._tzQuery()}`);
+    },
+
     // Update progress directly
     async updateProgress(itemId, progress, opts = {}) {
         return this.request(`/api/me/progress/${itemId}`, {

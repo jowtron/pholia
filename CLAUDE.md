@@ -219,3 +219,47 @@ Renaming any of those routes on the shim hides/breaks this screen silently — c
 ## AudioBookBay browse-by-category (2026-09-02)
 
 The Add screen has a browse row (category / language / format selects + Browse) under the search bar, fed by the shim's catalogue routes `GET /api/admin/abb/catalog/categories` and `GET /api/admin/abb/catalog/browse?cat=&language=&format=&page=`. `abbLoadFacets()` hides the row when the endpoint 404s (older shim) or the catalogue is empty. Search and browse share `_abbRenderResults()` (same Grab flow); browse appends pages via a "Load more" text button. A "⚡" in a result's sub-line means the shim has the magnet cached, so Grab skips AudioBookBay. Search results may carry `liveError` (shim answered from its catalogue because ABB didn't respond) — shown as a hint above the list.
+
+## Background track boundaries (fixed 2026-09-06)
+
+A multi-part book went silent at every part boundary while the app was
+backgrounded (lock screen kept "playing", no sound, reopening restarted the
+part from zero). Root cause and fix are in
+`docs/background-playback-handover.md`; the rules that came out of it:
+
+- **The pin must land before `src` is assigned.** `pinMediaMode` waits for
+  the worker (8 s cap) — it used to time out at 500 ms, which the worker
+  missed at every load, so every load began unpinned and attempt 1's
+  "native" boundary was really a worker/native mix. The worker answers
+  `MEDIA_LOAD` from its existing key map (`ensureKeys`); don't put
+  `loadCachedKeys()` back there.
+- **Pin the next part early.** `maybePrewarmNextTrack` pins the next file
+  30 s before the boundary, so `onTrackEnded` assigns `src` immediately.
+  This is the decisive change: a cold worker woken *at* the boundary, with
+  the audio session already quiet, is what iOS would not carry through.
+- **Native means native.** A freshly restarted worker (no key map) no longer
+  answers online audio with `respondWith(fetch())`; it returns without
+  responding and pins the file native (`forcedNative`) until the page's
+  next `MEDIA_LOAD`. Offline keeps the old wait-for-cache path.
+- **Both build hashes must match before a test counts.** `sw.js` carries
+  `SW_BUILD` (stamped by `deploy.yml`), shown under the page hash in the tab
+  bar and recorded in every crash log's `audio_state.sw`. A heartbeat
+  (`hb`) is logged while hidden — 5 s, 1 s for the minute after a boundary.
+
+## Player behaviour added 2026-09-06
+
+- **Continue Listening tap** (`resumeFromShelf`): the book that is already
+  playing is left alone, a paused one resumes, anything else starts; either
+  way it opens the book's page, not the full-screen player. It used to
+  restart the playing book from its last synced position. The book page's
+  own Play button follows the same rule.
+- **Rewind after a pause** (`Player._autoRewindSeconds`, Settings toggle,
+  on by default): 3 s after a pause under a minute, 10 s under ten minutes,
+  20 s under an hour, 30 s beyond; nothing under 5 s. Tracked from the
+  element's `pause` event, so an interruption by a call counts too; any seek
+  clears it.
+- **Listening stats** (Settings → Listening → Stats): tiles, a 30-day bar
+  chart, weekday bars, this year's review, most-listened books and recent
+  sessions, from the shim's `/api/me/listening-stats` and
+  `/api/me/stats/year/:year` with the phone's IANA zone passed as `?tz=`.
+  Inline SVG, no chart library.

@@ -436,6 +436,7 @@ const App = {
 
         // Settings
         document.getElementById('settings-close').addEventListener('click', () => this.hideSettings());
+        document.getElementById('stats-open').addEventListener('click', () => { this.hideSettings(); this.showStats(); });
         // Click outside the modal content closes the modal.
         document.getElementById('settings-modal').addEventListener('click', (e) => {
             if (e.target.id === 'settings-modal') this.hideSettings();
@@ -466,6 +467,9 @@ const App = {
         document.getElementById('setting-theme').addEventListener('change', e => {
             document.documentElement.setAttribute('data-theme', e.target.value);
             localStorage.setItem('pholia_theme', e.target.value);
+        });
+        document.getElementById('setting-auto-rewind').addEventListener('change', e => {
+            localStorage.setItem('pholia_auto_rewind', e.target.checked ? 'true' : 'false');
         });
         document.getElementById('setting-auto-cache').addEventListener('change', e => {
             localStorage.setItem('pholia_auto_cache', e.target.checked ? 'true' : 'false');
@@ -2598,6 +2602,115 @@ const App = {
         }
     },
 
+    // ── Listening stats ──
+    // /api/me/listening-stats (every session, aggregated server-side) plus
+    // this year's review. Charts are inline SVG: no library, and they take
+    // the theme's colours from CSS.
+    async showStats() {
+        this.pushNav('Listening stats');
+        this.showLoading();
+        try {
+            const year = new Date().getFullYear();
+            const [stats, yr] = await Promise.all([ABS.getListeningStats(), ABS.getYearStats(year).catch(() => null)]);
+            this.setContent(this._renderStats(stats, yr, year));
+            document.querySelectorAll('#content .stats-item[data-id]').forEach(el => {
+                el.addEventListener('click', () => this.showItem(el.dataset.id));
+            });
+        } catch (e) {
+            this.setContent(`<div class="loading">Error: ${esc(e.message)}</div>`);
+        }
+    },
+
+    _renderStats(stats, yr, year) {
+        const hrs = (s) => {
+            s = Math.round(Number(s) || 0);
+            if (s < 60) return `${s}s`;
+            const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+            return h ? `${h}h ${m}m` : `${m}m`;
+        };
+        const dayKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        const days = stats.days || {};
+        // Last 30 days, oldest first.
+        const series = [];
+        for (let i = 29; i >= 0; i--) {
+            const d = new Date(); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() - i);
+            series.push({ key: dayKey(d), day: d, sec: days[dayKey(d)] || 0 });
+        }
+        const last7 = series.slice(-7).reduce((a, x) => a + x.sec, 0);
+        const last30 = series.reduce((a, x) => a + x.sec, 0);
+        const streak = (() => { let n = 0; for (let i = series.length - 1; i >= 0 && series[i].sec > 0; i--) n++; return n; })();
+
+        let html = '<div class="stats-page">';
+        html += '<div class="stats-tiles">';
+        html += `<div class="stat-tile"><div class="stat-val">${hrs(stats.today)}</div><div class="stat-label">Today</div></div>`;
+        html += `<div class="stat-tile"><div class="stat-val">${hrs(last7)}</div><div class="stat-label">Last 7 days</div></div>`;
+        html += `<div class="stat-tile"><div class="stat-val">${hrs(last30)}</div><div class="stat-label">Last 30 days</div></div>`;
+        html += `<div class="stat-tile"><div class="stat-val">${hrs(stats.totalTime)}</div><div class="stat-label">All time</div></div>`;
+        html += '</div>';
+
+        // Daily bars, 30 days.
+        const max = Math.max(1, ...series.map(x => x.sec));
+        const W = 300, H = 90, gap = 2, bw = (W - gap * 29) / 30;
+        let svg = `<svg viewBox="0 0 ${W} ${H + 14}" preserveAspectRatio="none" class="stats-bars" aria-hidden="true">`;
+        series.forEach((x, i) => {
+            const h = x.sec ? Math.max(2, (x.sec / max) * H) : 1;
+            svg += `<rect x="${(i * (bw + gap)).toFixed(1)}" y="${(H - h).toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="1" class="${x.sec ? 'bar' : 'bar bar-empty'}"><title>${x.key}: ${hrs(x.sec)}</title></rect>`;
+        });
+        svg += '</svg>';
+        const fmtD = (d) => d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+        html += `<div class="stats-section"><h3>Last 30 days${streak > 1 ? ` <span class="stats-streak">${streak}-day streak</span>` : ''}</h3>${svg}`;
+        html += `<div class="stats-axis"><span>${fmtD(series[0].day)}</span><span>${fmtD(series[29].day)}</span></div></div>`;
+
+        // Day of week.
+        const dow = stats.dayOfWeek || {};
+        const names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+        const dmax = Math.max(1, ...names.map(n => dow[n] || 0));
+        html += '<div class="stats-section"><h3>By weekday</h3><div class="stats-dow">';
+        for (const n of names) {
+            const v = dow[n] || 0;
+            html += `<div class="stats-dow-row"><span class="stats-dow-name">${n.slice(0, 3)}</span><div class="stats-dow-track"><div class="stats-dow-fill" style="width:${(v / dmax * 100).toFixed(1)}%"></div></div><span class="stats-dow-val">${v ? hrs(v) : ''}</span></div>`;
+        }
+        html += '</div></div>';
+
+        // Year in review.
+        if (yr && (yr.totalListeningTime > 0 || yr.numBooksFinished > 0)) {
+            const monthName = (m) => new Date(2000, m, 1).toLocaleDateString(undefined, { month: 'long' });
+            html += `<div class="stats-section"><h3>${year} so far</h3><div class="stats-year">`;
+            html += `<div><b>${hrs(yr.totalListeningTime)}</b> over ${yr.totalListeningSessions} session${yr.totalListeningSessions === 1 ? '' : 's'}</div>`;
+            html += `<div><b>${yr.numBooksListened}</b> book${yr.numBooksListened === 1 ? '' : 's'} listened to, <b>${yr.numBooksFinished}</b> finished</div>`;
+            if (yr.topAuthors?.length) html += `<div>Most heard: <b>${esc(yr.topAuthors.map(a => a.name).join(', '))}</b></div>`;
+            if (yr.mostListenedNarrator?.name) html += `<div>Favourite narrator: <b>${esc(yr.mostListenedNarrator.name)}</b></div>`;
+            if (yr.mostListenedMonth) html += `<div>Biggest month: <b>${monthName(yr.mostListenedMonth.month)}</b> (${hrs(yr.mostListenedMonth.time)})</div>`;
+            if (yr.longestAudiobookFinished?.title) html += `<div>Longest finished: <b>${esc(yr.longestAudiobookFinished.title)}</b> (${hrs(yr.longestAudiobookFinished.duration)})</div>`;
+            html += '</div></div>';
+        }
+
+        // Top books.
+        const items = Object.values(stats.items || {}).filter(i => i.timeListening > 0).sort((a, b) => b.timeListening - a.timeListening).slice(0, 10);
+        if (items.length) {
+            html += '<div class="stats-section"><h3>Most listened</h3><div class="stats-list">';
+            for (const it of items) {
+                const m = it.mediaMetadata || {};
+                html += `<div class="stats-item" data-id="${esc(it.id)}"><img src="${ABS.coverUrl(it.id)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'"><div class="stats-item-text"><div class="stats-item-title">${esc(m.title || 'Untitled')}</div><div class="stats-item-sub">${esc(m.authorName || '')}</div></div><div class="stats-item-time">${hrs(it.timeListening)}</div></div>`;
+            }
+            html += '</div></div>';
+        }
+
+        // Recent sessions.
+        const recent = (stats.recentSessions || []).filter(s => s.timeListening > 0);
+        if (recent.length) {
+            html += '<div class="stats-section"><h3>Recent sessions</h3><div class="stats-list">';
+            for (const s of recent) {
+                const when = s.startedAt ? new Date(s.startedAt).toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }) : (s.date || '');
+                html += `<div class="stats-item"${s.libraryItemId ? ` data-id="${esc(s.libraryItemId)}"` : ''}><div class="stats-item-text"><div class="stats-item-title">${esc(s.displayTitle || s.mediaMetadata?.title || 'Untitled')}</div><div class="stats-item-sub">${esc(when)}</div></div><div class="stats-item-time">${hrs(s.timeListening)}</div></div>`;
+            }
+            html += '</div></div>';
+        }
+        if (!stats.totalTime) html += '<div class="loading">Nothing yet. Stats appear once you have listened for a while.</div>';
+        html += '</div>';
+        return html;
+    },
+
     // ── Search ──
     showSearch() {
         document.getElementById('search-overlay').classList.remove('hidden');
@@ -2758,7 +2871,7 @@ const App = {
                 } else if (el.dataset.episodeId) {
                     this.playEpisode(el.dataset.id, el.dataset.episodeId);
                 } else if (el.dataset.resume) {
-                    this.quickPlay(el.dataset.id, true);
+                    this.resumeFromShelf(el.dataset.id);
                 } else {
                     this.showItem(el.dataset.id);
                 }
@@ -2782,17 +2895,31 @@ const App = {
         });
     },
 
+    // A Continue Listening tile. This used to open the full-screen player
+    // and restart the book from its last synced position even when it was
+    // the book already playing, so a tap mid-chapter jumped backwards. Now
+    // the playing book is left alone, a paused one resumes, anything else
+    // starts — and you land on the book's page, not the player.
+    resumeFromShelf(itemId) {
+        if (Player.item?.id === itemId) {
+            if (Player.audio.paused) Player.play();
+        } else {
+            this.quickPlay(itemId, false, true);
+        }
+        this.showItem(itemId);
+    },
+
     // Cache-first: if the book is fully downloaded locally, play from the
     // cached META blob (works offline, immune to server-side ino drift after
     // library rescans). Only hits the network when the book isn't cached.
-    async quickPlay(itemId, openPlayer = false) {
+    async quickPlay(itemId, openPlayer = false, eagerSession = openPlayer) {
         const t0 = Date.now();
         Player._logMark('tap', 0);
         try {
             let item = null;
             // Resume taps come from book tiles, so the /play session can be
             // opened right away instead of after the item fetch.
-            const sessionP = openPlayer ? ABS.startSession(itemId) : null;
+            const sessionP = eagerSession ? ABS.startSession(itemId) : null;
             // The offline-cache scan and the item fetch don't depend on each
             // other: run both, prefer the cached copy if the book is fully
             // downloaded. Waiting for the scan first put its full cost in
@@ -2941,6 +3068,13 @@ const App = {
         this.renderOfflineControls(item);
         this.markCachedChapters(item);
         document.getElementById('detail-play').addEventListener('click', () => {
+            // The book that's already playing must not be restarted from its
+            // last synced position (that is behind the ear). Resume it if
+            // paused, otherwise the tap just opens the player.
+            if (Player.item?.id === item.id) {
+                if (Player.audio.paused) Player.play(); else this.openFullscreen();
+                return;
+            }
             Player.startItem(item, currentTime > 0 ? currentTime : null);
             setTimeout(() => {
                 const active = document.querySelector('.tracklist-item.is-active');
@@ -3183,6 +3317,7 @@ const App = {
         document.getElementById('setting-skip').value = Player.skipDuration;
         document.getElementById('setting-theme').value = localStorage.getItem('pholia_theme') || 'dark';
         document.getElementById('setting-auto-cache').checked = localStorage.getItem('pholia_auto_cache') === 'true';
+        document.getElementById('setting-auto-rewind').checked = localStorage.getItem('pholia_auto_rewind') !== 'false';
         document.getElementById('setting-hide-collections').checked = localStorage.getItem('pholia_hide_collections') === 'true';
         document.getElementById('setting-partial-cache').checked = localStorage.getItem('pholia_sw_partial_intercept') !== 'false';
         const swExp = localStorage.getItem('pholia_sw_experimental') === 'true';

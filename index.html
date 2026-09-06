@@ -272,6 +272,11 @@
                             <option value="60">60 seconds</option>
                         </select>
                     </label>
+                    <label class="toggle-row">
+                        Rewind after a pause
+                        <input type="checkbox" id="setting-auto-rewind">
+                    </label>
+                    <div class="setting-hint">Backs up a little on resume, more the longer you were away: 3 s after a minute, 10 s after ten, up to 30 s after an hour.</div>
                     <label>
                         Theme
                         <select id="setting-theme">
@@ -322,6 +327,12 @@
                         </div>
                         <div id="account-status" class="account-status"></div>
                         <div id="account-actions" class="account-actions"></div>
+                    </div>
+                    <div class="downloads-section">
+                        <div class="downloads-header">
+                            <h3>Listening</h3>
+                            <button id="stats-open" class="text-btn">Stats &rsaquo;</button>
+                        </div>
                     </div>
                     <div id="shim-section" class="downloads-section hidden">
                         <div class="downloads-header">

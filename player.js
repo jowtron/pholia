@@ -25,7 +25,10 @@ const Player = {
         // A silent seek (see loadTime) pauses and resumes under the hood;
         // don't let that pair of events flip the play button.
         this.audio.addEventListener('play', () => { if (!this._silentSeek) this.setPlaying(true); });
-        this.audio.addEventListener('pause', () => { if (!this._silentSeek) this.setPlaying(false); });
+        // The element's own pause event, not Player.pause(): a phone call or
+        // another app taking the audio session pauses without going through
+        // our button, and the rewind on resume should still apply.
+        this.audio.addEventListener('pause', () => { if (!this._silentSeek) { this.setPlaying(false); this._pausedAt = Date.now(); } });
         // Sustained playback clears the recovery budget so transient stalls
         // over a long listening session don't exhaust 3 attempts forever.
         this.audio.addEventListener('playing', () => { this._audioRecoveryAttempts = 0; });
@@ -515,6 +518,7 @@ const Player = {
 
     async loadTime(globalTime, source = 'loadTime') {
         this._logSeekCall(source, globalTime);
+        this._pausedAt = 0;
         const prevTime = this.getGlobalTime();
         let url, offset = 0;
         if (this.session && this.session.audioTracks?.length) {
@@ -686,8 +690,29 @@ const Player = {
             this.loadTime(this.getGlobalTime(), 'revive-play');
             return;
         }
+        // Back up a little after a pause, scaled by how long it lasted, so
+        // the thread of the story is picked up rather than the next word.
+        const rewind = this._autoRewindSeconds();
+        if (rewind > 0 && this.item) {
+            this.loadTime(Math.max(0, this.getGlobalTime() - rewind), 'auto-rewind');
+            return;
+        }
         this._tryPlay('play-btn');
         this._updatePositionState();
+    },
+
+    // Seconds to rewind on resume for the time spent paused. Off via the
+    // Settings toggle; nothing for a pause under 5 s (a fumbled tap).
+    _pausedAt: 0,
+    _autoRewindSeconds() {
+        if (localStorage.getItem('pholia_auto_rewind') === 'false') return 0;
+        if (!this._pausedAt || !this.audio.paused) return 0;
+        const away = (Date.now() - this._pausedAt) / 1000;
+        if (away < 5) return 0;
+        if (away < 60) return 3;
+        if (away < 600) return 10;
+        if (away < 3600) return 20;
+        return 30;
     },
     pause() {
         this.audio.pause();

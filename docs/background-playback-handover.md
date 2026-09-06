@@ -1,17 +1,55 @@
-# Handover: two open problems
+# Handover: three problems, and where each one got to
 
-1. [Audio stops at a track boundary when the app is backgrounded](#open-bug-audio-stops-at-a-track-boundary-when-the-app-is-backgrounded)
-2. [Third-party Audiobookshelf clients don't all work against the shim](#open-bug-third-party-clients-dont-all-work-against-the-shim)
-3. [Wanted: real author images and biographies](#wanted-real-author-images-and-biographies)
+1. [Audio stops at a track boundary when the app is backgrounded](#fixed-audio-stops-at-a-track-boundary-when-the-app-is-backgrounded) — **fixed 2026-09-06**
+2. [Third-party Audiobookshelf clients don't all work against the shim](#open-bug-third-party-clients-dont-all-work-against-the-shim) — two of four fixed
+3. [Real author images and biographies](#done-real-author-images-and-biographies) — **done 2026-09-06**
 
 ---
 
-# Open bug: audio stops at a track boundary when the app is backgrounded
+# Fixed: audio stops at a track boundary when the app is backgrounded
 
-Status: **unsolved**. Two attempts were made and both have been reverted; the
-code is back to where it was before either. This is a record of the symptom,
-the evidence, and what has already been ruled out, so the next attempt starts
-from facts rather than from scratch.
+Status: **fixed** in Pholia commit `4417b7d` (2026-09-06), verified on the
+device twice — once with the next part uncached (iOS loaded it itself), once
+with every part downloaded (the worker served it). In both, the new part
+was `playing` within half a second of the old one ending, screen locked.
+
+## What it actually was
+
+The evidence below was read the wrong way round. Two things it did not show:
+
+1. **No boundary load had ever been pinned.** `pinMediaMode` gave the worker
+   500 ms to say how it would serve the file and assigned `src` anyway. The
+   worker took about a second to answer at every load (a restarted worker
+   re-enumerated the whole audio cache first), so every load began unpinned
+   and the first Range went out under the fallback rule. Log 2's "native"
+   boundary was therefore a worker/native **mix** — its first `bytes=0-1`
+   was answered from the cache — which is the re-request loop from
+   2026-09-03, not evidence that iOS refuses background loads.
+2. **"Native" was not native.** Right after a restart the worker answered
+   every audio request with `respondWith(fetch(request))`, which pumps the
+   bytes through the worker process even when it had decided not to serve
+   the file. Log 2 never bypassed the worker.
+
+So a cold worker being woken *at* the boundary, with the app already quiet,
+was what iOS would not carry through. The fix in `4417b7d`:
+
+- the page **waits** for the pin (8 s cap, logged as `pin-wait`) instead of
+  timing out at 500 ms, and the worker answers from its existing key map
+  (`ensureKeys`) rather than re-enumerating the cache;
+- `maybePrewarmNextTrack` **pins the next part 30 s before the boundary**,
+  while the app is certainly awake, so `onTrackEnded` assigns `src` at once
+  — this is the decisive change, and it is why the worker-served case works
+  too;
+- a worker with no key map yet **steps aside** for online audio (and pins
+  the file native until the page's next announcement) instead of proxying
+  it; offline keeps the old wait-for-cache path;
+- `sw.js` carries the deploy hash (`SW_BUILD`, stamped by `deploy.yml`),
+  shown under the page hash in the tab bar and recorded in every crash log's
+  `audio_state.sw`, and a heartbeat runs while the page is hidden.
+
+The two earlier attempts are still reverted and should stay that way.
+
+## Original record (kept for the evidence)
 
 ## Symptom
 
@@ -178,10 +216,20 @@ in Settings and use the send-log control after the failure.
 
 # Open bug: third-party clients don't all work against the shim
 
-Status: **not investigated**. Reported by the user, with no debugging done
-yet. The worry is that the shim has drifted from what real Audiobookshelf
-sends, and that Pholia — developed alongside the shim — has been papering over
-it by being tolerant.
+Status: **two of four fixed** (2026-09-06, shim). The apps, as reported:
+
+| App | Symptom | Cause | State |
+|---|---|---|---|
+| ShelfPlayer (iOS) | Authors tab: "Content unavailable" | Asks `/api/libraries/:id/authors?limit=&page=` and decodes `{results, total}`; the shim always sent `{authors}` | **Fixed**: paged shape when `limit`+`page` are numeric, like real ABS |
+| Absorb (iOS) | "0 books, 2 folders"; "30 missing or invalid items"; "couldn't load stats" | `/api/libraries/:id/stats` missing; `filter=issues` ignored so every book came back; `/api/me/listening-stats` and `/api/me/stats/year/:year` missing | **Fixed**: all four added/honoured |
+| Prologue (iOS) | "An unknown error occurred" at login | unknown — closed source | **Open**: needs a `wrangler tail` capture while logging in |
+| Audiobooth (iOS) | "Failed to decode server response: The data couldn't be read because it is missing." at login | unknown — closed source. **Not** `userDefaultLibraryId`: real ABS sends `null` there too (`.local/fixtures/login.json`), and the login body matches the fixture key for key | **Open**: same capture |
+
+ShelfPlayer's source was removed from GitHub when the app was sold (the
+repo is a single "Goodbye" commit); `jfrconley/ShelfPlayer` is a June 2026
+fork with the code. Absorb is `pounat/absorb` (Flutter, GPL-3.0).
+
+The original notes follow.
 
 ## What was reported
 
@@ -253,10 +301,16 @@ malformed response and goes offline.
 
 ---
 
-# Wanted: real author images and biographies
+# Done: real author images and biographies
 
-Status: **not started**, wanted by the user. The source below was verified on
-2026-09-06; nothing has been built.
+Status: **built 2026-09-06** in the shim (`src/lib/audnexus.ts`, migration
+`0014_author_meta`, routes in `src/routes/authors.ts` and the library
+authors listing). Lookups happen a few per authors-listing request in the
+background and synchronously when one author is opened; the image is
+fetched into R2 (`authors/<id>`) on the first request for
+`/api/authors/:id/image`. Verified locally: Dennis E. Taylor resolves to
+ASIN B010ETTBJC with a biography and a 19 KB photo. The notes below are
+what it was built from.
 
 ## Where things stand
 
