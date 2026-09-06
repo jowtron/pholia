@@ -69,6 +69,33 @@ The user reports that in this build playback stopped as soon as the app was
 backgrounded, rather than surviving to the boundary. Note the positions
 (4603–4613 s) sit just before the end of what used to be part 1 (4622 s).
 
+## Be sure what you are testing (read before trusting any result above)
+
+The user observed on 2026-09-06 that after the revert had deployed, the app
+**still** showed the failure, and only stopped after force-quitting it twice.
+A service worker update needs the app closed and reopened to take effect, and
+the page and the worker update independently — so for a while you are running
+new page code against an old worker, or the reverse.
+
+This matters for the evidence above:
+
+- Log 2 is trustworthy on this point: it contains a `pin` line with the
+  `hidden` field, which only the new worker emits.
+- **Log 3 is not.** The `src: "stream"` line proves the new page code was
+  running, but nothing in it identifies which worker answered, so "the single
+  stream made it worse" is not a safe conclusion. It may have been a stale
+  worker, or a mix.
+
+Ways to get a clean state before a test:
+
+- Load the app with `?purge` in the URL. `index.html` has an escape hatch that
+  deletes every cache, unregisters every service worker, and reloads clean.
+- Otherwise force-quit and reopen **twice**, and confirm the build hash shown
+  in Settings matches what was deployed.
+- The crash log records `app_version`, which is the **page** build only.
+  Adding the worker's own version to that payload would remove this ambiguity
+  entirely, and is probably worth doing before the next round of testing.
+
 ## What was tried
 
 **Attempt 1 — load the next track natively when hidden.** `pinMediaMode` was
