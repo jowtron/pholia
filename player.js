@@ -60,6 +60,7 @@ const Player = {
         // to 30 s of listening to the timer.
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'hidden' && this.item) this.syncProgress(false, { keepalive: true });
+            this._hiddenHeartbeat(document.visibilityState === 'hidden');
         });
         window.addEventListener('pagehide', () => { if (this.item) this.syncProgress(false, { keepalive: true }); });
     },
@@ -133,13 +134,41 @@ const Player = {
     _logSeekCall(source, target) {
         try {
             const from = Number((this.audio.currentTime || 0).toFixed(2));
-            const data = { ev: 'seek-call', source, from, to: Number(target.toFixed(2)) };
+            const data = { ev: 'seek-call', source, from, to: Number(target.toFixed(2)), vis: document.visibilityState };
             if (typeof App !== 'undefined' && App?._swLog) {
                 const ts = new Date().toISOString().substring(11, 23);
                 App._swLog.push(`${ts} audio ${JSON.stringify(data)}`);
                 if (App._swLog.length > (App._swLogMax || 200)) App._swLog.shift();
                 App._renderSwLog?.();
             }
+        } catch {}
+    },
+
+    // Diagnostic heartbeat while the page is hidden. The background-boundary
+    // logs (2026-09-06) go quiet after `stalled` and can't say whether iOS
+    // froze the whole page process or only the media load: a heartbeat that
+    // keeps ticking with readyState stuck blames the load, a gap in the
+    // timestamps means the process was suspended. Every 5 s, and every
+    // second for the minute after a track boundary.
+    _hbTimer: null,
+    _lastBoundaryAt: 0,
+    _hiddenHeartbeat(hidden) {
+        if (this._hbTimer) { clearInterval(this._hbTimer); this._hbTimer = null; }
+        if (this.item) this._logHb(hidden ? 'hidden' : 'visible');
+        if (!hidden || !this.item) return;
+        let n = 0;
+        this._hbTimer = setInterval(() => {
+            n++;
+            if (Date.now() - this._lastBoundaryAt < 60000 || n % 5 === 0) this._logHb('tick');
+        }, 1000);
+    },
+    _logHb(why) {
+        try {
+            const a = this.audio;
+            App?._pushLog?.('audio', {
+                ev: 'hb', why, vis: document.visibilityState, net: a.networkState, rdy: a.readyState,
+                t: Number((a.currentTime || 0).toFixed(2)), paused: a.paused, buf: this._bufferedSummary(),
+            });
         } catch {}
     },
 
@@ -828,7 +857,12 @@ const Player = {
             url = ABS.trackUrl(this.item.id, next.ino);
         }
         this._prewarmedFromTrackIndex = this.currentTrackIndex;
-        fetch(url, { credentials: 'omit', headers: { Range: 'bytes=0-262143' } }).catch(() => {});
+        // Pin the worker's mode for the next file now, while the app is
+        // certainly awake, so onTrackEnded can assign src the instant the
+        // current one ends instead of waiting a worker round trip first.
+        this._prePinned = { url, at: Date.now() };
+        Promise.resolve(App?.pinMediaMode?.(url)).then(() =>
+            fetch(url, { credentials: 'omit', headers: { Range: 'bytes=0-262143' } }).catch(() => {}));
     },
 
     async onTrackEnded() {
@@ -843,7 +877,12 @@ const Player = {
             } else {
                 next = ABS.trackUrl(this.item.id, this.tracks[this.currentTrackIndex].ino);
             }
-            await App?.pinMediaMode?.(next);
+            this._lastBoundaryAt = Date.now();
+            // Normally pinned by maybePrewarmNextTrack 30 s ago; only pin
+            // here if that didn't happen (a track shorter than 30 s, or a
+            // seek straight to its end).
+            const pre = this._prePinned;
+            if (!pre || pre.url !== next || Date.now() - pre.at > 300000) await App?.pinMediaMode?.(next);
             this.audio.src = next;
             this._logSeekCall('next-track', 0);
             this.audio.currentTime = 0;

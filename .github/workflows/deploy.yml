@@ -28,6 +28,9 @@ jobs:
           # Build-version div + cache-bust ?v= on every script/link tag so
           # each deploy presents new URLs and bypasses 24h browser cache.
           sed -i "s/>dev</>$HASH</; s/?v=dev/?v=$HASH/g" index.html
+          # The worker carries the same hash so the app can show (and log)
+          # which worker is actually answering — see SW_BUILD in sw.js.
+          sed -i "s/const SW_BUILD = 'dev'/const SW_BUILD = '$HASH'/" sw.js
 
       - name: Deploy to Cloudflare Pages (retry with backoff)
         env:

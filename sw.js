@@ -1,3 +1,8 @@
+// Stamped by deploy.yml, like #build-version in index.html. The page and the
+// worker update independently, so a test result means nothing until both
+// halves are known — this is how Settings and the crash log learn which
+// worker answered (a stale worker faked a result on 2026-09-06).
+const SW_BUILD = 'dev';
 const CACHE_NAME = 'pholia-v5';
 const OFFLINE_AUDIO_CACHE = 'pholia-offline-audio-v2';
 const OFFLINE_META_CACHE = 'pholia-offline-meta-v1';
@@ -97,6 +102,9 @@ self.addEventListener('activate', e => {
 
 self.addEventListener('message', e => {
     if (e.data?.type === 'SKIP_WAITING') self.skipWaiting();
+    if (e.data?.type === 'SW_VERSION') {
+        try { e.ports?.[0]?.postMessage({ build: SW_BUILD }); } catch {}
+    }
     if (e.data?.type === 'CACHE_CHANGED') loadCachedKeys();
     if (e.data?.type === 'SW_CONFIG') {
         experimentalPartialCache = !!e.data.experimentalPartialCache;
@@ -115,15 +123,21 @@ self.addEventListener('message', e => {
             let mode = 'native';
             try {
                 await loadConfig();
-                await loadCachedKeys(); // fresh: chunks written since the last CACHE_CHANGED
+                // ensureKeys, not loadCachedKeys: re-enumerating the audio
+                // cache on every announcement is what made the reply miss
+                // the page's old 500 ms window at every load. Chunks written
+                // since the last CACHE_CHANGED can only make a file look
+                // less cached than it is, and native is always safe.
+                await ensureKeys();
                 const baseKey = offlineKey(e.data.url);
+                forcedNative.delete(baseKey);
                 mode = modeFor(baseKey);
                 pinnedModes.set(baseKey, mode);
                 while (pinnedModes.size > 20) pinnedModes.delete(pinnedModes.keys().next().value);
                 saveConfig();
-                debugLog('pin', { url: baseKey, mode, chunks: cachedChunks?.get(baseKey)?.size || 0, numChunks: cachedMetas?.get(baseKey)?.numChunks || null });
+                debugLog('pin', { url: baseKey, mode, build: SW_BUILD, chunks: cachedChunks?.get(baseKey)?.size || 0, numChunks: cachedMetas?.get(baseKey)?.numChunks || null });
             } catch {}
-            try { port?.postMessage({ mode }); } catch {}
+            try { port?.postMessage({ mode, build: SW_BUILD }); } catch {}
         })();
     }
 });
@@ -142,6 +156,10 @@ let swDebugLog = false;
 // in Cache Storage and read back on the first fetch after a restart.
 let partialDisabledUntil = 0; // set by a failed bridge fetch, see serveChunked
 const pinnedModes = new Map(); // baseKey → 'sw' | 'native', see modeFor
+// Files whose first request reached a freshly restarted worker (no key map
+// yet) and was let through natively; they stay native until the page's next
+// MEDIA_LOAD for them, so the load can't turn into a worker/native mix.
+const forcedNative = new Set();
 let configLoaded = null;
 function loadConfig() {
     if (!configLoaded) {
@@ -313,9 +331,27 @@ self.addEventListener('fetch', e => {
         // network (which is what "cached books still take ages" was).
         const ready = Promise.all([ensureKeys(), loadConfig()]);
         if (!AUDIO_PATH_RE.test(url.pathname)) return;
-        // fetch(e.request) keeps the request no-cors → the same opaque
-        // response the browser would have produced natively (see modeFor).
-        e.respondWith(ready.then(() => decideAudio(e.request, url) || fetch(e.request)));
+        const baseKey = offlineKey(url.toString());
+        if (self.navigator?.onLine === false) {
+            // Offline: only the cache can answer, so wait for the key map.
+            // fetch(e.request) keeps the request no-cors → the same opaque
+            // response the browser would have produced natively.
+            e.respondWith(ready.then(() => decideAudio(e.request, url) || fetch(e.request)));
+            return;
+        }
+        // Online: let the browser load this file natively, and keep it native
+        // until the page announces its next load. This used to be the
+        // respondWith above for every request, which answers from the worker
+        // even in "native" mode — every byte pumped through the worker
+        // process. At a background track boundary (2026-09-06 logs) such a
+        // load never got past readyState 1 until the app came forward. A
+        // cached file pays one network load in the rare case the worker was
+        // restarted between the page's pin and the first request; normally
+        // the pin itself warms the worker and this branch isn't reached.
+        forcedNative.add(baseKey);
+        while (forcedNative.size > 20) forcedNative.delete(forcedNative.values().next().value);
+        const range = e.request.headers.get('range');
+        ready.then(() => debugLog('audio-fresh', { url: baseKey, range, mode: 'native', build: SW_BUILD }));
         return;
     }
     const handled = decideAudio(e.request, url);
@@ -350,7 +386,7 @@ function decideAudio(request, url) {
     if (!AUDIO_PATH_RE.test(url.pathname)) return null;
     const baseKey = offlineKey(url.toString());
     const range = request.headers.get('range');
-    let mode = pinnedModes.get(baseKey);
+    let mode = forcedNative.has(baseKey) ? 'native' : pinnedModes.get(baseKey);
     if (!mode) {
         // No pin (older page, or a load the page didn't announce): only a
         // fully cached file is safe to serve — partial serving without a pin

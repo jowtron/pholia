@@ -125,6 +125,8 @@ const App = {
                 playing: Player.isPlaying,
                 item_id: Player.item?.id || null,
                 buf,
+                sw: this._swBuild || null,
+                vis: document.visibilityState,
                 storage: this._lastStorageEstimate || null,
             };
         } catch { return null; }
@@ -177,19 +179,70 @@ const App = {
     },
 
     _swLog: [],
-    _swLogMax: 200,
+    // 400, not 200: the hidden-page heartbeat (Player._hiddenHeartbeat) adds
+    // a line every few seconds and must not push a boundary's events out.
+    _swLogMax: 400,
+
+    // One line into the diagnostic ring buffer (the same one the SW_DEBUG
+    // bridge and the audio-element events write to).
+    _pushLog(tag, data) {
+        try {
+            if (!this._swLog) return;
+            const ts = new Date().toISOString().substring(11, 23);
+            this._swLog.push(`${ts} ${tag} ${JSON.stringify(data)}`);
+            if (this._swLog.length > this._swLogMax) this._swLog.shift();
+            this._renderSwLog();
+        } catch {}
+    },
+
+    // The worker's own build hash (SW_BUILD in sw.js). Shown under the page's
+    // hash in the nav and recorded in every crash log's audio_state, because
+    // the two update independently and a test against a stale worker is
+    // worthless (2026-09-06).
+    _swBuild: null,
+    _setSwBuild(b) {
+        if (!b || b === this._swBuild) return;
+        this._swBuild = b;
+        const el = document.getElementById('sw-build');
+        if (el) el.textContent = 'sw ' + b;
+    },
+    querySwBuild() {
+        try {
+            const ctrl = navigator.serviceWorker?.controller;
+            if (!ctrl) return;
+            const ch = new MessageChannel();
+            ch.port1.onmessage = (e) => this._setSwBuild(e.data?.build);
+            ctrl.postMessage({ type: 'SW_VERSION' }, [ch.port2]);
+        } catch {}
+    },
 
     // Tell the SW a media load for `url` is about to begin so it pins how it
     // will answer every request for that file (all from the worker, or none):
     // iOS cancels a media load whose CORS status changes between responses.
     // Resolves with the mode, or null if there's no controller / no reply.
     pinMediaMode(url) {
+        const started = performance.now();
+        const log = (mode, timedOut) => this._pushLog('page', {
+            ev: 'pin-wait', url: url.split('/').pop()?.split('?')[0] || null, mode, timedOut,
+            ms: Math.round(performance.now() - started), vis: document.visibilityState,
+        });
         return new Promise(resolve => {
             const ctrl = navigator.serviceWorker?.controller;
             if (!ctrl) return resolve(null);
             const ch = new MessageChannel();
-            const t = setTimeout(() => resolve(null), 500);
-            ch.port1.onmessage = (e) => { clearTimeout(t); resolve(e.data?.mode || null); };
+            // This was 500 ms, and the worker missed it at EVERY load in the
+            // 2026-09-06 logs (a restarted worker takes about a second to
+            // answer), so src was assigned unpinned and the first Range went
+            // out under the fallback rule — which made attempt 1's "native"
+            // boundary a worker/native mix. Wait for the pin; the cap only
+            // guards against a worker that never replies at all.
+            const t = setTimeout(() => { log(null, true); resolve(null); }, 8000);
+            ch.port1.onmessage = (e) => {
+                clearTimeout(t);
+                this._setSwBuild(e.data?.build);
+                log(e.data?.mode || null, false);
+                resolve(e.data?.mode || null);
+            };
             try { ctrl.postMessage({ type: 'MEDIA_LOAD', url }, [ch.port2]); } catch { clearTimeout(t); resolve(null); }
         });
     },
@@ -198,10 +251,11 @@ const App = {
         if (!('serviceWorker' in navigator)) return;
         // Send config now and on every controllerchange (new SW = needs the flag again).
         this.sendSwConfig();
-        navigator.serviceWorker.addEventListener('controllerchange', () => this.sendSwConfig());
+        this.querySwBuild();
+        navigator.serviceWorker.addEventListener('controllerchange', () => { this.sendSwConfig(); this.querySwBuild(); });
         // The SW persists its flags, but re-sending on every foreground is
         // cheap insurance for a worker that restarted while we were hidden.
-        document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') this.sendSwConfig(); });
+        document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { this.sendSwConfig(); this.querySwBuild(); } });
         navigator.serviceWorker.addEventListener('message', (e) => {
             if (e.data?.type !== 'SW_DEBUG') return;
             console.log('[sw]', e.data.tag, e.data.data);
