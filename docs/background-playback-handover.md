@@ -1,3 +1,10 @@
+# Handover: two open problems
+
+1. [Audio stops at a track boundary when the app is backgrounded](#open-bug-audio-stops-at-a-track-boundary-when-the-app-is-backgrounded)
+2. [Third-party Audiobookshelf clients don't all work against the shim](#open-bug-third-party-clients-dont-all-work-against-the-shim)
+
+---
+
 # Open bug: audio stops at a track boundary when the app is backgrounded
 
 Status: **unsolved**. Two attempts were made and both have been reverted; the
@@ -137,3 +144,80 @@ Play a multi-part mp3 book (for example Tidelands, 13 parts, item
 `it-02ce70d4-959`), skip to within a minute of the end of a part, lock the
 phone, and wait for the boundary. To capture a log, turn on the debug toggle
 in Settings and use the send-log control after the failure.
+
+
+---
+
+# Open bug: third-party clients don't all work against the shim
+
+Status: **not investigated**. Reported by the user, with no debugging done
+yet. The worry is that the shim has drifted from what real Audiobookshelf
+sends, and that Pholia — developed alongside the shim — has been papering over
+it by being tolerant.
+
+## What was reported
+
+- Some clients will not log in at all.
+- One of them says: **"Failed to decode server response: The data couldn't be
+  read because it is missing."** That wording is Swift's `DecodingError`, and
+  "missing" specifically means a key the client's struct declares as
+  non-optional was absent or `null`.
+- ShelfPlayer mostly works, but its **Authors tab** does not. Authors work in
+  Pholia, so the data exists; something about the shape or the endpoint
+  differs from what ShelfPlayer expects.
+
+**First thing to ask the user**: exactly which apps, on which platform, and
+what each one does — fails at the server URL, fails after entering
+credentials, logs in but shows an empty library, and so on. The three symptoms
+above may be three different clients or one client at three stages.
+
+## What the shim currently returns
+
+Checked 2026-09-06 against production. These are facts, not diagnoses.
+
+`POST /login` and `POST /api/authorize` both return:
+
+```
+{ user: {...}, userDefaultLibraryId: null, serverSettings: {...},
+  ereaderDevices: [], Source: "cloudflare-shim" }
+```
+
+**`userDefaultLibraryId` is hard-coded `null`** (`src/index.ts`, two places).
+Real Audiobookshelf sends the user's default library id, a string. A client
+that declares it non-optional would fail to decode the login response, and the
+error it printed would look exactly like the one quoted above. This is a
+cheap, specific thing to check first.
+
+`GET /api/libraries/:id/authors` returns 16 authors shaped like:
+
+```
+{ id, asin: null, name, description: null, imagePath: null, libraryId,
+  addedAt: 0, updatedAt: 0, numBooks, lastFirst }
+```
+
+`GET /api/authors/:id` returns the same fields minus `lastFirst`, and
+**omits `libraryItems` unless `?include=items` is passed**
+(`src/routes/authors.ts`). Whether ShelfPlayer asks for that include, or
+expects the items unconditionally, is unknown.
+
+Note `addedAt` and `updatedAt` are `0`, and `imagePath` is `null` for every
+author. Author images are served as a placeholder PNG from
+`/api/authors/:id/image`.
+
+## How this kind of bug has been found before
+
+The shim's `CLAUDE.md` has a section on strict-client compatibility that is
+worth reading first; the lessons in it were all learned this way:
+
+- Run `npx wrangler tail --format pretty` against the shim and watch what the
+  client actually requests, in order, and where it stops.
+- Read the client's own decoding structs. For a Swift client on GitHub:
+  `gh api repos/<owner>/<repo>/contents/<path> --jq '.content' | base64 -d`.
+- Diff those declarations against what `src/lib/abs-shapes.ts` emits.
+- Captured real-ABS fixtures live under `.local/fixtures/` in the shim repo.
+
+Known landmines already fixed, which show the shape of the problem: ShelfPlayer
+needs `publishedYear` as a **string** even though it is an integer in the
+database; `media.tracks` is required for playback; and `/api/*` must return a
+JSON 404 rather than the SPA's HTML, or a strict client treats the HTML as a
+malformed response and goes offline.
