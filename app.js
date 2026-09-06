@@ -183,6 +183,8 @@ const App = {
     // will answer every request for that file (all from the worker, or none):
     // iOS cancels a media load whose CORS status changes between responses.
     // Resolves with the mode, or null if there's no controller / no reply.
+    // `hidden` is the important one: a media load that STARTS while the app
+    // is backgrounded must not be answered by the worker (see sw.js modeFor).
     pinMediaMode(url) {
         return new Promise(resolve => {
             const ctrl = navigator.serviceWorker?.controller;
@@ -190,7 +192,13 @@ const App = {
             const ch = new MessageChannel();
             const t = setTimeout(() => resolve(null), 500);
             ch.port1.onmessage = (e) => { clearTimeout(t); resolve(e.data?.mode || null); };
-            try { ctrl.postMessage({ type: 'MEDIA_LOAD', url }, [ch.port2]); } catch { clearTimeout(t); resolve(null); }
+            try {
+                ctrl.postMessage({
+                    type: 'MEDIA_LOAD', url,
+                    hidden: document.visibilityState === 'hidden',
+                    online: navigator.onLine !== false,
+                }, [ch.port2]);
+            } catch { clearTimeout(t); resolve(null); }
         });
     },
 

@@ -117,11 +117,11 @@ self.addEventListener('message', e => {
                 await loadConfig();
                 await loadCachedKeys(); // fresh: chunks written since the last CACHE_CHANGED
                 const baseKey = offlineKey(e.data.url);
-                mode = modeFor(baseKey);
+                mode = modeFor(baseKey, { hidden: e.data.hidden, online: e.data.online });
                 pinnedModes.set(baseKey, mode);
                 while (pinnedModes.size > 20) pinnedModes.delete(pinnedModes.keys().next().value);
                 saveConfig();
-                debugLog('pin', { url: baseKey, mode, chunks: cachedChunks?.get(baseKey)?.size || 0, numChunks: cachedMetas?.get(baseKey)?.numChunks || null });
+                debugLog('pin', { url: baseKey, mode, hidden: !!e.data.hidden, online: e.data.online !== false, chunks: cachedChunks?.get(baseKey)?.size || 0, numChunks: cachedMetas?.get(baseKey)?.numChunks || null });
             } catch {}
             try { port?.postMessage({ mode }); } catch {}
         })();
@@ -338,7 +338,20 @@ function corsFetch(request, rangeOverride) {
 // the rest bridged from the shim) or all-native — never a mix. Mixing is
 // what the 2026-09-03 logs showed: header from the cache, then the file tail
 // natively, rejected every 170 ms until the loader gave up.
-function modeFor(baseKey) {
+//
+// **A load that starts while the app is backgrounded goes native.** A body we
+// synthesize is a JS ReadableStream, and WebKit stops pulling from it when
+// the page isn't visible — so at a track boundary in the background the
+// element gets its metadata, reports `playing`, lets the lock screen tick,
+// and produces no sound until the app is opened, at which point it starts
+// the new track from zero. The 2026-09-06 log is unambiguous: the worker
+// enqueued all 33.8 MB in 64 ms at 23:57:45, the element sat at readyState 1
+// for 25 seconds, and `canplay` landed at 23:58:11 — the moment the app came
+// to the foreground. Native loading has no such dependency, so a cached book
+// costs bandwidth in the background rather than silence. Offline is the
+// exception: with no network the worker is the only source, so keep it.
+function modeFor(baseKey, ctx) {
+    if (ctx && ctx.hidden && ctx.online) return 'native';
     if (cachedKeys.has(completeKeyOf(baseKey)) || cachedKeys.has(baseKey)) return 'sw';
     const chunks = cachedChunks?.get(baseKey)?.size || 0;
     if (experimentalPartialCache && Date.now() >= partialDisabledUntil && cachedMetas?.has(baseKey) && chunks > 0) return 'sw';
