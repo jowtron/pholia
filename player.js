@@ -275,6 +275,7 @@ const Player = {
             this.session = null;
         }
         this._logMark('session', Date.now() - tSession);
+        await this._useBookStream(item);
 
         if (startTime === null) {
             let serverTime = null, serverAt = 0;
@@ -482,6 +483,39 @@ const Player = {
             }
             elapsed = trackEnd;
         }
+    },
+
+    // Play a multi-part book as ONE resource (the shim's /api/items/:id/stream)
+    // instead of a file per part.
+    //
+    // iOS refuses to start a NEW media load while the app is backgrounded: at
+    // a track boundary the element takes the metadata, reports itself playing
+    // and lets the lock screen tick, but makes no sound until the app is
+    // opened (crash logs, 2026-09-06 — it happens whether the bytes come from
+    // the worker or straight from the network, so it is the load that's
+    // blocked, not the source). A book in 15 parts therefore stopped about
+    // once an hour. One resource has no boundaries, so nothing is ever
+    // loaded again after playback starts.
+    //
+    // Only mp3, because concatenation relies on the decoder walking frames
+    // straight through. **Not for a downloaded book**: its cache is keyed per
+    // part, and switching URLs would strand it — those keep the old path and
+    // its boundaries, which is the right trade for offline.
+    async _useBookStream(item) {
+        const files = item.media?.audioFiles || [];
+        if (!App?.isShim || files.length < 2) return false;
+        const isMp3 = (f) => /mp3|mpeg/i.test(String(f.metadata?.ext || f.mimeType || f.codec || ''));
+        if (!files.every(isMp3)) return false;
+        const total = files.reduce((s, f) => s + (f.duration || 0), 0);
+        if (!total) return false;
+        try { if (await Offline.isDownloaded(item)) return false; } catch { /* cache unavailable — stream */ }
+        const url = `${ABS.serverUrl}/api/items/${item.id}/stream?token=${ABS.token}`;
+        this.tracks = [{ ino: 'stream', duration: total, startOffset: 0, contentUrl: url }];
+        if (this.session?.audioTracks) {
+            this.session.audioTracks = [{ contentUrl: url, startOffset: 0, duration: total }];
+        }
+        this.currentTrackIndex = 0;
+        return true;
     },
 
     async loadTime(globalTime, source = 'loadTime') {
