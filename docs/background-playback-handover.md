@@ -2,6 +2,7 @@
 
 1. [Audio stops at a track boundary when the app is backgrounded](#open-bug-audio-stops-at-a-track-boundary-when-the-app-is-backgrounded)
 2. [Third-party Audiobookshelf clients don't all work against the shim](#open-bug-third-party-clients-dont-all-work-against-the-shim)
+3. [Wanted: real author images and biographies](#wanted-real-author-images-and-biographies)
 
 ---
 
@@ -248,3 +249,63 @@ needs `publishedYear` as a **string** even though it is an integer in the
 database; `media.tracks` is required for playback; and `/api/*` must return a
 JSON 404 rather than the SPA's HTML, or a strict client treats the HTML as a
 malformed response and goes offline.
+
+
+---
+
+# Wanted: real author images and biographies
+
+Status: **not started**, wanted by the user. The source below was verified on
+2026-09-06; nothing has been built.
+
+## Where things stand
+
+Every author the shim reports has `imagePath: null` and `description: null`
+(`src/routes/authors.ts`), because authors are derived from the author names
+on book metadata rather than being records in their own right.
+`GET /api/authors/:id/image` answers with a placeholder PNG so clients get an
+image-shaped response instead of a 404.
+
+This may not be cosmetic. A null image path is one of the differences between
+the shim and real Audiobookshelf, and ShelfPlayer's Authors tab is one of the
+things reported as broken — worth checking whether the two are connected
+before treating this as a nice-to-have.
+
+## A source that works
+
+Real Audiobookshelf gets author images and biographies from **Audnexus**, a
+free API with no key. Two steps, both confirmed working today:
+
+```
+GET https://api.audnex.us/authors?name=Philippa%20Gregory&region=us
+    → [{ asin: "B000APO5PQ", name: "Philippa Gregory" }, ...]
+
+GET https://api.audnex.us/authors/B000APO5PQ?region=us
+    → { asin, name, description, image, region, similar: [...] }
+```
+
+The `image` URL is a real Amazon-hosted JPEG — the Philippa Gregory one is
+60,704 bytes and returns `200 image/jpeg`. The record also carries a full
+biography, which would fill the `description` field at the same time.
+
+**Matching is the part that needs care.** The name search is loose: searching
+"Philippa Gregory" also returns book titles that merely contain "Gregory", and
+"Dennis E. Taylor" returns 25 results including both "Dennis E Taylor" and
+"Dennis E. Taylor". An exact, case-insensitive, punctuation-insensitive name
+comparison against the requested author is the obvious guard.
+
+## Notes for whoever builds it
+
+- Unlike book covers, **no resizing is needed** — these are already small, so
+  this does not need the off-Worker Pillow runner that the AudioBookBay cover
+  pipeline uses. A Worker can fetch and store the bytes directly.
+- The shim already has the storage pattern: images live in the R2 bucket bound
+  as `COVERS` (`covers/<itemId>` for books, `abbcovers/<id>.webp` for
+  catalogue art), and `/api/items/:id/cover` shows the three-tier
+  edge-cache → R2 → fetch-and-store shape to copy.
+- Author ids are derived (`derivedId(libraryId, 'author', name)`), so they are
+  stable for a given name in a given library and can safely key an R2 object.
+- `asin` and `description` are already in the author response shape as nulls,
+  so filling them needs no shape change.
+- The existing placeholder should stay as the fallback for an author Audnexus
+  has never heard of.
