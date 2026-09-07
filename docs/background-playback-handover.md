@@ -214,21 +214,43 @@ in Settings and use the send-log control after the failure.
 
 ---
 
-## Update 2026-09-07: a pause under 5 s was the one case with no seek
+## Update 2026-09-07: the seek only helps streamed files, and the fix was REVERTED
 
-"Works one day, not the next" turned out to be the pause length, not iOS.
-`_autoRewindSeconds()` returns 0 under 5 s (a fumbled tap), and the resume
-then went out as a bare `play()`. Joseph's log (`manual`, 02:14 UTC, build
-8722867): a fully cached file, pause and play on the lock screen within a
-second, `playing` fires, then `hb` ticks with `t` frozen at 3872.1 for 15 s
-with `paused:false`, `rdy:4` and the whole file buffered. Silence with the
-element claiming playback, and no network involved at all. The 10 s pauses
-that were verified the day before earned a 3 s rewind and worked.
+The chase, and where it landed. "Works one day, not the next" was the pause
+length, not iOS: `_autoRewindSeconds()` returns 0 under 5 s (a fumbled tap),
+so a short lock-screen pause resumed with a bare `play()`. Joseph's log
+(`manual`, build 8722867): a fully cached file, `playing` fires, then the
+clock frozen at 3872.1 for 15 s, `paused:false`, `rdy:4`, whole file
+buffered — silence with no network at all.
 
-Fix: `_resumeSeekSeconds()` makes any resume while the page is hidden seek
-at least 1 s back, independent of the auto-rewind toggle. Not 0: WebKit
-short-circuits a seek to the current position without reaching the media
-engine. The same rule went into StoryTeller's `autoRewindSeconds()`.
+Three player.js builds tried to fix it and all made things worse:
+- `0e11061` `_resumeSeekSeconds()`: seek ≥1 s on ANY hidden resume. This
+  sits on the shared resume path, so it added a seek+reload to the streamed
+  books that already worked — they became slow to resume and then stopped
+  resuming.
+- `494f161` a reload watchdog: on a locked phone a reload wipes the buffer
+  and a fresh load can't buffer audio while hidden (stalls at readyState 1),
+  so it only recovered on foreground.
+- `5f8573b` reload-only-when-visible: still layered on the shared path.
+
+**All three reverted in `8527403`: player.js restored to `8722867`.** Joseph:
+"you have fucked it, streamed books also arent resuming now." The kept parts
+are the crash-log diagnostics (`3649e5e` trim-to-fit + failure-reporting send
+button, `63ca373` throttle fix) — they don't touch playback.
+
+What is actually true about lock-screen resume, from the logs:
+- **Streamed / partially cached (SW pin `native`, element still awake):** the
+  auto-rewind seek triggers a live fetch and it resumes. This is the working
+  case and it is `8722867`'s behaviour. Don't touch it.
+- **Fully downloaded (SW pin `sw`, whole file buffered):** the seek rebuilds
+  nothing, iOS keeps the decoder asleep while hidden, and it resumes only on
+  foreground. No page-side trick fixed this (seek didn't, reload made it
+  worse). The only known levers are the silent-audio keepalive (Joseph
+  declined) or accepting foreground-only resume for downloaded books.
+- Lesson: the resume path is shared by every book. Scope any future change to
+  the failing case (e.g. only when the file is fully cached AND hidden) and
+  A/B against `8722867`, and revert at the first sign a streamed book
+  regresses. Same failing book throughout: `it-02ce70d4-959`.
 
 # Open bug: third-party clients don't all work against the shim
 
