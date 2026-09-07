@@ -580,7 +580,8 @@ const Player = {
         // state — an errored element ignores play()/currentTime entirely and
         // only re-running the load algorithm clears it (iOS: error 4 after a
         // load timeout left the player dead until the PWA was killed).
-        const srcChanged = this.audio.src !== url || !!this.audio.error;
+        const srcChanged = this.audio.src !== url || !!this.audio.error || this._forceReload;
+        this._forceReload = false;
         if (srcChanged) {
             // Let the SW pin how it will answer this file before the media
             // load begins (all from the worker or none — see sw.js modeFor).
@@ -697,11 +698,55 @@ const Player = {
         const rewind = this._autoRewindSeconds();
         const seek = Math.max(rewind, this._resumeSeekSeconds());
         if (seek > 0 && this.item) {
-            this.loadTime(Math.max(0, this.getGlobalTime() - seek), rewind > 0 ? 'auto-rewind' : 'resume-seek');
+            const source = rewind > 0 ? 'auto-rewind' : 'resume-seek';
+            this.loadTime(Math.max(0, this.getGlobalTime() - seek), source);
+            this._armResumeWatchdog(source);
             return;
         }
         this._tryPlay('play-btn');
+        this._armResumeWatchdog('play-btn');
         this._updatePositionState();
+    },
+
+    // The seek is not always enough. 2026-09-07, build 3649e5e, a fully
+    // cached file: resume-seek from the lock screen, `seeking`/`seeked` at
+    // 3882.16, `playing` fired, and the clock then sat at 3882.16 for 20 s
+    // with readyState 4 and the whole file buffered. The day before, the
+    // same seek on a partly cached file worked — because it forced a fresh
+    // network load. A seek inside buffered data rebuilds nothing, so when
+    // the clock has not moved 1.5 s after a resume, re-run the load
+    // algorithm at the same position (StoryTeller's recoverPlayback, which
+    // is what fixed its lock-screen track transitions). Only when the
+    // element says it HAS data (readyState >= 3): a cold pCloud book takes
+    // 8-12 s to loadedmetadata and must not be reloaded in a loop.
+    _resumeWatchdog: null,
+    _resumeWatchdogRetries: 0,
+    _forceReload: false,
+    _armResumeWatchdog(source) {
+        if (this._resumeWatchdog) { clearTimeout(this._resumeWatchdog); this._resumeWatchdog = null; }
+        const a = this.audio;
+        const startT = a.currentTime;
+        const startedAt = Date.now();
+        const check = () => {
+            this._resumeWatchdog = null;
+            if (!this.item || a.paused || a.ended) { this._resumeWatchdogRetries = 0; return; }
+            if (Math.abs(a.currentTime - startT) >= 0.3) { this._resumeWatchdogRetries = 0; return; }
+            if (a.readyState < 3) {
+                // Still loading. Look again, for up to 20 s.
+                if (Date.now() - startedAt < 20000) this._resumeWatchdog = setTimeout(check, 1500);
+                return;
+            }
+            App?._pushLog?.('audio', {
+                ev: 'resume-stall', source, t: Number(a.currentTime.toFixed(2)), rdy: a.readyState,
+                net: a.networkState, vis: document.visibilityState, retry: this._resumeWatchdogRetries,
+            });
+            if (this._resumeWatchdogRetries >= 2) { this._resumeWatchdogRetries = 0; return; }
+            this._resumeWatchdogRetries++;
+            this._forceReload = true;
+            this.loadTime(this.getGlobalTime(), 'resume-reload');
+            this._armResumeWatchdog('resume-reload');
+        };
+        this._resumeWatchdog = setTimeout(check, 1500);
     },
 
     // A resume while the page is hidden (lock screen, Control Centre) must
