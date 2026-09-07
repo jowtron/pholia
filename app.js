@@ -88,18 +88,18 @@ const App = {
 
     // Throttled to one ship every 30s per reason to keep a flapping error
     // from spamming the table. prior-session-tail bypasses the throttle.
-    shipCrashLog(reason) {
+    shipCrashLog(reason, opts) {
         const now = performance.now();
-        if (reason !== 'prior-session-tail' && now - this._crashLogShipThrottle < 30000) return;
+        if (reason !== 'prior-session-tail' && now - this._crashLogShipThrottle < 30000) return null;
         this._crashLogShipThrottle = now;
         try {
-            this._postCrashLog({
+            return this._postCrashLog({
                 session_id: this._sessionId,
                 reason,
                 events: this._swLog ? this._swLog.slice() : [],
                 audio_state: this._currentAudioState(),
-            });
-        } catch {}
+            }, opts);
+        } catch { return null; }
     },
 
     _currentAudioState() {
@@ -143,25 +143,44 @@ const App = {
         } catch {}
     },
 
-    _postCrashLog(payload) {
+    // The server refuses bodies over its cap (functions/api/log: 256 KB, was
+    // 64 KB) and sendBeacon itself has a 64 KB budget in WebKit, so trim the
+    // OLDEST lines until the body fits: with the SW debug log on, a range
+    // request is three ~250-byte lines and a 400-line buffer passes 64 KB
+    // inside one long session. That is how a "Sent" log on 2026-09-07 never
+    // arrived — the ring had grown since the morning's ship, and nothing
+    // reported the 413. The newest lines are the ones that matter.
+    _crashLogMaxBytes: 60 * 1024,
+    _postCrashLog(payload, { viaFetch = false } = {}) {
         try {
-            const body = JSON.stringify({
+            const events = Array.isArray(payload.events) ? payload.events.slice() : [];
+            const build = () => JSON.stringify({
                 ...payload,
+                events,
                 app_version: document.getElementById('build-version')?.textContent || null,
             });
-            // Prefer sendBeacon — survives pagehide / app kill.
-            if (navigator.sendBeacon) {
-                const blob = new Blob([body], { type: 'application/json' });
-                if (navigator.sendBeacon('/api/log', blob)) return;
+            let body = build();
+            while (body.length > this._crashLogMaxBytes && events.length > 1) {
+                events.splice(0, Math.max(1, Math.ceil(events.length / 8)));
+                body = build();
             }
-            // Fallback to fetch with keepalive so it can outlive the page.
-            fetch('/api/log', {
+            const post = () => fetch('/api/log', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body,
                 keepalive: true,
-            }).catch(() => {});
+            });
+            // A manual send is in the foreground and wants to know whether it
+            // landed; the automatic paths prefer sendBeacon, which survives
+            // pagehide / app kill but never reports a failure.
+            if (viaFetch) return post();
+            if (navigator.sendBeacon) {
+                const blob = new Blob([body], { type: 'application/json' });
+                if (navigator.sendBeacon('/api/log', blob)) return null;
+            }
+            post().catch(() => {});
         } catch {}
+        return null;
     },
 
     sendSwConfig() {
@@ -521,11 +540,15 @@ const App = {
         document.getElementById('sw-log-send').addEventListener('click', (e) => {
             const btn = e.currentTarget;
             const orig = btn.textContent;
-            // Manual sends bypass the throttle so a user can ship twice in a row.
+            // Manual sends bypass the throttle so a user can ship twice in a row,
+            // and go over fetch so the button can say whether the server took it.
             this._crashLogShipThrottle = 0;
-            this.shipCrashLog('manual');
-            btn.textContent = 'Sent';
-            setTimeout(() => { btn.textContent = orig; }, 2000);
+            btn.textContent = 'Sending…';
+            const p = this.shipCrashLog('manual', { viaFetch: true });
+            Promise.resolve(p).then(
+                r => { btn.textContent = r && r.ok ? 'Sent' : `Failed (${r ? r.status : 'no request'})`; },
+                () => { btn.textContent = 'Failed (offline)'; },
+            ).then(() => setTimeout(() => { btn.textContent = orig; }, 3000));
         });
         // Apply saved theme
         const savedTheme = localStorage.getItem('pholia_theme') || 'dark';

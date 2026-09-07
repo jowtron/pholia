@@ -11,8 +11,11 @@ import { jsonResponse, errorResponse } from '../../_shared/auth.js';
 
 // Reject anything larger than this — keeps a runaway client (or a hostile
 // one) from filling the table with megabyte payloads. The Pholia ring buffer
-// caps at 200 entries of a few hundred bytes each, so ~64 KB is generous.
-const MAX_BODY_BYTES = 64 * 1024;
+// is 400 lines and a SW-debug line with its URL runs ~250 bytes, so a full
+// buffer is ~100 KB; the client trims to 60 KB itself (app.js
+// _postCrashLog) and this cap only has to be clearly above that. It was
+// 64 KB, which silently 413'd a real log on 2026-09-07. A D1 row holds 1 MB.
+const MAX_BODY_BYTES = 256 * 1024;
 
 export async function onRequestPost({ request, env }) {
     let raw;
