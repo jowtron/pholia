@@ -692,13 +692,31 @@ const Player = {
         }
         // Back up a little after a pause, scaled by how long it lasted, so
         // the thread of the story is picked up rather than the next word.
+        // In the background the seek is also the repair (see
+        // _resumeSeekSeconds), so it happens even with the rewind off.
         const rewind = this._autoRewindSeconds();
-        if (rewind > 0 && this.item) {
-            this.loadTime(Math.max(0, this.getGlobalTime() - rewind), 'auto-rewind');
+        const seek = Math.max(rewind, this._resumeSeekSeconds());
+        if (seek > 0 && this.item) {
+            this.loadTime(Math.max(0, this.getGlobalTime() - seek), rewind > 0 ? 'auto-rewind' : 'resume-seek');
             return;
         }
         this._tryPlay('play-btn');
         this._updatePositionState();
+    },
+
+    // A resume while the page is hidden (lock screen, Control Centre) must
+    // seek before it plays, however short the pause. The 2026-09-07 log: a
+    // fully cached file, pause and play on the lock screen within a second,
+    // so _autoRewindSeconds said 0 and play() went out bare — `playing`
+    // fired and currentTime then sat at 3872.1 for 15 s, paused=false,
+    // readyState 4, the whole file buffered. Silence. The day before, a 10 s
+    // pause earned a 3 s rewind and the same resume worked, which is why
+    // "it worked yesterday" — the pause length crossed the 5 s line, not
+    // iOS's mood. One second, not zero: WebKit skips a seek to the current
+    // position without ever reaching the media engine.
+    _resumeSeekSeconds() {
+        if (!this._pausedAt || !this.audio.paused) return 0;
+        return document.visibilityState === 'hidden' ? 1 : 0;
     },
 
     // Seconds to rewind on resume for the time spent paused. Off via the

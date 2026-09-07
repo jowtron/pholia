@@ -214,6 +214,22 @@ in Settings and use the send-log control after the failure.
 
 ---
 
+## Update 2026-09-07: a pause under 5 s was the one case with no seek
+
+"Works one day, not the next" turned out to be the pause length, not iOS.
+`_autoRewindSeconds()` returns 0 under 5 s (a fumbled tap), and the resume
+then went out as a bare `play()`. Joseph's log (`manual`, 02:14 UTC, build
+8722867): a fully cached file, pause and play on the lock screen within a
+second, `playing` fires, then `hb` ticks with `t` frozen at 3872.1 for 15 s
+with `paused:false`, `rdy:4` and the whole file buffered. Silence with the
+element claiming playback, and no network involved at all. The 10 s pauses
+that were verified the day before earned a 3 s rewind and worked.
+
+Fix: `_resumeSeekSeconds()` makes any resume while the page is hidden seek
+at least 1 s back, independent of the auto-rewind toggle. Not 0: WebKit
+short-circuits a seek to the current position without reaching the media
+engine. The same rule went into StoryTeller's `autoRewindSeconds()`.
+
 # Open bug: third-party clients don't all work against the shim
 
 Status: **two of four fixed** (2026-09-06, shim). The apps, as reported:
