@@ -708,43 +708,82 @@ const Player = {
         this._updatePositionState();
     },
 
-    // The seek is not always enough. 2026-09-07, build 3649e5e, a fully
-    // cached file: resume-seek from the lock screen, `seeking`/`seeked` at
-    // 3882.16, `playing` fired, and the clock then sat at 3882.16 for 20 s
-    // with readyState 4 and the whole file buffered. The day before, the
-    // same seek on a partly cached file worked — because it forced a fresh
-    // network load. A seek inside buffered data rebuilds nothing, so when
-    // the clock has not moved 1.5 s after a resume, re-run the load
-    // algorithm at the same position (StoryTeller's recoverPlayback, which
-    // is what fixed its lock-screen track transitions). Only when the
-    // element says it HAS data (readyState >= 3): a cold pCloud book takes
-    // 8-12 s to loadedmetadata and must not be reloaded in a loop.
+    // A resume that fires `playing` but never advances the clock. Two
+    // shapes, and they need opposite handling:
+    //
+    //  - Streamed / partially cached file (served native): the resume-seek
+    //    triggers a live network fetch on a still-awake element and it just
+    //    works — this watchdog never fires. Yesterday's good log.
+    //
+    //  - Fully downloaded file (served from the SW cache): the whole file is
+    //    buffered, so the seek rebuilds nothing and iOS leaves the decoder
+    //    asleep while the page is hidden. 2026-09-07, build 494f161: seek at
+    //    3907.35, `playing`, then 20 s frozen with readyState 4 and the file
+    //    buffered. A reload does NOT help here — a fresh load can't buffer
+    //    audio while the page is hidden (it stalls at readyState 1) and it
+    //    throws away the buffer that was already there, so the element is
+    //    worse off than if left alone. It only recovers on foreground.
+    //
+    // So: reload only while VISIBLE (there it works). While hidden, don't
+    // touch the buffer; arm a one-shot that reloads the instant the app is
+    // foregrounded, which is the only thing that revives a cached file.
     _resumeWatchdog: null,
     _resumeWatchdogRetries: 0,
     _forceReload: false,
+    _resumeForegroundArmed: false,
     _armResumeWatchdog(source) {
         if (this._resumeWatchdog) { clearTimeout(this._resumeWatchdog); this._resumeWatchdog = null; }
         const a = this.audio;
         const startT = a.currentTime;
         const startedAt = Date.now();
+        const reloadNow = (why) => {
+            App?._pushLog?.('audio', {
+                ev: 'resume-stall', source, why, t: Number(a.currentTime.toFixed(2)), rdy: a.readyState,
+                net: a.networkState, vis: document.visibilityState, retry: this._resumeWatchdogRetries,
+            });
+            this._forceReload = true;
+            this.loadTime(this.getGlobalTime(), 'resume-reload');
+            this._armResumeWatchdog('resume-reload');
+        };
+        const armForeground = () => {
+            if (this._resumeForegroundArmed) return;
+            this._resumeForegroundArmed = true;
+            const onVis = () => {
+                if (document.visibilityState !== 'visible') return;
+                document.removeEventListener('visibilitychange', onVis);
+                this._resumeForegroundArmed = false;
+                // Still stuck? Reload now that a fresh load can complete.
+                if (this.item && !this.audio.paused && !this.audio.ended &&
+                    Math.abs(this.audio.currentTime - startT) < 0.3) {
+                    this._resumeWatchdogRetries = 0;
+                    reloadNow('foreground');
+                }
+            };
+            document.addEventListener('visibilitychange', onVis);
+        };
         const check = () => {
             this._resumeWatchdog = null;
             if (!this.item || a.paused || a.ended) { this._resumeWatchdogRetries = 0; return; }
             if (Math.abs(a.currentTime - startT) >= 0.3) { this._resumeWatchdogRetries = 0; return; }
             if (a.readyState < 3) {
-                // Still loading. Look again, for up to 20 s.
+                // Still loading a cold file; look again, for up to 20 s.
                 if (Date.now() - startedAt < 20000) this._resumeWatchdog = setTimeout(check, 1500);
                 return;
             }
-            App?._pushLog?.('audio', {
-                ev: 'resume-stall', source, t: Number(a.currentTime.toFixed(2)), rdy: a.readyState,
-                net: a.networkState, vis: document.visibilityState, retry: this._resumeWatchdogRetries,
-            });
+            // Has data but the clock is frozen. Reloading only works in the
+            // foreground; while hidden it wipes the buffer and can't rebuild
+            // it, so wait for foreground instead of fighting it.
+            if (document.visibilityState !== 'visible') {
+                App?._pushLog?.('audio', {
+                    ev: 'resume-stall', source, why: 'hidden-wait', t: Number(a.currentTime.toFixed(2)),
+                    rdy: a.readyState, net: a.networkState, vis: 'hidden', retry: this._resumeWatchdogRetries,
+                });
+                armForeground();
+                return;
+            }
             if (this._resumeWatchdogRetries >= 2) { this._resumeWatchdogRetries = 0; return; }
             this._resumeWatchdogRetries++;
-            this._forceReload = true;
-            this.loadTime(this.getGlobalTime(), 'resume-reload');
-            this._armResumeWatchdog('resume-reload');
+            reloadNow('visible');
         };
         this._resumeWatchdog = setTimeout(check, 1500);
     },
