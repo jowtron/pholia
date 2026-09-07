@@ -27,7 +27,10 @@ const App = {
     // can ship the previous (likely-crashed) session's tail to a Pages
     // function backed by D1. Server-side endpoint: /api/log
     _sessionId: null,
-    _crashLogShipThrottle: 0,
+    // -Infinity, not 0: performance.now() starts at page load, so a 0 here
+    // blocked every ship in the first 30 s of a launch ("Failed (no request)"
+    // on a manual send straight after a relaunch, 2026-09-07).
+    _crashLogShipThrottle: -Infinity,
 
     setupCrashLog() {
         try {
@@ -90,7 +93,8 @@ const App = {
     // from spamming the table. prior-session-tail bypasses the throttle.
     shipCrashLog(reason, opts) {
         const now = performance.now();
-        if (reason !== 'prior-session-tail' && now - this._crashLogShipThrottle < 30000) return null;
+        const force = reason === 'prior-session-tail' || (opts && opts.force);
+        if (!force && now - this._crashLogShipThrottle < 30000) return null;
         this._crashLogShipThrottle = now;
         try {
             return this._postCrashLog({
@@ -542,9 +546,8 @@ const App = {
             const orig = btn.textContent;
             // Manual sends bypass the throttle so a user can ship twice in a row,
             // and go over fetch so the button can say whether the server took it.
-            this._crashLogShipThrottle = 0;
             btn.textContent = 'Sending…';
-            const p = this.shipCrashLog('manual', { viaFetch: true });
+            const p = this.shipCrashLog('manual', { viaFetch: true, force: true });
             Promise.resolve(p).then(
                 r => { btn.textContent = r && r.ok ? 'Sent' : `Failed (${r ? r.status : 'no request'})`; },
                 () => { btn.textContent = 'Failed (offline)'; },
