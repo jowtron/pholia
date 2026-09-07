@@ -580,8 +580,7 @@ const Player = {
         // state — an errored element ignores play()/currentTime entirely and
         // only re-running the load algorithm clears it (iOS: error 4 after a
         // load timeout left the player dead until the PWA was killed).
-        const srcChanged = this.audio.src !== url || !!this.audio.error || this._forceReload;
-        this._forceReload = false;
+        const srcChanged = this.audio.src !== url || !!this.audio.error;
         if (srcChanged) {
             // Let the SW pin how it will answer this file before the media
             // load begins (all from the worker or none — see sw.js modeFor).
@@ -693,114 +692,13 @@ const Player = {
         }
         // Back up a little after a pause, scaled by how long it lasted, so
         // the thread of the story is picked up rather than the next word.
-        // In the background the seek is also the repair (see
-        // _resumeSeekSeconds), so it happens even with the rewind off.
         const rewind = this._autoRewindSeconds();
-        const seek = Math.max(rewind, this._resumeSeekSeconds());
-        if (seek > 0 && this.item) {
-            const source = rewind > 0 ? 'auto-rewind' : 'resume-seek';
-            this.loadTime(Math.max(0, this.getGlobalTime() - seek), source);
-            this._armResumeWatchdog(source);
+        if (rewind > 0 && this.item) {
+            this.loadTime(Math.max(0, this.getGlobalTime() - rewind), 'auto-rewind');
             return;
         }
         this._tryPlay('play-btn');
-        this._armResumeWatchdog('play-btn');
         this._updatePositionState();
-    },
-
-    // A resume that fires `playing` but never advances the clock. Two
-    // shapes, and they need opposite handling:
-    //
-    //  - Streamed / partially cached file (served native): the resume-seek
-    //    triggers a live network fetch on a still-awake element and it just
-    //    works — this watchdog never fires. Yesterday's good log.
-    //
-    //  - Fully downloaded file (served from the SW cache): the whole file is
-    //    buffered, so the seek rebuilds nothing and iOS leaves the decoder
-    //    asleep while the page is hidden. 2026-09-07, build 494f161: seek at
-    //    3907.35, `playing`, then 20 s frozen with readyState 4 and the file
-    //    buffered. A reload does NOT help here — a fresh load can't buffer
-    //    audio while the page is hidden (it stalls at readyState 1) and it
-    //    throws away the buffer that was already there, so the element is
-    //    worse off than if left alone. It only recovers on foreground.
-    //
-    // So: reload only while VISIBLE (there it works). While hidden, don't
-    // touch the buffer; arm a one-shot that reloads the instant the app is
-    // foregrounded, which is the only thing that revives a cached file.
-    _resumeWatchdog: null,
-    _resumeWatchdogRetries: 0,
-    _forceReload: false,
-    _resumeForegroundArmed: false,
-    _armResumeWatchdog(source) {
-        if (this._resumeWatchdog) { clearTimeout(this._resumeWatchdog); this._resumeWatchdog = null; }
-        const a = this.audio;
-        const startT = a.currentTime;
-        const startedAt = Date.now();
-        const reloadNow = (why) => {
-            App?._pushLog?.('audio', {
-                ev: 'resume-stall', source, why, t: Number(a.currentTime.toFixed(2)), rdy: a.readyState,
-                net: a.networkState, vis: document.visibilityState, retry: this._resumeWatchdogRetries,
-            });
-            this._forceReload = true;
-            this.loadTime(this.getGlobalTime(), 'resume-reload');
-            this._armResumeWatchdog('resume-reload');
-        };
-        const armForeground = () => {
-            if (this._resumeForegroundArmed) return;
-            this._resumeForegroundArmed = true;
-            const onVis = () => {
-                if (document.visibilityState !== 'visible') return;
-                document.removeEventListener('visibilitychange', onVis);
-                this._resumeForegroundArmed = false;
-                // Still stuck? Reload now that a fresh load can complete.
-                if (this.item && !this.audio.paused && !this.audio.ended &&
-                    Math.abs(this.audio.currentTime - startT) < 0.3) {
-                    this._resumeWatchdogRetries = 0;
-                    reloadNow('foreground');
-                }
-            };
-            document.addEventListener('visibilitychange', onVis);
-        };
-        const check = () => {
-            this._resumeWatchdog = null;
-            if (!this.item || a.paused || a.ended) { this._resumeWatchdogRetries = 0; return; }
-            if (Math.abs(a.currentTime - startT) >= 0.3) { this._resumeWatchdogRetries = 0; return; }
-            if (a.readyState < 3) {
-                // Still loading a cold file; look again, for up to 20 s.
-                if (Date.now() - startedAt < 20000) this._resumeWatchdog = setTimeout(check, 1500);
-                return;
-            }
-            // Has data but the clock is frozen. Reloading only works in the
-            // foreground; while hidden it wipes the buffer and can't rebuild
-            // it, so wait for foreground instead of fighting it.
-            if (document.visibilityState !== 'visible') {
-                App?._pushLog?.('audio', {
-                    ev: 'resume-stall', source, why: 'hidden-wait', t: Number(a.currentTime.toFixed(2)),
-                    rdy: a.readyState, net: a.networkState, vis: 'hidden', retry: this._resumeWatchdogRetries,
-                });
-                armForeground();
-                return;
-            }
-            if (this._resumeWatchdogRetries >= 2) { this._resumeWatchdogRetries = 0; return; }
-            this._resumeWatchdogRetries++;
-            reloadNow('visible');
-        };
-        this._resumeWatchdog = setTimeout(check, 1500);
-    },
-
-    // A resume while the page is hidden (lock screen, Control Centre) must
-    // seek before it plays, however short the pause. The 2026-09-07 log: a
-    // fully cached file, pause and play on the lock screen within a second,
-    // so _autoRewindSeconds said 0 and play() went out bare — `playing`
-    // fired and currentTime then sat at 3872.1 for 15 s, paused=false,
-    // readyState 4, the whole file buffered. Silence. The day before, a 10 s
-    // pause earned a 3 s rewind and the same resume worked, which is why
-    // "it worked yesterday" — the pause length crossed the 5 s line, not
-    // iOS's mood. One second, not zero: WebKit skips a seek to the current
-    // position without ever reaching the media engine.
-    _resumeSeekSeconds() {
-        if (!this._pausedAt || !this.audio.paused) return 0;
-        return document.visibilityState === 'hidden' ? 1 : 0;
     },
 
     // Seconds to rewind on resume for the time spent paused. Off via the
