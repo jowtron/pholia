@@ -107,11 +107,10 @@ self.addEventListener('message', e => {
     }
     if (e.data?.type === 'CACHE_CHANGED') loadCachedKeys();
     if (e.data?.type === 'SW_CONFIG') {
-        experimentalPartialCache = !!e.data.experimentalPartialCache;
         swDebugLog = !!e.data.swDebugLog;
         configLoaded = Promise.resolve();
         saveConfig();
-        debugLog('config', { experimentalPartialCache, swDebugLog });
+        debugLog('config', { swDebugLog });
     }
     if (e.data?.type === 'MEDIA_LOAD' && e.data.url) {
         // The page is about to assign audio.src: pin how this file will be
@@ -143,13 +142,13 @@ self.addEventListener('message', e => {
 });
 
 // Serve partially cached books from the local cache when the requested Range
-// starts inside a cached chunk (Settings → "Play from partial cache", default
-// ON since 2026-09-03). The earlier version stopped the response at the first
-// gap, which iOS can't recover from; serveChunked now bridges the gap with a
-// network fetch that is started up front, so the shim's cold first byte
-// overlaps the cached playback instead of stalling it.
-let experimentalPartialCache = true;
-// Separate flag for the debug log so instrumentation can stay on independently.
+// starts inside a cached chunk. Always on since 2026-09-08 (the Settings
+// toggle was removed: it was found switched off and that alone cost 34 s
+// startups); only the automatic partialDisabledUntil fallback below turns it
+// off, briefly, after a failed bridge fetch. The earlier version stopped the
+// response at the first gap, which iOS can't recover from; serveChunked now
+// bridges the gap with a network fetch that is started up front, so the
+// shim's cold first byte overlaps the cached playback instead of stalling it.
 let swDebugLog = false;
 // iOS restarts this worker constantly and plain globals revert to their
 // defaults before the page re-sends SW_CONFIG — so both flags are persisted
@@ -169,7 +168,6 @@ function loadConfig() {
                 const r = await c.match(CONFIG_KEY);
                 if (!r) return;
                 const j = await r.json();
-                if (typeof j.experimentalPartialCache === 'boolean') experimentalPartialCache = j.experimentalPartialCache;
                 if (typeof j.swDebugLog === 'boolean') swDebugLog = j.swDebugLog;
                 if (j.pins && typeof j.pins === 'object') for (const [k, v] of Object.entries(j.pins)) if (v === 'sw' || v === 'native') pinnedModes.set(k, v);
             } catch {}
@@ -181,7 +179,7 @@ async function saveConfig() {
     try {
         const c = await caches.open(CONFIG_CACHE);
         const pins = Object.fromEntries(pinnedModes);
-        await c.put(CONFIG_KEY, new Response(JSON.stringify({ experimentalPartialCache, swDebugLog, pins }), { headers: { 'Content-Type': 'application/json' } }));
+        await c.put(CONFIG_KEY, new Response(JSON.stringify({ swDebugLog, pins }), { headers: { 'Content-Type': 'application/json' } }));
     } catch {}
 }
 
@@ -377,7 +375,7 @@ function corsFetch(request, rangeOverride) {
 function modeFor(baseKey) {
     if (cachedKeys.has(completeKeyOf(baseKey)) || cachedKeys.has(baseKey)) return 'sw';
     const chunks = cachedChunks?.get(baseKey)?.size || 0;
-    if (experimentalPartialCache && Date.now() >= partialDisabledUntil && cachedMetas?.has(baseKey) && chunks > 0) return 'sw';
+    if (Date.now() >= partialDisabledUntil && cachedMetas?.has(baseKey) && chunks > 0) return 'sw';
     return 'native';
 }
 

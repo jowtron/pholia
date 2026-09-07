@@ -188,14 +188,17 @@ const App = {
     },
 
     sendSwConfig() {
-        // 'pholia_sw_experimental' is the audio debug log; the partial-cache
-        // intercept is its own Settings toggle, ON unless switched off.
+        // 'pholia_sw_experimental' is the audio debug log. The partial-cache
+        // intercept has no toggle any more (2026-09-08: it was found switched
+        // off and that alone cost 34 s startups) — it is always on, and only
+        // the automatic partialDisabledUntil fallback in sw.js disables it.
+        // Keep sending true: during an update the new page can briefly talk
+        // to the OLD worker, which reads a missing field as false.
         const swDebugLog = localStorage.getItem('pholia_sw_experimental') === 'true';
-        const experimentalPartialCache = localStorage.getItem('pholia_sw_partial_intercept') !== 'false';
         try {
             navigator.serviceWorker?.controller?.postMessage({
                 type: 'SW_CONFIG',
-                experimentalPartialCache,
+                experimentalPartialCache: true,
                 swDebugLog,
             });
         } catch {}
@@ -505,10 +508,6 @@ const App = {
         document.getElementById('setting-hide-collections').addEventListener('change', e => {
             localStorage.setItem('pholia_hide_collections', e.target.checked ? 'true' : 'false');
             this.applyTabVisibility();
-        });
-        document.getElementById('setting-partial-cache').addEventListener('change', e => {
-            localStorage.setItem('pholia_sw_partial_intercept', e.target.checked ? 'true' : 'false');
-            this.sendSwConfig();
         });
         document.getElementById('setting-sw-experimental').addEventListener('change', e => {
             localStorage.setItem('pholia_sw_experimental', e.target.checked ? 'true' : 'false');
@@ -3345,7 +3344,6 @@ const App = {
         document.getElementById('setting-auto-cache').checked = localStorage.getItem('pholia_auto_cache') === 'true';
         document.getElementById('setting-auto-rewind').checked = localStorage.getItem('pholia_auto_rewind') !== 'false';
         document.getElementById('setting-hide-collections').checked = localStorage.getItem('pholia_hide_collections') === 'true';
-        document.getElementById('setting-partial-cache').checked = localStorage.getItem('pholia_sw_partial_intercept') !== 'false';
         const swExp = localStorage.getItem('pholia_sw_experimental') === 'true';
         document.getElementById('setting-sw-experimental').checked = swExp;
         document.getElementById('sw-log-section').classList.toggle('hidden', !swExp);
