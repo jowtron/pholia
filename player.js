@@ -516,7 +516,12 @@ const Player = {
         }
     },
 
-    async loadTime(globalTime, source = 'loadTime') {
+    // opts.keepPaused: this seek must not start playback that is stopped.
+    // It is the CALLER's choice and not simply "don't play when paused",
+    // because play() delegates its auto-rewind and its errored-element
+    // revival to loadTime and the element is paused in both of those — that
+    // is the lock-screen resume, and it must keep playing.
+    async loadTime(globalTime, source = 'loadTime', opts = {}) {
         this._logSeekCall(source, globalTime);
         this._pausedAt = 0;
         const prevTime = this.getGlobalTime();
@@ -576,6 +581,8 @@ const Player = {
                 }
             }
         } catch {}
+        // Sampled before the silent seek below can pause the element.
+        const wasPaused = this.audio.paused;
         // Re-assign src even when unchanged if the element is in an error
         // state — an errored element ignores play()/currentTime entirely and
         // only re-running the load algorithm clears it (iOS: error 4 after a
@@ -593,7 +600,19 @@ const Player = {
         // 2026-09-01: seeked at 3209.05, playing at 3209.13, then playing
         // again at 3209.04 with no second seeking). Seek silently instead:
         // pause, set the time, resume once seeked fires.
-        const silent = !srcChanged && !this.audio.paused;
+        // ...but NOT while the page is hidden. Pausing a media element that iOS
+        // has backgrounded puts the decoder to sleep, and the resume is then
+        // accepted without producing sound: crash tails 2026-09-18 02:32 and
+        // 03:21 both show seeked -> playing -> paused:false with currentTime
+        // frozen for 14-23 s, moving only when the app came to the foreground.
+        // That is why the lock-screen skip buttons "did nothing" — the seek
+        // landed (1761.14 -> 1751.14, exactly the 10 s) and the audio died.
+        // Hearing a syllable twice beats going silent until you unlock.
+        //
+        // Safe against the resume path that was reverted three times in
+        // 2026-09-07: this branch requires the element to be ALREADY PLAYING,
+        // so a resume-from-pause never reaches it.
+        const silent = !srcChanged && !this.audio.paused && !document.hidden;
         if (silent) {
             this._silentSeek = true;
             this.audio.pause();
@@ -611,6 +630,11 @@ const Player = {
             this.audio.addEventListener('seeked', resume);
             // Never strand a paused player if seeked doesn't come (src churn).
             setTimeout(resume, 1500);
+        } else if (opts.keepPaused && wasPaused && !this.audio.error) {
+            // Seek only: the user pressed skip on a stopped player, so move
+            // the playhead and leave it stopped (the 30 s buttons used to
+            // start playback here). _updatePositionState() below still runs,
+            // so the lock screen and UI follow the new position.
         } else {
             // Play immediately; if it fails (slow connection), retry when audio is ready
             this._tryPlay(source);
@@ -729,7 +753,7 @@ const Player = {
 
     skip(seconds, source = 'skip-btn') {
         const t = Math.max(0, Math.min(this.getGlobalTime() + seconds, this.getTotalDuration()));
-        this.loadTime(t, source);
+        this.loadTime(t, source, { keepPaused: true });
     },
 
     seekToChapterPercent(pct) {
