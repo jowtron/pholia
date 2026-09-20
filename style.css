@@ -407,8 +407,10 @@ main {
 .detail-header { display: flex; gap: 1rem; align-items: flex-start; }
 .detail-cover { cursor: zoom-in; }
 .detail-cover {
-    width: 140px; height: 140px; border-radius: var(--radius);
-    object-fit: cover; background: var(--card-bg); flex-shrink: 0;
+    /* Natural aspect ratio inside a square budget (was a square crop):
+       a portrait cover shows whole, bounded by the taller side. */
+    width: auto; height: auto; max-width: 140px; max-height: 140px;
+    border-radius: var(--radius); background: var(--card-bg); flex-shrink: 0;
 }
 .detail-meta h3 { font-size: 1.25rem; margin-bottom: 0.25rem; }
 .detail-meta .author { color: var(--text-muted); margin-bottom: 0.25rem; font-size: 0.9rem; }
@@ -522,8 +524,9 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
     pointer-events: none; z-index: 0; transition: width 0.15s linear;
 }
 .pp-cover {
-    width: 42px; height: 42px; border-radius: 4px; object-fit: cover;
-    background: var(--card-bg); flex-shrink: 0; z-index: 1;
+    /* Natural aspect ratio, bounded by a 42px square (was a square crop). */
+    width: auto; height: auto; max-width: 42px; max-height: 42px;
+    border-radius: 4px; background: var(--card-bg); flex-shrink: 0; z-index: 1;
 }
 .pp-info { min-width: 0; flex-shrink: 1; z-index: 1; }
 .pp-track {
@@ -848,7 +851,7 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
     .h-scroll .card img { width: 100%; height: auto; aspect-ratio: 1; }
 
     .detail-header { flex-direction: column; align-items: center; text-align: center; }
-    .detail-cover { width: 180px; height: 180px; }
+    .detail-cover { max-width: 180px; max-height: 180px; }
 
     .fs-scroll {
         padding: 20px 16px 12px;
@@ -868,7 +871,7 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
 
 @media (min-width: 768px) {
     .grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
-    .detail-cover { width: 200px; height: 200px; }
+    .detail-cover { max-width: 200px; max-height: 200px; }
     .h-scroll .card { width: 150px; }
     .h-scroll .card img { width: 150px; height: 150px; }
 }
