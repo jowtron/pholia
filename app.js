@@ -2324,11 +2324,11 @@ const App = {
 
     // The home tab's last render also lives in localStorage (2026-09-20), so
     // a cold launch paints the shelves before /personalized answers and the
-    // usual revalidate catches up behind it. Only home: it is the launch
-    // tab, and the others are one tap away with the same in-session cache.
+    // usual revalidate catches up behind it. Home and Library: the launch
+    // tab and the one first tap always went to, a network round trip each.
     // Keyed by server + user + library so another account's shelves can
     // never show, and cleared with the in-memory cache and on logout.
-    PERSIST_TABS: ['home'],
+    PERSIST_TABS: ['home', 'library'],
     _persistKey(key) { return `pholia_tab:${ABS.serverUrl}|${localStorage.getItem('pholia_username') || ''}|${key}`; },
     _persistTab(key, html) {
         if (!this.PERSIST_TABS.includes(key.split('|')[0])) return;
@@ -2436,8 +2436,10 @@ const App = {
             // they're independent and the scan used to dominate cold-open time.
             const personalizedP = ABS.request(`/api/libraries/${targetLib}/personalized`);
             const downloadedItems = await Offline.fullyDownloaded();
+            this._launchMark('scan');
             const offlineHtml = this.renderOfflineSection(downloadedItems);
             const sections = await personalizedP;
+            this._launchMark('personalized');
             if (targetLib !== this.currentLibraryId) throw new Error('library switched');
             let html = offlineHtml;
             for (const section of sections) {
@@ -4213,6 +4215,7 @@ const Offline = {
     _invalidateCoverage() { this._coverageVersion++; },
 
     notifySwCacheChanged() {
+        this._invalidateCoverage();
         try { navigator.serviceWorker?.controller?.postMessage({ type: 'CACHE_CHANGED' }); } catch {}
     },
 
@@ -4436,6 +4439,7 @@ const Offline = {
     },
 
     async saveMeta(item) {
+        this._invalidateCoverage();
         const metaCache = await caches.open(this.META_CACHE);
         await metaCache.put(
             this.metaKey(item.id),
@@ -4641,24 +4645,44 @@ const Offline = {
     // IDs of books where every audio file is fully cached (every chunk present
     // for chunked entries, or the whole-file legacy entry exists). Uses the
     // batch coverage walk to avoid per-book cache.keys() scans.
-    async fullyDownloadedIds() {
-        try {
+    // "Which books are fully downloaded" is asked on every tab paint (the
+    // green dots) and by the home render, and each answer used to re-read
+    // and JSON-parse every downloaded item's record plus list every audio
+    // cache key — about a second on an iPhone, which is how long the dots
+    // lagged behind a tab switch and most of the launch's fresh-shelves
+    // delay (2026-09-20). Memoised on the coverage version (bumped by
+    // every page-side chunk write/delete) with a short TTL as a backstop
+    // for writes the page doesn't see. A dot a minute late is harmless.
+    _fullyMemo: null,
+    FULLY_MEMO_TTL_MS: 60000,
+    async _fullyScan() {
+        const ver = this._coverageVersion;
+        const m = this._fullyMemo;
+        if (m && m.version === ver && Date.now() - m.ts < this.FULLY_MEMO_TTL_MS) return m;
+        if (m?.pending) return m.pending;
+        const pending = (async () => {
             const items = await this.listDownloaded();
-            if (!items.length) return new Set();
-            const coverages = await this._coverageBatch(items);
             const ids = new Set();
-            for (const item of items) {
-                if (this._isFullyDownloadedFromCoverage(item, coverages.get(item.id))) ids.add(item.id);
+            let full = [];
+            if (items.length) {
+                const coverages = await this._coverageBatch(items);
+                full = items.filter(item => this._isFullyDownloadedFromCoverage(item, coverages.get(item.id)));
+                for (const item of full) ids.add(item.id);
             }
-            return ids;
-        } catch { return new Set(); }
+            const out = { version: ver, ts: Date.now(), items: full, ids };
+            if (this._coverageVersion === ver) this._fullyMemo = out;
+            else this._fullyMemo = null;
+            return out;
+        })();
+        this._fullyMemo = { version: -1, ts: 0, items: [], ids: new Set(), pending };
+        try { return await pending; } catch { this._fullyMemo = null; throw new Error('scan failed'); }
+    },
+    async fullyDownloadedIds() {
+        try { return (await this._fullyScan()).ids; } catch { return new Set(); }
     },
 
     async fullyDownloaded() {
-        const all = await this.listDownloaded();
-        if (!all.length) return [];
-        const coverages = await this._coverageBatch(all);
-        return all.filter(item => this._isFullyDownloadedFromCoverage(item, coverages.get(item.id)));
+        try { return (await this._fullyScan()).items; } catch { return []; }
     },
 
     // Drops meta entries (and the cover) for books where no audio is cached.
