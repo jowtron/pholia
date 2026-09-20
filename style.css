@@ -683,7 +683,11 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
     background: var(--bg); border-top: 1px solid var(--border);
 }
 .fs-title { font-size: 1.2rem; font-weight: 700; text-align: center; margin-bottom: 2px; }
+.fs-author { font-size: 0.9rem; text-align: center; margin-bottom: 2px; }
+.fs-author .author-link { color: var(--accent); text-decoration: none; cursor: pointer; }
+.fs-author .author-link:active, .fs-author .author-link:hover { color: var(--accent-hover); text-decoration: underline; }
 .fs-narrator { color: var(--text-muted); font-size: 0.85rem; font-style: italic; margin-bottom: 2px; }
+.fs-narrator:empty { display: none; }
 .fs-chapter { color: var(--accent); font-size: 0.8rem; margin-bottom: 4px; }
 .fs-progress-summary { font-size: 0.7rem; color: var(--text-muted); margin-bottom: 6px; }
 .fs-scrubber { width: 100%; max-width: 400px; margin-bottom: 2px; }

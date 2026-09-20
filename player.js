@@ -985,6 +985,7 @@ const Player = {
 
         const title = this.item.media?.metadata?.title || 'Unknown';
         const author = this.item.media?.metadata?.authorName || '';
+        const narrator = this.item.media?.metadata?.narratorName || '';
         const cover = ABS.coverUrl(this.item.id);
         const elapsedTxt = formatTime(chp.elapsed);
         const remTxt = '-' + formatTime(chp.remaining);
@@ -1008,7 +1009,40 @@ const Player = {
         // Fullscreen player
         setSrc('fs-cover', cover);
         setText('fs-title', title);
-        setText('fs-narrator', author);
+        // The fullscreen player showed the AUTHOR in the narrator's slot and
+        // had no author line of its own. Now: authors on their own line,
+        // tappable when the item carries author ids (the item detail does),
+        // and the narrator underneath where it belongs. Built from DOM nodes
+        // rather than innerHTML so nothing here has to escape a name, and
+        // rebuilt only when the names change — this runs on every tick.
+        const authors = this.item.media?.metadata?.authors;
+        const authorList = Array.isArray(authors) ? authors.filter((a) => a && a.name) : [];
+        const authorKey = authorList.length
+            ? authorList.map((a) => `${a.id || ''}|${a.name}`).join(',')
+            : author;
+        if (last['fs-author|key'] !== authorKey) {
+            last['fs-author|key'] = authorKey;
+            const el = document.getElementById('fs-author');
+            if (el) {
+                el.textContent = '';
+                if (authorList.length) {
+                    authorList.forEach((a, i) => {
+                        if (i) el.append(', ');
+                        if (!a.id) { el.append(a.name); return; }
+                        const link = document.createElement('a');
+                        link.className = 'author-link';
+                        link.href = '#';
+                        link.dataset.authorId = a.id;
+                        link.dataset.authorName = a.name;
+                        link.textContent = a.name;
+                        el.append(link);
+                    });
+                } else if (author) {
+                    el.textContent = author;
+                }
+            }
+        }
+        setText('fs-narrator', narrator ? 'Narrated by ' + narrator : '');
         setText('fs-chapter', chLabel);
         setText('fs-elapsed', elapsedTxt);
         setText('fs-remaining', remTxt);

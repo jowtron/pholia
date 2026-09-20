@@ -665,6 +665,16 @@ const App = {
             document.getElementById('fs-sleep-menu').classList.remove('open');
         });
 
+        // FS author → the author's page. Delegated, because the line is
+        // rebuilt whenever the playing book changes.
+        document.getElementById('fs-author').addEventListener('click', (e) => {
+            const link = e.target.closest('.author-link');
+            if (!link || !link.dataset.authorId) return;
+            e.preventDefault();
+            this.closeFullscreen();
+            this.showAuthorDetail(link.dataset.authorId, link.dataset.authorName);
+        });
+
         // FS cover flip — tap cover to show file info on the back
         const coverWrap = document.getElementById('fs-cover-wrap');
         coverWrap.addEventListener('click', () => coverWrap.classList.toggle('is-flipped'));
