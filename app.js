@@ -901,7 +901,10 @@ const App = {
     // ring buffer as `mark` events so they ship with crash logs and the
     // manual Send: html (index.html downloaded), js (scripts parsed),
     // shell (main screen shown), home-cached (persisted shelves painted),
-    // libraries (/api/libraries answered), home (fresh shelves painted).
+    // libraries (/api/libraries answered), personalized (/personalized
+    // answered), home (fresh shelves painted), scan (the fully-downloaded
+    // scan finished; since 2026-09-20 the home paint no longer waits for
+    // it, so scan may land well after home).
     // First occurrence only — later tab taps are not launches.
     _launchMarks: {},
     _launchMark(name) {
@@ -2488,16 +2491,32 @@ const App = {
         if (!this.currentLibraryId) { this.showLoading(); return; }
         const targetLib = this.currentLibraryId;
         return this._renderTab('home', async () => {
-            // Kick off /personalized in parallel with the offline-cache scan —
-            // they're independent and the scan used to dominate cold-open time.
+            // Start the offline-cache scan alongside /personalized, but the
+            // paint waits only for the server. On a cold launch the scan is
+            // the slowest thing on the page (3.4–4.9 s on an iPhone against
+            // ~1 s for the server, 2026-09-20), so the Downloaded row is
+            // painted from the previous session's answer and
+            // _settleHomeOffline corrects it when the scan lands. Once a
+            // scan has completed in this page load it is the truth: fresh
+            // answers cost nothing (memoised) and a re-scan after a
+            // download/delete is waited for, because that row is exactly
+            // what the user came back to look at.
             const personalizedP = ABS.request(`/api/libraries/${targetLib}/personalized`);
-            const downloadedItems = await Offline.fullyDownloaded();
-            this._launchMark('scan');
-            const offlineHtml = this.renderOfflineSection(downloadedItems);
+            const scanP = Offline.fullyDownloaded();
             const sections = await personalizedP;
             this._launchMark('personalized');
             if (targetLib !== this.currentLibraryId) throw new Error('library switched');
-            let html = offlineHtml;
+            let downloadedItems;
+            const known = Offline.fullyDownloadedKnown();
+            if (known && known.sameVersion) {
+                downloadedItems = known.items;
+            } else if (known) {
+                downloadedItems = await scanP;
+                this._launchMark('scan');
+            } else {
+                downloadedItems = null;  // cold: the row below is last session's
+            }
+            let html = '';
             for (const section of sections) {
                 if (!section.entities?.length) continue;
                 html += `<div class="section-title">${esc(section.label)}</div>`;
@@ -2564,12 +2583,66 @@ const App = {
                 }
                 html += '</div>';
             }
-            if (!html) html = '<div class="empty-state">No items yet</div>';
-            return { html, bindData: downloadedItems };
-        }, (downloadedItems) => {
+            const rowItems = downloadedItems || this._loadKnownOffline();
+            if (!html && !rowItems.length) html = '<div class="empty-state">No items yet</div>';
+            return { html: this._homeHtml(rowItems, html), bindData: { items: downloadedItems, shelves: html } };
+        }, (bindData) => {
             this.bindCardClicks();
-            this.bindOfflineCardClicks(downloadedItems || []);
+            // No items when the row came from last session (or the persisted
+            // render): the tap handlers look the book up on tap instead.
+            this.bindOfflineCardClicks(bindData?.items || []);
+            this._settleHomeOffline(this._tabKey('home'));
         });
+    },
+
+    // The Downloaded row sits in its own box so the settle below can swap
+    // it without touching the shelves, their scroll positions or their
+    // click handlers.
+    _homeHtml(offlineItems, shelvesHtml) {
+        return `<div class="home-offline">${this.renderOfflineSection(offlineItems)}</div>${shelvesHtml}`;
+    },
+
+    // Last session's Downloaded row, as much of each item as the row needs.
+    // Per server + user (not per build: the downloads outlive an update).
+    _knownOfflineKey() { return `pholia_offline:${ABS.serverUrl}|${localStorage.getItem('pholia_username') || ''}`; },
+    _loadKnownOffline() {
+        try {
+            const v = JSON.parse(localStorage.getItem(this._knownOfflineKey()) || '[]');
+            return Array.isArray(v) ? v.filter(x => x && x.id).map(x => ({ id: x.id, media: { metadata: { title: x.title, authorName: x.author } } })) : [];
+        } catch { return []; }
+    },
+    _saveKnownOffline(items) {
+        try {
+            const v = items.map(i => ({ id: i.id, title: i.media?.metadata?.title || '', author: i.media?.metadata?.authorName || '' }));
+            localStorage.setItem(this._knownOfflineKey(), JSON.stringify(v));
+        } catch {}
+    },
+
+    // Runs after every home paint. Waits for the fully-downloaded scan (a
+    // memo hit when it has already run) and, if the row on screen shows a
+    // different set of books, replaces just that row and fixes the cached
+    // and persisted html so the next refresh still patches in place rather
+    // than repainting. Idempotent: two overlapping settles both read the
+    // live DOM, so the second finds nothing to do.
+    async _settleHomeOffline(key) {
+        let items;
+        try { items = await Offline.fullyDownloaded(); } catch { return; }
+        this._launchMark('scan');
+        this._saveKnownOffline(items);
+        if (!this._tabStillActive(key)) return;
+        const box = document.querySelector('#content .home-offline');
+        if (!box) return;
+        const entry = this._tabCache[key];
+        if (entry?.bindData && typeof entry.bindData === 'object') entry.bindData.items = items;
+        const live = [...box.querySelectorAll('.offline-card')].map(el => el.dataset.offlineId);
+        if (live.length === items.length && live.every((id, i) => id === items[i].id)) return;
+        box.innerHTML = this.renderOfflineSection(items);
+        this.bindOfflineCardClicks(items);
+        this._markShelves();
+        if (entry && typeof entry.bindData?.shelves === 'string') {
+            entry.html = this._homeHtml(items, entry.bindData.shelves);
+            this._persistTab(key, entry.html);
+        }
     },
 
     renderOfflineSection(items) {
@@ -4712,6 +4785,7 @@ const Offline = {
     // every page-side chunk write/delete) with a short TTL as a backstop
     // for writes the page doesn't see. A dot a minute late is harmless.
     _fullyMemo: null,
+    _fullyLast: null,   // last completed scan this page load, current or not
     FULLY_MEMO_TTL_MS: 60000,
     async _fullyScan() {
         const ver = this._coverageVersion;
@@ -4728,6 +4802,7 @@ const Offline = {
                 for (const item of full) ids.add(item.id);
             }
             const out = { version: ver, ts: Date.now(), items: full, ids };
+            this._fullyLast = out;
             if (this._coverageVersion === ver) this._fullyMemo = out;
             else this._fullyMemo = null;
             return out;
@@ -4741,6 +4816,16 @@ const Offline = {
 
     async fullyDownloaded() {
         try { return (await this._fullyScan()).items; } catch { return []; }
+    },
+
+    // What the last completed scan said, without waiting for one. null
+    // until a scan has finished in this page load; sameVersion is false
+    // when a chunk has been written or deleted since (the answer may be
+    // missing a book).
+    fullyDownloadedKnown() {
+        const m = this._fullyLast;
+        if (!m) return null;
+        return { items: m.items, sameVersion: m.version === this._coverageVersion };
     },
 
     // Drops meta entries (and the cover) for books where no audio is cached.
