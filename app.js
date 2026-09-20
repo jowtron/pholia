@@ -2285,17 +2285,47 @@ const App = {
     // from. This used to require a stack of 2+, so a book opened from Home
     // showed no back button and neither the button nor the swipe did
     // anything — the only way out was to tap a bottom tab.
-    pushNav(title) {
+    //
+    // Each entry carries HOW to draw itself again, not just its title. The
+    // stack was a list of strings until 2026-09-21 and goBack() always ran
+    // switchTab(), so going back from an author page — reached from a book,
+    // reached from Home — landed on Home instead of the book: every level
+    // collapsed to the tab root. `render` is called with _navRestoring set,
+    // which turns the view's own pushNav into a title update instead of a
+    // second push, so a view needs no "I am being restored" branch of its
+    // own. It must call pushNav BEFORE its first await for that to hold.
+    pushNav(title, render) {
         this.checkForSwUpdate();
-        this.navStack.push(title);
+        if (this._navRestoring) { this.setNavTop(title, render); return; }
+        this.navStack.push({ title, render: render || null });
         document.getElementById('header-title').textContent = title;
         document.getElementById('back-btn').classList.toggle('hidden', this.navStack.length < 1);
+    },
+
+    // Retitle the level being shown (a detail view only learns its title
+    // after its fetch), and optionally give it a cheaper way to redraw —
+    // a book page hands over the item it already holds, so coming back to
+    // it costs no round trip.
+    setNavTop(title, render) {
+        const top = this.navStack[this.navStack.length - 1];
+        if (!top) return;
+        if (render) top.render = render;
+        if (title == null) return;
+        top.title = title;
+        document.getElementById('header-title').textContent = title;
     },
 
     goBack() {
         if (this.navStack.length) {
             this.navStack.pop();
-            // switchTab re-renders the tab's own view and clears the stack.
+            const top = this.navStack[this.navStack.length - 1];
+            if (top && top.render) {
+                document.getElementById('header-title').textContent = top.title;
+                this._navRestoring = true;
+                try { top.render(); } finally { this._navRestoring = false; }
+                return;
+            }
+            // Nothing below it: switchTab redraws the tab and clears the stack.
             this.switchTab(this.currentTab);
         } else if (this.currentTab === 'add') {
             this.switchTab(this._addReturnTab);
@@ -2819,7 +2849,7 @@ const App = {
     },
 
     async showSeriesDetail(seriesId, seriesName) {
-        this.pushNav(seriesName);
+        this.pushNav(seriesName, () => this.showSeriesDetail(seriesId, seriesName));
         let books = this._seriesCache[seriesId];
         if (!books) {
             // A home painted from its persisted copy has not primed the
@@ -2860,10 +2890,14 @@ const App = {
     },
 
     async showCollectionDetail(collectionId) {
+        // Pushed before the fetch, like showItem: the back button has to be
+        // live while the request is in flight, and pushNav must run before
+        // the first await for a restore to update this level in place.
+        this.pushNav('Collection', () => this.showCollectionDetail(collectionId));
         this.showLoading();
         try {
             const data = await ABS.request(`/api/collections/${collectionId}`);
-            this.pushNav(data.name || 'Collection');
+            this.setNavTop(data.name || 'Collection');
             const books = data.books || [];
             this.renderGrid(books);
         } catch (e) {
@@ -2901,7 +2935,7 @@ const App = {
     },
 
     async showAuthorDetail(authorId, authorName) {
-        this.pushNav(authorName);
+        this.pushNav(authorName, () => this.showAuthorDetail(authorId, authorName));
         this.showLoading();
         try {
             const data = await ABS.request(`/api/authors/${authorId}?include=items`);
@@ -2917,7 +2951,7 @@ const App = {
     // this year's review. Charts are inline SVG: no library, and they take
     // the theme's colours from CSS.
     async showStats() {
-        this.pushNav('Listening stats');
+        this.pushNav('Listening stats', () => this.showStats());
         this.showLoading();
         try {
             const year = new Date().getFullYear();
@@ -3258,7 +3292,7 @@ const App = {
 
     // ── Item detail ──
     async showItem(itemId) {
-        this.pushNav('Loading...');
+        this.pushNav('Loading...', () => this.showItem(itemId));
         this.showLoading();
         try {
             const item = await ABS.getItem(itemId);
@@ -3311,8 +3345,9 @@ const App = {
             ? Player.getGlobalTime()
             : (progress?.currentTime || 0);
 
-        this.navStack[this.navStack.length - 1] = meta.title || 'Unknown';
-        document.getElementById('header-title').textContent = meta.title || 'Unknown';
+        // Redraw from the item already in hand, so returning here from
+        // an author or series page costs no fetch.
+        this.setNavTop(meta.title || 'Unknown', () => this.showBookDetail(item));
 
         let html = '<div class="detail-view">';
         html += '<div class="detail-header">';
@@ -3583,8 +3618,7 @@ const App = {
         const meta = item.media?.metadata || {};
         const episodes = (item.media?.episodes || []).sort((a, b) => (b.publishedAt || 0) - (a.publishedAt || 0));
 
-        this.navStack[this.navStack.length - 1] = meta.title || 'Unknown';
-        document.getElementById('header-title').textContent = meta.title || 'Unknown';
+        this.setNavTop(meta.title || 'Unknown', () => this.showPodcastDetail(item));
 
         let html = '<div class="detail-view">';
         html += '<div class="detail-header">';
@@ -4153,6 +4187,13 @@ const App = {
 
         content.addEventListener('touchstart', (e) => {
             active = false; mode = null;
+            // A previous gesture whose settle timers never ran (a tab
+            // backgrounded mid-swipe throttles timeouts hard) would leave the
+            // page translated off-screen. Put it back before starting a new one.
+            if (content.style.transform) {
+                content.classList.remove('dragging', 'settling');
+                content.style.transform = '';
+            }
             if (e.touches.length !== 1) return;
             // A shelf that can still scroll right keeps its own swipe; one
             // already at its left end can't use a rightward drag anyway, so
@@ -4215,11 +4256,27 @@ const App = {
             if (m === 'back') {
                 const commit = (velocity > FLICK_PX_PER_MS && dx > 40) || dx > width * BACK_SETTLE;
                 if (commit) {
-                    // Slide the outgoing page away, then render the previous
-                    // one — goBack() replaces the content wholesale.
+                    // Slide the outgoing page off to the right, then render
+                    // the previous one and bring it in from the LEFT: it was
+                    // sitting behind this page, not ahead of it. Clearing the
+                    // transform instead (what this did until 2026-09-21) let
+                    // the `settling` transition run the new page in from the
+                    // right — the same direction the finger had just gone.
                     content.classList.add('settling');
                     content.style.transform = 'translateX(' + width + 'px)';
-                    setTimeout(() => { resetContent(false); this.goBack(); }, 180);
+                    setTimeout(() => {
+                        content.classList.remove('dragging');
+                        content.classList.remove('settling');   // jump, don't animate
+                        content.style.transform = 'translateX(' + (-width) + 'px)';
+                        this.goBack();
+                        void content.offsetWidth;               // commit the jump
+                        content.classList.add('settling');
+                        content.style.transform = 'translateX(0)';
+                        setTimeout(() => {
+                            content.classList.remove('settling');
+                            content.style.transform = '';
+                        }, 240);
+                    }, 180);
                     return;
                 }
                 resetContent(true);
