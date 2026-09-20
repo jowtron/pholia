@@ -2428,8 +2428,14 @@ const App = {
             this._tabCache[key] = { ...out, ts: Date.now() };
             this._persistTab(key, out.html);
             if (this._tabStillActive(key) && prev !== out.html) {
-                this.setContent(out.html);
-                bind?.(out.bindData);
+                if (this._patchProgressInPlace(prev, out.html)) {
+                    // Only progress bars moved: the tab keeps its DOM, its
+                    // scroll positions and its click handlers.
+                    this.markDownloadedCards();
+                } else {
+                    this.setContent(out.html);
+                    bind?.(out.bindData);
+                }
             }
             if (key.startsWith('home|')) this._launchMark('home');
         } catch { /* keep cached render on background failure */ }
@@ -2438,6 +2444,43 @@ const App = {
 
     _normalizeProduce(v) {
         return typeof v === 'string' ? { html: v, bindData: undefined } : v;
+    },
+
+    // Progress bars are always in the markup (hidden at zero) so that a
+    // book going from unstarted to started changes an attribute, not the
+    // shape of the DOM. That is what lets a refresh patch them in place.
+    _progressBarHtml(kind, progress) {
+        const pct = progress > 0 ? progress * 100 : 0;
+        return `<div class="${kind}-progress"${pct > 0 ? '' : ' hidden'}><div class="${kind}-progress-fill" style="width:${pct}%"></div></div>`;
+    },
+    _PROGRESS_RE: /<div class="(card|item)-progress"( hidden)?><div class="\1-progress-fill" style="width:[^"]*">/g,
+    _progressNeutral(html) {
+        return html.replace(this._PROGRESS_RE, '<div class="$1-progress"><div class="$1-progress-fill" style="width:">');
+    },
+    // A refresh whose only change is progress (you listened since the last
+    // paint, which is nearly every refresh) used to swap the whole tab's
+    // innerHTML a second or so after it painted: shelves jumped, a row you
+    // had scrolled snapped back, and a tap could land on a card that was
+    // being replaced. When the markup is identical once widths are ignored,
+    // copy the widths onto the live bars instead. Returns false when a real
+    // repaint is needed (a book added, removed, reordered, retitled).
+    _patchProgressInPlace(prevHtml, nextHtml) {
+        if (typeof prevHtml !== 'string') return false;
+        if (this._progressNeutral(prevHtml) !== this._progressNeutral(nextHtml)) return false;
+        const tpl = document.createElement('template');
+        tpl.innerHTML = nextHtml;
+        const sel = '.card-progress, .item-progress';
+        const next = tpl.content.querySelectorAll(sel);
+        const live = document.getElementById('content').querySelectorAll(sel);
+        if (next.length !== live.length) return false;
+        next.forEach((bar, i) => {
+            const target = live[i];
+            target.hidden = bar.hidden;
+            const fill = target.firstElementChild;
+            const want = bar.firstElementChild?.style.width || '0%';
+            if (fill && fill.style.width !== want) fill.style.width = want;
+        });
+        return true;
     },
 
     async showHome() {
@@ -2516,9 +2559,7 @@ const App = {
                     html += '</div>';
                     html += `<div class="card-title">${esc(title)}</div>`;
                     html += `<div class="card-sub">${esc(subtitle)}</div>`;
-                    if (progress > 0) {
-                        html += `<div class="card-progress"><div class="card-progress-fill" style="width:${progress*100}%"></div></div>`;
-                    }
+                    html += this._progressBarHtml('card', progress);
                     html += '</div>';
                 }
                 html += '</div>';
@@ -3024,9 +3065,7 @@ const App = {
         html += `<img src="${ABS.coverUrl(id)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
         html += `<button class="play-overlay" data-play-id="${id}">\u25B6</button>`;
         html += '</div>';
-        if (progress > 0) {
-            html += `<div class="item-progress"><div class="item-progress-fill" style="width:${progress*100}%"></div></div>`;
-        }
+        html += this._progressBarHtml('item', progress);
         html += '<div class="item-info">';
         html += `<div class="item-title">${esc(title || 'Unknown')}</div>`;
         html += `<div class="item-subtitle">${esc(author || '')}</div>`;
