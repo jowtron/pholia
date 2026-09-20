@@ -588,8 +588,16 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
     max-width: 500px; width: 100%;
 }
 .fs-cover-wrap {
-    position: relative; width: 500px; height: 500px;
-    max-width: min(500px, 80vw); max-height: min(500px, 80vw);
+    /* A square budget that the box fills along the art's longer side: the
+       aspect ratio comes from the image's natural size (player.js sets
+       --cover-ar on load), so a tall or wide cover is shown edge to edge
+       instead of letterboxed on a card. The back face (file info) shares
+       the box, which is why the box and not the img takes the ratio. */
+    --fs-cover-budget: min(500px, 80vw);
+    --cover-ar: 1;
+    position: relative;
+    width: min(var(--fs-cover-budget), calc(var(--fs-cover-budget) * var(--cover-ar)));
+    aspect-ratio: var(--cover-ar);
     perspective: 1200px; cursor: pointer; flex-shrink: 0;
     -webkit-tap-highlight-color: transparent;
 }
@@ -849,7 +857,7 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
         justify-content: flex-start;
     }
     /* Fill the width: 90vw is ~350px on a 390px phone (was capped at 280). */
-    .fs-cover-wrap { width: min(90vw, 420px); height: min(90vw, 420px); max-width: none; max-height: none; }
+    .fs-cover-wrap { --fs-cover-budget: min(90vw, 420px); }
     .fs-bottom {
         padding: 10px 16px 12px;
         padding-bottom: calc(12px + var(--safe-bottom));

@@ -20,6 +20,17 @@ const Player = {
 
     init() {
         this.audio.preload = 'auto';
+        // Size the fullscreen cover box to the art (see .fs-cover-wrap in
+        // style.css). Reset to square while nothing has loaded.
+        const fsCover = document.getElementById('fs-cover');
+        const fsWrap = document.getElementById('fs-cover-wrap');
+        if (fsCover && fsWrap) {
+            fsCover.addEventListener('load', () => {
+                const ar = fsCover.naturalWidth && fsCover.naturalHeight ? fsCover.naturalWidth / fsCover.naturalHeight : 1;
+                fsWrap.style.setProperty('--cover-ar', ar.toFixed(4));
+            });
+            fsCover.addEventListener('error', () => fsWrap.style.setProperty('--cover-ar', '1'));
+        }
         this.audio.addEventListener('timeupdate', () => this.onTimeUpdate());
         this.audio.addEventListener('ended', () => this.onTrackEnded());
         // A silent seek (see loadTime) pauses and resumes under the hood;
