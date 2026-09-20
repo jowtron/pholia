@@ -7,6 +7,14 @@ const App = {
 
     init() {
         this.setupCrashLog();
+        // Launch timing: how long index.html took, and when the scripts had
+        // parsed. The rest of the launch marks come from tryAutoLogin and the
+        // home render.
+        try {
+            const nav = performance.getEntriesByType('navigation')[0];
+            if (nav) Player._logMark('launch-html', Math.round(nav.responseEnd));
+        } catch {}
+        this._launchMark('js');
         Player.init();
         this.bindEvents();
         this.applyTabVisibility();
@@ -393,9 +401,15 @@ const App = {
             });
         });
 
-        // Initial poll (covers updates already installed at page load).
-        this._pollForUpdate();
-        this._checkBuildVersion();
+        // Initial poll (covers updates already installed at page load) —
+        // deferred so the index.html refetch and the sw.js re-download don't
+        // share the radio with the launch API calls (2026-09-20). Until this
+        // fires, checkForSwUpdate (the first switchTab) is a no-op too.
+        setTimeout(() => {
+            this._updateChecksArmed = true;
+            this._lastSwCheck = 0;
+            this.checkForSwUpdate();
+        }, 6000);
 
         // Reload when new SW takes control. Skip the first-install case so we
         // don't blow away in-memory state.
@@ -760,12 +774,38 @@ const App = {
 
         const creds = ABS.loadCredentials();
         if (creds) {
-            try {
-                this.libraries = await ABS.getLibraries();
+            // Paint from the previous launch's library list first (2026-09-20).
+            // The list almost never changes, and awaiting /api/libraries here
+            // kept the login screen up for a full round trip on every launch;
+            // the home tab then paints from its persisted copy (see
+            // _renderTab) so the shelves are up before the network answers.
+            const cachedLibs = this._loadCachedLibraries(creds);
+            if (cachedLibs) {
+                this.libraries = cachedLibs;
                 this._offlineMode = false;
                 this.setupLibrarySelector();
                 this.showMain();
+                this._launchMark('shell');
                 this.switchTab('home');
+            }
+            try {
+                const libs = await this._fetchLibraries();
+                this._launchMark('libraries');
+                const changed = JSON.stringify(libs) !== JSON.stringify(this.libraries);
+                this.libraries = libs;
+                this._offlineMode = false;
+                if (!cachedLibs) {
+                    this.setupLibrarySelector();
+                    this.showMain();
+                    this._launchMark('shell');
+                    this.switchTab('home');
+                } else if (changed) {
+                    // A library was added/removed/renamed: rebuild the picker
+                    // and, if that moved us to a different library, re-render.
+                    const before = this.currentLibraryId;
+                    this.setupLibrarySelector();
+                    if (this.currentLibraryId !== before) this.switchTab('home');
+                }
                 const offer = this._pendingHandoffOffer;
                 this._pendingHandoffOffer = null;
                 if (offer) setTimeout(() => this._maybeOfferSaveToAccount({ ...offer, handoff: true }), 400);
@@ -778,9 +818,15 @@ const App = {
                     ABS.token = '';
                     localStorage.removeItem('pholia_token');
                     if (await this._silentReloginViaAccount(savedServer, savedUser)) return;
+                    // The cached shelves may already be up: back to the login screen.
+                    document.getElementById('main-screen').classList.remove('active');
+                    document.getElementById('login-screen').classList.add('active');
                 } else {
                     // Network error or server down — keep credentials, show main UI
                     this._offlineMode = true;
+                    // With cached shelves painted there's nothing better to show:
+                    // the Downloaded row works, and visibilitychange/online retry.
+                    if (cachedLibs) return;
                     this.showMain();
                     const serverLink = ABS.serverUrl || savedServer || '';
                     this.setContent(
@@ -817,6 +863,40 @@ const App = {
             }
         }
         await this.setupPasskeyButton();
+    },
+
+    // The library list from the last successful /api/libraries, keyed by
+    // server + user so another account's libraries can never paint.
+    _librariesKey(creds) { return `pholia_libraries:${creds.serverUrl}|${creds.username || ''}`; },
+    _loadCachedLibraries(creds) {
+        try {
+            const v = JSON.parse(localStorage.getItem(this._librariesKey(creds)) || 'null');
+            return Array.isArray(v) && v.length && v.every(l => l && l.id) ? v : null;
+        } catch { return null; }
+    },
+    _saveCachedLibraries(creds, libs) {
+        try { localStorage.setItem(this._librariesKey(creds), JSON.stringify(libs)); } catch {}
+    },
+    // Every path that loads the library list goes through here so the next
+    // launch has a copy, whichever way this one signed in.
+    async _fetchLibraries() {
+        const libs = await ABS.getLibraries();
+        this._saveCachedLibraries({ serverUrl: ABS.serverUrl, username: localStorage.getItem('pholia_username') }, libs);
+        return libs;
+    },
+
+    // ── Launch timing ──
+    // Milestones in ms since navigation start, pushed into the audio event
+    // ring buffer as `mark` events so they ship with crash logs and the
+    // manual Send: html (index.html downloaded), js (scripts parsed),
+    // shell (main screen shown), home-cached (persisted shelves painted),
+    // libraries (/api/libraries answered), home (fresh shelves painted).
+    // First occurrence only — later tab taps are not launches.
+    _launchMarks: {},
+    _launchMark(name) {
+        if (this._launchMarks[name]) return;
+        this._launchMarks[name] = true;
+        Player._logMark('launch-' + name, Math.round(performance.now()));
     },
 
     // Keep a token-based session alive. A token from the ABS_shim hand-off
@@ -888,7 +968,7 @@ const App = {
                 throw new Error('No saved credentials for this server.');
             }
             ABS.saveCredentials(creds.server_url, creds.username, ABS.token);
-            this.libraries = await ABS.getLibraries();
+            this.libraries = await this._fetchLibraries();
             this._offlineMode = false;
             this.setupLibrarySelector();
             this.showMain();
@@ -1039,7 +1119,7 @@ const App = {
     async retryConnect() {
         this.setContent('<div class="loading">Connecting...</div>');
         try {
-            this.libraries = await ABS.getLibraries();
+            this.libraries = await this._fetchLibraries();
             this._offlineMode = false;
             this.setupLibrarySelector();
             this.switchTab('home');
@@ -1073,7 +1153,7 @@ const App = {
         try {
             await ABS.login(serverUrl, username, password);
             ABS.saveCredentials(serverUrl, username, ABS.token);
-            this.libraries = await ABS.getLibraries();
+            this.libraries = await this._fetchLibraries();
             this.setupLibrarySelector();
             this.showMain();
             this.switchTab('home');
@@ -1160,6 +1240,7 @@ const App = {
         const savedServer = localStorage.getItem('pholia_server');
         const savedUser = localStorage.getItem('pholia_username');
         ABS.clearCredentials();
+        this._clearPersistedTabs();
         this.hideSettings();
         document.getElementById('main-screen').classList.remove('active');
         document.getElementById('login-screen').classList.add('active');
@@ -1475,7 +1556,7 @@ const App = {
                     btn.textContent = ok ? 'Added ✓' : 'Retry';
                     btn.disabled = !!ok;
                     this.abbLoadRdList();
-                    if (ok) { this._tabCache = {}; }  // library/home tabs re-fetch to show the new book
+                    if (ok) { this._invalidateTabCache(); }  // library/home tabs re-fetch to show the new book
                 });
             });
             ul.appendChild(li);
@@ -1707,7 +1788,7 @@ const App = {
                 const r = await this._shimCall(`/api/admin/items/${encodeURIComponent(itemId)}?deleteFiles=1`, { method: 'DELETE' });
                 try { await Offline.deleteBook({ id: itemId, media: { tracks: [] } }); } catch { /* no offline copy */ }
                 close();
-                this._tabCache = {};
+                this._invalidateTabCache();
                 this.switchTab(this.currentTab);
                 if (r && r.reason) alert(r.reason);
             } catch (e) {
@@ -1832,7 +1913,7 @@ const App = {
                     r.setStatus('Adding to Real-Debrid…');
                     this._abbAddPaced(m.magnet, p.id, r, 'Adding')
                         .then((a) => { removeBtn(); return this.abbTrackTorrents([{ id: a.id, dest: p.dest }], folderId, listEl, r, { hash, title: m.title }); })
-                        .then((ok) => { this.abbLoadRdList(); if (ok) this._tabCache = {}; })
+                        .then((ok) => { this.abbLoadRdList(); if (ok) this._invalidateTabCache(); })
                         .catch((e) => r.fail('Add failed: ' + e.message));
                 };
                 let removeBtn = r.addButton('Retry', retry);
@@ -2122,8 +2203,9 @@ const App = {
 
     // ── Navigation ──
     _lastSwCheck: 0,
+    _updateChecksArmed: false,
     checkForSwUpdate() {
-        if (!('serviceWorker' in navigator)) return;
+        if (!('serviceWorker' in navigator) || !this._updateChecksArmed) return;
         // Debounce: at most one update check per 10s.
         const now = Date.now();
         if (now - this._lastSwCheck < 10000) return;
@@ -2233,10 +2315,38 @@ const App = {
     _tabCache: {},
     _tabRevalidating: {},
     _invalidateTabCache(tab) {
-        if (!tab) { this._tabCache = {}; return; }
+        if (!tab) { this._tabCache = {}; this._clearPersistedTabs(); return; }
         for (const k of Object.keys(this._tabCache)) {
             if (k.startsWith(tab + '|')) delete this._tabCache[k];
         }
+        this._clearPersistedTabs(tab);
+    },
+
+    // The home tab's last render also lives in localStorage (2026-09-20), so
+    // a cold launch paints the shelves before /personalized answers and the
+    // usual revalidate catches up behind it. Only home: it is the launch
+    // tab, and the others are one tap away with the same in-session cache.
+    // Keyed by server + user + library so another account's shelves can
+    // never show, and cleared with the in-memory cache and on logout.
+    PERSIST_TABS: ['home'],
+    _persistKey(key) { return `pholia_tab:${ABS.serverUrl}|${localStorage.getItem('pholia_username') || ''}|${key}`; },
+    _persistTab(key, html) {
+        if (!this.PERSIST_TABS.includes(key.split('|')[0])) return;
+        try { localStorage.setItem(this._persistKey(key), JSON.stringify({ html, ts: Date.now() })); } catch {}
+    },
+    _loadPersistedTab(key) {
+        if (!this.PERSIST_TABS.includes(key.split('|')[0])) return null;
+        try {
+            const v = JSON.parse(localStorage.getItem(this._persistKey(key)) || 'null');
+            return v && typeof v.html === 'string' && v.html ? v : null;
+        } catch { return null; }
+    },
+    _clearPersistedTabs(tab) {
+        try {
+            for (const k of Object.keys(localStorage)) {
+                if (k.startsWith('pholia_tab:') && (!tab || k.includes('|' + tab + '|'))) localStorage.removeItem(k);
+            }
+        } catch {}
     },
     // Back-compat for older call sites.
     _invalidateHomeCache() { this._invalidateTabCache('home'); },
@@ -2267,13 +2377,27 @@ const App = {
             }
             return;
         }
+        const persisted = this._loadPersistedTab(key);
+        if (persisted) {
+            // Cold launch: paint the last render now and refresh behind it.
+            // bind runs without its runtime data (the downloaded items); the
+            // handlers that need it look it up on tap instead.
+            this.setContent(persisted.html);
+            bind?.(undefined);
+            this._tabCache[key] = { html: persisted.html, bindData: undefined, ts: 0 };
+            if (key.startsWith('home|')) this._launchMark('home-cached');
+            this._refreshTab(key, produce, bind);
+            return;
+        }
         this.showLoading();
         try {
             const out = this._normalizeProduce(await produce());
             this._tabCache[key] = { ...out, ts: Date.now() };
+            this._persistTab(key, out.html);
             if (this._tabStillActive(key)) {
                 this.setContent(out.html);
                 bind?.(out.bindData);
+                if (key.startsWith('home|')) this._launchMark('home');
             }
         } catch (e) {
             if (this._tabStillActive(key)) {
@@ -2289,10 +2413,12 @@ const App = {
             const out = this._normalizeProduce(await produce());
             const prev = this._tabCache[key]?.html;
             this._tabCache[key] = { ...out, ts: Date.now() };
+            this._persistTab(key, out.html);
             if (this._tabStillActive(key) && prev !== out.html) {
                 this.setContent(out.html);
                 bind?.(out.bindData);
             }
+            if (key.startsWith('home|')) this._launchMark('home');
         } catch { /* keep cached render on background failure */ }
         finally { this._tabRevalidating[key] = false; }
     },
@@ -2409,9 +2535,14 @@ const App = {
     bindOfflineCardClicks(items) {
         const byId = Object.fromEntries(items.map(i => [i.id, i]));
         document.querySelectorAll('.offline-card[data-offline-id]').forEach(el => {
-            el.addEventListener('click', (e) => {
+            el.addEventListener('click', async (e) => {
                 if (e.target.closest('.play-overlay')) return;
-                const item = byId[el.dataset.offlineId];
+                // No items when the home was painted from its persisted copy:
+                // look the tapped one up in the offline store instead.
+                let item = byId[el.dataset.offlineId];
+                if (!item) {
+                    try { item = (await Offline.listDownloaded()).find(i => i.id === el.dataset.offlineId); } catch {}
+                }
                 if (item) this.showBookDetail(item);
             });
         });
@@ -2544,9 +2675,20 @@ const App = {
         });
     },
 
-    showSeriesDetail(seriesId, seriesName) {
+    async showSeriesDetail(seriesId, seriesName) {
         this.pushNav(seriesName);
-        const books = this._seriesCache[seriesId] || [];
+        let books = this._seriesCache[seriesId];
+        if (!books) {
+            // A home painted from its persisted copy has not primed the
+            // series map yet: fetch the series list once, like the Series tab.
+            this.showLoading();
+            try {
+                const data = await ABS.request(`/api/libraries/${this.currentLibraryId}/series?limit=200&sort=name`);
+                for (const s of (data.results || [])) this._seriesCache[s.id] = s.books || [];
+            } catch {}
+            if (this.navStack.length === 0) return;   // navigated away meanwhile
+            books = this._seriesCache[seriesId] || [];
+        }
         this.renderGrid(books);
     },
 
@@ -3373,7 +3515,7 @@ const App = {
             const r = await this._shimCall(`/api/admin/libraries/${encodeURIComponent(libId)}/scan`, { method: 'POST' });
             const errs = (r.errors || []).length;
             st.textContent = `Done: ${r.added || 0} added, ${r.skipped || 0} already known${errs ? ', ' + errs + ' error' + (errs === 1 ? '' : 's') + ' (see /admin)' : ''}.`;
-            if (r.added) this._tabCache = {};
+            if (r.added) this._invalidateTabCache();
         } catch (e) {
             st.textContent = 'Scan failed: ' + e.message;
         } finally {

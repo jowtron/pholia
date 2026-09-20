@@ -246,6 +246,17 @@ part from zero). Root cause and fix are in
   bar and recorded in every crash log's `audio_state.sw`. A heartbeat
   (`hb`) is logged while hidden — 5 s, 1 s for the minute after a boundary.
 
+## Cold launch paints before the network answers (2026-09-20)
+
+A tail of the shim during a launch showed the server side finishing in about a second (`/api/libraries` 156 ms, `/personalized` 627 ms); the wait was the client's strictly serial sequence: login screen until `/api/libraries` answered, then a "Loading" spinner until `/personalized` did, with the in-memory tab cache forgotten on every relaunch. Now:
+
+- **`tryAutoLogin` paints from the previous launch's library list** (`pholia_libraries:<server>|<user>` in localStorage, written by `_fetchLibraries()` on every path that loads libraries) and only then awaits `/api/libraries`. A changed list rebuilds the picker; a 401 with no silent re-login puts the login screen back; a network failure with cached shelves up just sets `_offlineMode` (the Downloaded row works, visibilitychange/online retry).
+- **The home tab's last render is persisted** (`pholia_tab:<server>|<user>|home|<lib>`, see `PERSIST_TABS`/`_persistTab`/`_loadPersistedTab`). `_renderTab` paints it, binds, and runs the normal `_refreshTab` behind it; because card handlers are bound per element, an identical refresh must NOT re-bind (it doesn't — `prev !== out.html` gates the repaint). The persisted paint binds without its runtime data, so the two handlers that need it fall back on tap: offline cards look the item up in `Offline.listDownloaded()`, and `showSeriesDetail` fetches the series list when `_seriesCache` has no entry. Every `_tabCache = {}` reset goes through `_invalidateTabCache()`, which also drops the persisted copy; `logout()` clears it too. Keyed by server + user so another account's shelves can never paint.
+- **The launch-time update checks are deferred 6 s** (`_updateChecksArmed`): `_checkBuildVersion` re-fetches index.html with no-store and `_pollForUpdate` re-downloads sw.js, and both were sharing the radio with the launch API calls.
+- **Launch marks** go into the audio event ring buffer as `mark` events (`_launchMark`): `launch-html` (index.html downloaded, from the navigation timing entry), `launch-js`, `launch-shell`, `launch-home-cached`, `launch-libraries`, `launch-home` — ms since navigation start, first occurrence only. They ship with any crash log / manual Send, so before-and-after numbers come from D1 (`events_json LIKE '%launch-home%'`).
+
+Verified in desktop Chrome against the local shim: shell at 11 ms and cached shelves at 13 ms, `/api/libraries` answering at 51 ms, all four launch API calls in flight together. Not yet measured on the phone.
+
 ## Player behaviour added 2026-09-06
 
 - **Continue Listening tap** (`resumeFromShelf`): the book that is already
