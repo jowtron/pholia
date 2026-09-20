@@ -259,6 +259,15 @@ Verified on the phone the same day: shell 42 ms, cached shelves 56 ms, `/api/lib
 
 **The "fully downloaded" scan was the real cost, not the network.** The green dot on a card means every chunk of every track is in the offline audio cache, and deciding that meant re-reading and JSON-parsing every downloaded item's record plus listing every audio-cache key — on every tab paint (`markDownloadedCards` from `bindCardClicks`) and again in the home render, about a second each on an iPhone. That is why the dots lagged a tab switch and most of why fresh shelves took 3 s when the shim answered in 0.6. `Offline._fullyScan()` now memoises the answer on `_coverageVersion` (bumped by every page-side chunk write/delete, `saveMeta` and `notifySwCacheChanged`; the SW itself never writes audio chunks) with a 60 s TTL backstop, and `fullyDownloaded()`/`fullyDownloadedIds()` both read it. Two more launch marks, `launch-scan` and `launch-personalized`, split the home render's two halves so the next slow launch can be blamed correctly. The Library tab is persisted like home (`PERSIST_TABS`), so the first tap per launch no longer waits for the 200-item listing.
 
+## Covers at their own aspect ratio (2026-09-20)
+
+Every cover used to be a square crop (`object-fit: cover`) or, in the fullscreen player, a square box with bars. Now:
+
+- **Cards (home shelves, offline row, Library/search grids)** wrap the img in `.cover-box`, a square slot the cover sits on the bottom edge of, like a book on a shelf, so rows stay aligned and nothing is cropped. `App.init` has one capture-phase `load` listener that sets `--ar` (natural width/height) on the box; the CSS derives the cover's box, the play overlay and the top-left of the series badge and the downloaded dot from it. `--ar` is 1 until the image loads (a square placeholder). The dot's offsets live in the main dot rule because that selector outranks a generic override. `.grid-item` no longer has a card background, otherwise a portrait cover sits on bars.
+- **Book page and mini player** just use `width/height: auto` with `max-width/max-height` at the old square size.
+- **Fullscreen player** sizes `.fs-cover-wrap` itself from `--cover-ar` (set by player.js on load) because the flip side shares the box.
+- **Persisted tab renders carry the build hash in their key** (`_persistKey`), since a render is markup and the old card markup must not paint under the new CSS after an update. `.h-scroll .card > img` / `.grid-item > img` fallbacks cover a bare img anyway.
+
 ## Player behaviour added 2026-09-06
 
 - **Continue Listening tap** (`resumeFromShelf`): the book that is already

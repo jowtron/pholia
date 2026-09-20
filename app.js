@@ -15,6 +15,17 @@ const App = {
             if (nav) Player._logMark('launch-html', Math.round(nav.responseEnd));
         } catch {}
         this._launchMark('js');
+        // Cards show covers at their own aspect ratio inside a square
+        // "shelf" slot (.cover-box in style.css): the box learns the ratio
+        // when its image loads, and the CSS sizes the cover, the play
+        // overlay and the badges from it. Capture phase — load doesn't bubble.
+        document.addEventListener('load', (e) => {
+            const img = e.target;
+            if (!(img instanceof HTMLImageElement)) return;
+            const box = img.parentElement;
+            if (!box || !box.classList.contains('cover-box')) return;
+            if (img.naturalWidth && img.naturalHeight) box.style.setProperty('--ar', (img.naturalWidth / img.naturalHeight).toFixed(4));
+        }, true);
         Player.init();
         this.bindEvents();
         this.applyTabVisibility();
@@ -2329,7 +2340,9 @@ const App = {
     // Keyed by server + user + library so another account's shelves can
     // never show, and cleared with the in-memory cache and on logout.
     PERSIST_TABS: ['home', 'library'],
-    _persistKey(key) { return `pholia_tab:${ABS.serverUrl}|${localStorage.getItem('pholia_username') || ''}|${key}`; },
+    // The build hash is part of the key: a persisted render is markup, and
+    // after an update it must not paint under CSS written for new markup.
+    _persistKey(key) { return `pholia_tab:${document.getElementById('build-version')?.textContent?.trim() || 'dev'}|${ABS.serverUrl}|${localStorage.getItem('pholia_username') || ''}|${key}`; },
     _persistTab(key, html) {
         if (!this.PERSIST_TABS.includes(key.split('|')[0])) return;
         try { localStorage.setItem(this._persistKey(key), JSON.stringify({ html, ts: Date.now() })); } catch {}
@@ -2494,11 +2507,13 @@ const App = {
                     // overlay is small; the whole tile is the obvious target).
                     const resumeAttr = section.id === 'continue-listening' && section.type === 'book' ? ' data-resume="1"' : '';
                     html += `<div class="card" data-id="${itemId}" data-type="${section.type}"${titleAttr}${resumeAttr}${episodeId ? ` data-episode-id="${episodeId}"` : ''}>`;
+                    html += '<div class="cover-box">';
                     if (section.type === 'book') html += this._seqBadge(meta);
                     if (coverSrc) {
                         html += `<img src="${coverSrc}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
                     }
                     html += `<button class="play-overlay" data-play-id="${itemId}"${episodeId ? ` data-play-episode="${episodeId}"` : ''}>\u25B6</button>`;
+                    html += '</div>';
                     html += `<div class="card-title">${esc(title)}</div>`;
                     html += `<div class="card-sub">${esc(subtitle)}</div>`;
                     if (progress > 0) {
@@ -2524,8 +2539,10 @@ const App = {
             const title = meta.title || 'Unknown';
             const subtitle = meta.authorName || '';
             html += `<div class="card offline-card" data-offline-id="${item.id}">`;
+            html += '<div class="cover-box">';
             html += `<img src="${ABS.coverUrl(item.id)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
             html += `<button class="play-overlay" data-offline-play="${item.id}">▶</button>`;
+            html += '</div>';
             html += `<div class="card-title">${esc(title)}</div>`;
             html += `<div class="card-sub">${esc(subtitle)}</div>`;
             html += '</div>';
@@ -3002,9 +3019,11 @@ const App = {
 
     gridItemHtml(id, title, author, progress, meta) {
         let html = `<div class="grid-item" data-id="${id}">`;
+        html += '<div class="cover-box">';
         html += this._seqBadge(meta);
         html += `<img src="${ABS.coverUrl(id)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
         html += `<button class="play-overlay" data-play-id="${id}">\u25B6</button>`;
+        html += '</div>';
         if (progress > 0) {
             html += `<div class="item-progress"><div class="item-progress-fill" style="width:${progress*100}%"></div></div>`;
         }

@@ -295,10 +295,28 @@ main {
 .h-scroll .card {
     flex-shrink: 0; width: 130px; scroll-snap-align: start; cursor: pointer;
 }
-.h-scroll .card img {
-    width: 130px; height: 130px; border-radius: var(--radius);
-    object-fit: cover; background: var(--card-bg);
+/* Covers keep their own aspect ratio inside a square slot, sitting on its
+   bottom edge like a book on a shelf, so rows stay aligned and nothing is
+   cropped. --ar is set on the box by app.js when the image loads (1 until
+   then = a square placeholder); the overlay and badges derive their box
+   from the same value so they track the visible cover, not the slot. */
+.cover-box { position: relative; width: 100%; aspect-ratio: 1; --ar: 1; }
+.cover-box img {
+    position: absolute; bottom: 0; left: 50%; transform: translateX(-50%);
+    width: min(100%, calc(100% * var(--ar))); height: auto; aspect-ratio: var(--ar);
+    border-radius: var(--radius); background: var(--card-bg); display: block;
 }
+.cover-box .play-overlay {
+    top: auto; bottom: 0; left: 50%; transform: translateX(-50%);
+    width: min(100%, calc(100% * var(--ar))); aspect-ratio: var(--ar);
+    border-radius: var(--radius);
+}
+.cover-box .seq-badge {
+    left: calc(50% - min(50%, calc(50% * var(--ar))) + 6px);
+    top: calc(100% - min(100%, calc(100% / var(--ar))) + 6px);
+}
+/* A render persisted by an older build still has a bare img in the card. */
+.h-scroll .card > img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: var(--radius); }
 .h-scroll .card .card-title {
     font-size: 0.8rem; font-weight: 600; margin-top: 0.35rem;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -318,7 +336,7 @@ main {
 .grid {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 1rem;
 }
-.grid-item { cursor: pointer; border-radius: var(--radius); overflow: hidden; background: var(--card-bg); position: relative; }
+.grid-item { cursor: pointer; border-radius: var(--radius); position: relative; }
 /* Long-press opens our own menu; stop iOS's image callout / text selection. */
 .grid-item, .h-scroll .card { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 .confirm-title { font-weight: 600; margin-bottom: 0.5rem; overflow-wrap: anywhere; }
@@ -327,8 +345,11 @@ main {
 .detail-delete-btn { color: #f87171; }
 
 /* Downloaded badge — small green dot in the top-left corner of cards */
-.grid-item.is-downloaded::before, .h-scroll .card.is-downloaded::before {
-    content: ''; position: absolute; top: 6px; left: 6px;
+.grid-item.is-downloaded .cover-box::before, .h-scroll .card.is-downloaded .cover-box::before {
+    content: ''; position: absolute;
+    /* top-left of the visible cover, not of the square slot (see .cover-box) */
+    left: calc(50% - min(50%, calc(50% * var(--ar))) + 6px);
+    top: calc(100% - min(100%, calc(100% / var(--ar))) + 6px);
     width: 10px; height: 10px; border-radius: 50%;
     background: #22c55e; box-shadow: 0 0 0 2px var(--bg);
     z-index: 2; pointer-events: none;
@@ -344,12 +365,11 @@ main {
     pointer-events: none; z-index: 1; transition: width 0.3s ease;
 }
 .h-scroll .card { position: relative; }
-.grid-item img {
-    width: 100%; aspect-ratio: 1; object-fit: cover; background: var(--card-bg);
-}
+/* A render persisted by an older build still has a bare img in the item. */
+.grid-item > img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: var(--radius); }
 .grid-item .item-progress { height: 3px; background: rgba(255,255,255,0.1); }
 .grid-item .item-progress-fill { height: 100%; background: var(--accent); }
-.grid-item .item-info { padding: 0.5rem 0.6rem; }
+.grid-item .item-info { padding: 0.4rem 0 0; }
 .grid-item .item-title {
     font-size: 0.8rem; font-weight: 600;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -848,7 +868,6 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
     /* ~2.6 cards per viewport so the third is visibly cut off (130px cards
        used to fit exactly three on a 390px phone — looked like a grid). */
     .h-scroll .card { width: calc((100% - 1.5rem) / 2.6); }
-    .h-scroll .card img { width: 100%; height: auto; aspect-ratio: 1; }
 
     .detail-header { flex-direction: column; align-items: center; text-align: center; }
     .detail-cover { max-width: 180px; max-height: 180px; }
@@ -873,7 +892,6 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
     .grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
     .detail-cover { max-width: 200px; max-height: 200px; }
     .h-scroll .card { width: 150px; }
-    .h-scroll .card img { width: 150px; height: 150px; }
 }
 
 /* ── Add audiobook (ABS_shim ABB → Real-Debrid) ── */
