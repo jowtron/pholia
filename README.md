@@ -1,5 +1,7 @@
 # Pholia
 
+[![Deploy to Cloudflare Pages](https://github.com/jowtron/pholia/actions/workflows/deploy.yml/badge.svg)](https://github.com/jowtron/pholia/actions/workflows/deploy.yml)
+
 A static-HTML/CSS/JS Audiobookshelf client — installable as a PWA, deployed to Cloudflare Pages, no build step.
 
 Live: [pholia.pages.dev](https://pholia.pages.dev) (older URL `cadence-6re.pages.dev` still resolves)
