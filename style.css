@@ -742,7 +742,11 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
     padding: 8px; display: flex; align-items: center;
 }
 .fs-airplay-btn[hidden] { display: none; }
-.fs-airplay-btn:hover, .fs-airplay-btn.active { color: var(--accent); }
+.fs-airplay-btn.active { color: var(--accent); }
+/* Hover only where there is a real pointer: iOS keeps :hover on the last
+   thing tapped, which painted this button purple after every tap and grey
+   again as soon as Play was pressed, and read exactly like a route state. */
+@media (hover: hover) { .fs-airplay-btn:hover { color: var(--accent); } }
 
 /* FS chapters — a page sitting to the right of the player, slid in on
    demand. It has to be a sibling of .fs-bottom (not inside it): the old

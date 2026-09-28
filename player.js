@@ -146,14 +146,26 @@ const Player = {
             btn.hidden = e.availability !== 'available';
             this._logAirPlay({ ev: 'airplay-available', v: e.availability });
         });
-        // Lit while WebKit says the element itself is playing to a speaker.
-        // Unverified for audio: an audio-only AirPlay route may never set
-        // this, in which case the icon just stays grey.
-        a.addEventListener('webkitcurrentplaybacktargetiswirelesschanged', () => {
-            const on = !!a.webkitCurrentPlaybackTargetIsWireless;
-            btn.classList.toggle('active', on);
-            this._logAirPlay({ ev: 'airplay-wireless', v: on });
-        });
+        // Lit while WebKit says this element is playing to a speaker. Two
+        // signals, read together: the prefixed flag and the Remote Playback
+        // state (listened to only, never prompted — see above). Both are
+        // UNVERIFIED for an audio-only AirPlay route and may never turn on,
+        // in which case the icon stays grey. The route outlives a pause, so
+        // play and pause re-read rather than clear it, and every reading is
+        // logged so a crash-log Send shows which signal, if any, iOS sets.
+        const markRoute = (why) => {
+            const wireless = !!a.webkitCurrentPlaybackTargetIsWireless;
+            const remote = a.remote ? a.remote.state : null;
+            btn.classList.toggle('active', wireless || remote === 'connected');
+            this._logAirPlay({ ev: 'airplay-route', why, wireless, remote });
+        };
+        a.addEventListener('webkitcurrentplaybacktargetiswirelesschanged', () => markRoute('wireless-event'));
+        if (a.remote) {
+            ['connecting', 'connect', 'disconnect'].forEach(ev =>
+                a.remote.addEventListener(ev, () => markRoute('remote-' + ev)));
+        }
+        a.addEventListener('play', () => markRoute('play'));
+        a.addEventListener('pause', () => markRoute('pause'));
         btn.addEventListener('click', () => {
             this._logAirPlay({ ev: 'airplay-picker' });
             a.webkitShowPlaybackTargetPicker();
