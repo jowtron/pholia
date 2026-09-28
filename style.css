@@ -733,6 +733,17 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
 }
 .fs-sleep-menu button:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 
+/* Sleep and AirPlay share one row. The buttons are the same 44 px as the
+   sleep button was alone, so the Chapters button below keeps its height and
+   the chapters page's own back button still lands under the same thumb. */
+.fs-extras { display: flex; align-items: center; justify-content: center; gap: 16px; }
+.fs-airplay-btn {
+    background: none; border: none; color: var(--text-muted); cursor: pointer;
+    padding: 8px; display: flex; align-items: center;
+}
+.fs-airplay-btn[hidden] { display: none; }
+.fs-airplay-btn:hover, .fs-airplay-btn.active { color: var(--accent); }
+
 /* FS chapters — a page sitting to the right of the player, slid in on
    demand. It has to be a sibling of .fs-bottom (not inside it): the old
    inline list was capped at 250px under the controls, so a 40-chapter book

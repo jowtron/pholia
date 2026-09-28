@@ -67,6 +67,7 @@ const Player = {
         this.updateSkipLabels();
 
         this.setupMediaSession();
+        this.setupAirPlay();
 
         // The server only knows the position as of the last sync. Flush it
         // when the app goes to the background or is about to be killed —
@@ -120,6 +121,55 @@ const Player = {
                 this.loadTime(target, 'ms-seekto');
             });
         } catch (e) { /* not supported on this browser */ }
+    },
+
+    // AirPlay button in the fullscreen player (Safari only; everywhere else
+    // it stays hidden). It opens the same speaker picker as Control Center:
+    // the phone keeps playing and iOS sends the audio on, so downloads,
+    // partial caching, progress sync and the lock screen behave exactly as
+    // they do on the phone's own speaker. Sonos appears in the list through
+    // the airupnp bridge on the home network, not through anything here.
+    //
+    // Deliberately NOT the standard Remote Playback API (audio.remote): on
+    // Chrome that hands the file's URL to a Chromecast, which then fetches it
+    // itself, and none of Pholia's playback or progress handling is built for
+    // a speaker playing a book the phone isn't.
+    setupAirPlay() {
+        const btn = document.getElementById('fs-airplay');
+        const a = this.audio;
+        if (!btn || typeof a.webkitShowPlaybackTargetPicker !== 'function'
+            || !window.WebKitPlaybackTargetAvailabilityEvent) return;
+        // Listening for availability is what starts WebKit looking for
+        // speakers; it answers straight away and again whenever one comes or
+        // goes.
+        a.addEventListener('webkitplaybacktargetavailabilitychanged', (e) => {
+            btn.hidden = e.availability !== 'available';
+            this._logAirPlay({ ev: 'airplay-available', v: e.availability });
+        });
+        // Lit while WebKit says the element itself is playing to a speaker.
+        // Unverified for audio: an audio-only AirPlay route may never set
+        // this, in which case the icon just stays grey.
+        a.addEventListener('webkitcurrentplaybacktargetiswirelesschanged', () => {
+            const on = !!a.webkitCurrentPlaybackTargetIsWireless;
+            btn.classList.toggle('active', on);
+            this._logAirPlay({ ev: 'airplay-wireless', v: on });
+        });
+        btn.addEventListener('click', () => {
+            this._logAirPlay({ ev: 'airplay-picker' });
+            a.webkitShowPlaybackTargetPicker();
+        });
+    },
+
+    _logAirPlay(data) {
+        try {
+            console.log('[audio]', data);
+            if (typeof App !== 'undefined' && App?._swLog) {
+                const ts = new Date().toISOString().substring(11, 23);
+                App._swLog.push(`${ts} audio ${JSON.stringify(data)}`);
+                if (App._swLog.length > (App._swLogMax || 200)) App._swLog.shift();
+                App._renderSwLog?.();
+            }
+        } catch {}
     },
 
     _bufferedSummary() {

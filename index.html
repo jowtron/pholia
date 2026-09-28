@@ -398,6 +398,7 @@
                         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="36" height="36" stroke-width="3" stroke="currentColor" fill="none"><polyline points="54.43 15.41 51.83 24.05 43.19 21.44" stroke-linecap="round"/><path d="M51.86,23.94a21.91,21.91,0,1,0,.91,13.25" stroke-linecap="round"/><text x="23" y="40" font-size="14" font-weight="600" fill="currentColor" stroke="none" font-family="sans-serif" id="fs-forward-text">30</text></svg>
                     </button>
                 </div>
+                <div class="fs-extras">
                 <div class="fs-sleep-wrap">
                     <button class="fs-sleep-btn" id="fs-sleep">
                         <svg width="28" height="28" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M25 17.79A11 11 0 1 1 13.21 5 8.5 8.5 0 0 0 25 17.79z"/><text x="18" y="12" font-size="6" font-weight="bold" fill="currentColor" stroke="none" font-family="sans-serif">z</text><text x="22" y="8" font-size="7" font-weight="bold" fill="currentColor" stroke="none" font-family="sans-serif">z</text><text x="26" y="3.5" font-size="8" font-weight="bold" fill="currentColor" stroke="none" font-family="sans-serif">z</text></svg>
@@ -413,6 +414,12 @@
                         <button data-minutes="chapter">End of chapter</button>
                         <button id="fs-sleep-cancel" style="display:none">Cancel timer</button>
                     </div>
+                </div>
+                <!-- AirPlay (Safari only): shown by Player.setupAirPlay while a
+                     speaker is in range. -->
+                <button class="fs-airplay-btn" id="fs-airplay" type="button" title="AirPlay" aria-label="Play on another speaker" hidden>
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5.64 17.36A9 9 0 1 1 18.36 17.36"/><path d="M8.46 14.54A5 5 0 1 1 15.54 14.54"/><path d="M12 15l5 6H7z" fill="currentColor" stroke="none"/></svg>
+                </button>
                 </div>
                 <button class="text-btn" id="fs-toggle-chapters">Chapters &rsaquo;</button>
             </div>
