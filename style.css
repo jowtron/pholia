@@ -742,10 +742,10 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
     padding: 8px; display: flex; align-items: center;
 }
 .fs-airplay-btn[hidden] { display: none; }
-.fs-airplay-btn.active { color: var(--accent); }
 /* Hover only where there is a real pointer: iOS keeps :hover on the last
    thing tapped, which painted this button purple after every tap and grey
-   again as soon as Play was pressed, and read exactly like a route state. */
+   again as soon as Play was pressed, and read exactly like a route state.
+   There is deliberately no "on a speaker" colour: see setupAirPlay. */
 @media (hover: hover) { .fs-airplay-btn:hover { color: var(--accent); } }
 
 /* FS chapters — a page sitting to the right of the player, slid in on

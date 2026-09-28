@@ -146,49 +146,16 @@ const Player = {
             btn.hidden = e.availability !== 'available';
             this._logAirPlay({ ev: 'airplay-available', v: e.availability });
         });
-        // Lit while WebKit says this element is playing to a speaker. Two
-        // signals, read together: the prefixed flag and the Remote Playback
-        // state (listened to only, never prompted — see above).
-        //
-        // What iOS 26 actually reported on Joseph's phone (2026-09-29, Sonos
-        // via airupnp): the prefixed flag stayed false throughout and
-        // remote.state never reached 'connected', but it went to
-        // 'connecting' 12 ms after `playing` and held there through the
-        // pause. So 'connecting' counts as on a speaker. THAT READING IS A
-        // CANDIDATE, not yet confirmed: the log could not show whether the
-        // phone was already routed to the Sonos when it went 'connecting'.
-        // The route outlives a pause, so play and pause re-read rather than
-        // clear it, and every reading is logged so a crash-log Send shows
-        // which signal moved.
-        let last = '';
-        const markRoute = (why) => {
-            const wireless = !!a.webkitCurrentPlaybackTargetIsWireless;
-            const remote = a.remote ? a.remote.state : null;
-            const on = wireless || remote === 'connected' || remote === 'connecting';
-            btn.classList.toggle('active', on);
-            const reading = `${wireless}|${remote}`;
-            if (why === 'poll' && reading === last) return;
-            last = reading;
-            this._logAirPlay({ ev: 'airplay-route', why, wireless, remote, on });
-        };
-        // TEMPORARY while the signal is being established: re-read every 3 s
-        // while the fullscreen player is on screen, logging only changes, in
-        // case iOS moves either value without firing its event. Remove once
-        // the route signal is settled.
-        setInterval(() => {
-            if (document.visibilityState !== 'visible') return;
-            if (document.getElementById('fs-player')?.classList.contains('hidden')) return;
-            markRoute('poll');
-        }, 3000);
-        a.addEventListener('webkitcurrentplaybacktargetiswirelesschanged', () => markRoute('wireless-event'));
-        if (a.remote) {
-            ['connecting', 'connect', 'disconnect'].forEach(ev =>
-                a.remote.addEventListener(ev, () => markRoute('remote-' + ev)));
-        }
-        a.addEventListener('play', () => markRoute('play'));
-        a.addEventListener('pause', () => markRoute('pause'));
+        // NO "playing to a speaker" highlight, on purpose. Both signals a page
+        // has were tried on Joseph's phone (iOS 26, Sonos via airupnp,
+        // 2026-09-29) and neither tells the routes apart:
+        //   - webkitCurrentPlaybackTargetIsWireless stayed false on the Sonos;
+        //   - audio.remote.state goes to 'connecting' on EVERY play, on the
+        //     phone's own speaker too, and never reaches 'connected'.
+        // Control Center and the lock screen already show the route. Don't
+        // add a highlight back without a new signal and a phone test.
         btn.addEventListener('click', () => {
-            markRoute('picker');
+            this._logAirPlay({ ev: 'airplay-picker' });
             a.webkitShowPlaybackTargetPicker();
         });
     },
