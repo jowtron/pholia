@@ -713,6 +713,7 @@ const App = {
             // single-item endpoint.
             if (document.visibilityState === 'visible' && ABS.token && !this._offlineMode) {
                 this._refreshCurrentItemProgress();
+                if (Date.now() - (this._librariesCheckedAt || 0) > 5 * 60 * 1000) this._refreshLibraries();
             }
         });
         window.addEventListener('online', () => {
@@ -900,6 +901,22 @@ const App = {
     },
     // Every path that loads the library list goes through here so the next
     // launch has a copy, whichever way this one signed in.
+    // Re-read /api/libraries and rebuild the picker if the list changed: a
+    // library or a shim library view added in /admin. Launch does the same
+    // after painting from cache; this is for an app that stays open (Rescan,
+    // and coming back to the foreground at most every 5 minutes).
+    async _refreshLibraries() {
+        this._librariesCheckedAt = Date.now();
+        try {
+            const libs = await this._fetchLibraries();
+            if (JSON.stringify(libs) === JSON.stringify(this.libraries)) return;
+            this.libraries = libs;
+            const before = this.currentLibraryId;
+            this.setupLibrarySelector();
+            if (this.currentLibraryId !== before) this.switchTab('home');
+        } catch { /* offline or server down: keep the list we have */ }
+    },
+
     async _fetchLibraries() {
         const libs = await ABS.getLibraries();
         this._saveCachedLibraries({ serverUrl: ABS.serverUrl, username: localStorage.getItem('pholia_username') }, libs);
@@ -3693,6 +3710,7 @@ const App = {
             const errs = (r.errors || []).length;
             st.textContent = `Done: ${r.added || 0} added, ${r.skipped || 0} already known${errs ? ', ' + errs + ' error' + (errs === 1 ? '' : 's') + ' (see /admin)' : ''}.`;
             if (r.added) this._invalidateTabCache();
+            await this._refreshLibraries();
         } catch (e) {
             st.textContent = 'Scan failed: ' + e.message;
         } finally {
