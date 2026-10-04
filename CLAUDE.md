@@ -147,6 +147,8 @@ paths) are intentionally left out of this repo; keep them in private notes.
 - **Podcast episodes:** library items endpoint returns podcasts without episodes. Use `/api/items/{id}?expanded=1`.
 - **Playback sessions:** `POST /api/items/{id}/play/{episodeId}` for podcasts. Session has `audioTracks` with `contentUrl` and `startOffset`.
 - **HEAD on file endpoints:** ABS responds with correct `Content-Length` (the full file size). Use this for chunked download size discovery.
+- **Library list changes at runtime (2026-10-04, a3b1959).** ABS_shim lists *library views* (filtered libraries, e.g. one Audible account) as ordinary libraries, which is what makes `#library-selector` appear. The picker used to be built only at launch; `_refreshLibraries()` re-reads `/api/libraries` after the shim Rescan and on returning to the foreground (at most every 5 minutes) and rebuilds the picker only when the list changed. Nothing may compare an item's `libraryId` to `currentLibraryId`: a book inside a view still reports the real library's id.
+- **Author images (2026-10-04, ab6d800).** Always build them with `ABS.authorImageUrl(id, full)`: `size=thumb` (shim: 500 px) for lists and the author header, `size=full` (1200 px) for the lightbox. The author page opens with `_authorHeaderHtml` (round photo → `_abbLightbox`, bio clamped to four lines, tap to expand). The old `&width=96` URLs were dropped on purpose: phones hold them in the HTTP cache for 30 days with the multi-MB originals the shim used to serve.
 
 ## Back goes back ONE level, and the stack knows how to redraw (2026-09-21, 04452ad)
 
