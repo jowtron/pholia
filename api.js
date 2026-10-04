@@ -199,8 +199,10 @@ const ABS = {
     },
 
     // Author photo URL — different endpoint from item covers.
-    authorImageUrl(authorId) {
-        return `${this.serverUrl}/api/authors/${authorId}/image?token=${this.token}`;
+    // size=full is the shim's 1200 px copy (the lightbox); without it the
+    // shim serves 500 px. Real ABS ignores the parameter.
+    authorImageUrl(authorId, full) {
+        return `${this.serverUrl}/api/authors/${authorId}/image?token=${this.token}&size=${full ? 'full' : 'thumb'}`;
     },
 
     // Audio track URL (direct — audio tags don't need CORS proxy)

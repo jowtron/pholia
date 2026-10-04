@@ -473,6 +473,10 @@ const App = {
             const img = e.target.closest && e.target.closest('img.detail-cover');
             if (img && img.src && img.style.visibility !== 'hidden') this._abbLightbox(img.src);
         });
+        document.addEventListener('click', (e) => {
+            const img = e.target.closest && e.target.closest('img.author-photo');
+            if (img) this._abbLightbox(img.dataset.full || img.src, img.src);
+        });
         document.getElementById('search-btn').addEventListener('click', () => this.showSearch());
         document.getElementById('abb-btn').addEventListener('click', () => this.toggleAdd());
         document.getElementById('content').addEventListener('scroll', (e) => {
@@ -2935,7 +2939,7 @@ const App = {
                 const hasImage = a.imagePath;
                 html += `<div class="list-item" data-author-id="${a.id}" data-author-name="${esc(a.name)}">`;
                 if (hasImage) {
-                    html += `<img src="${ABS.serverUrl}/api/authors/${a.id}/image?token=${ABS.token}&width=96" alt="">`;
+                    html += `<img src="${ABS.authorImageUrl(a.id)}" alt="" loading="lazy">`;
                 } else {
                     html += `<div class="list-placeholder">${esc((a.name || '?')[0])}</div>`;
                 }
@@ -2957,10 +2961,24 @@ const App = {
         try {
             const data = await ABS.request(`/api/authors/${authorId}?include=items`);
             const books = data.libraryItems || [];
-            this.renderGrid(books);
+            this.setContent(this._authorHeaderHtml(data) + this.gridHtml(books));
+            this.bindCardClicks();
         } catch (e) {
             this.setContent(`<div class="loading">Error: ${esc(e.message)}</div>`);
         }
+    },
+
+    // Photo (tap → lightbox at full size) and biography above an author's
+    // books. The bio is clamped to a few lines; tapping it expands it.
+    _authorHeaderHtml(a) {
+        const bio = (a.description || '').trim();
+        if (!a.imagePath && !bio) return '';
+        let html = '<div class="author-header">';
+        if (a.imagePath) {
+            html += `<img class="author-photo" src="${ABS.authorImageUrl(a.id)}" data-full="${ABS.authorImageUrl(a.id, true)}" alt="" onerror="this.remove()">`;
+        }
+        if (bio) html += `<div class="author-bio" onclick="this.classList.toggle('open')">${esc(bio)}</div>`;
+        return html + '</div>';
     },
 
     // ── Listening stats ──
