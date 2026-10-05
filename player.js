@@ -92,9 +92,12 @@ const Player = {
     },
     _saveLocalPos(clear = false) {
         if (!this.item) return;
+        // A podcast's episodes share the show's item id; each needs its own
+        // slot or one episode's position would resume another.
+        const key = 'pholia_pos_' + this.item.id + (this.item.episodeId ? ':' + this.item.episodeId : '');
         try {
-            if (clear) localStorage.removeItem('pholia_pos_' + this.item.id);
-            else localStorage.setItem('pholia_pos_' + this.item.id, JSON.stringify({ t: this.getGlobalTime(), at: Date.now() }));
+            if (clear) localStorage.removeItem(key);
+            else localStorage.setItem(key, JSON.stringify({ t: this.getGlobalTime(), at: Date.now() }));
         } catch {}
     },
 
@@ -729,7 +732,10 @@ const Player = {
     },
 
     getTotalDuration() {
-        return this.session?.duration || this.item?.media?.duration || this.tracks.reduce((s, t) => s + t.duration, 0);
+        // Last resort: the element's own duration. A podcast feed that gives
+        // no itunes:duration leaves the session's at 0 until the file loads.
+        return this.session?.duration || this.item?.media?.duration || this.tracks.reduce((s, t) => s + t.duration, 0)
+            || (Number.isFinite(this.audio?.duration) ? this.audio.duration : 0);
     },
 
     getCurrentChapter() {
@@ -1183,7 +1189,8 @@ const Player = {
         this._saveLocalPos(finished);
         try {
             if (this.session) await ABS.syncSession(this.session.id, gt, dur, listened, opts);
-            else await ABS.updateProgress(this.item.id, {
+            // An episode's progress is its own: /api/me/progress/:item/:episode.
+            else await ABS.updateProgress(this.item.episodeId ? `${this.item.id}/${this.item.episodeId}` : this.item.id, {
                 currentTime: gt, duration: dur,
                 progress: dur > 0 ? gt / dur : 0, isFinished: finished,
             }, opts);

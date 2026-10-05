@@ -1358,6 +1358,7 @@ const App = {
     isShim: false,     // server answers /api/admin/abb/settings → ABS_shim (enables the rescan setting)
     shimCanDelete: false, // …and says canDelete (tenant owner) → long-press delete-from-pCloud
     abbFolderId: null,
+    shimCanAdd: false, // shim says the caller may add (podcast subscribe, ABB grabs)
     abbLibraryId: null,
     _abbRoot: null,
 
@@ -1370,7 +1371,12 @@ const App = {
             // Older shims don't send the flags: treat missing as allowed so a
             // shim from before 2026-09-05 keeps working; the shim 403s anyway.
             this.shimCanDelete = !!s && s.canDelete !== false;
-            if (s && s.rdTokenSet && s.canGrab !== false) {
+            this.shimCanAdd = !!s && s.canGrab !== false;
+            // A podcast library's Add screen subscribes to feeds rather than
+            // grabbing from AudioBookBay, so it needs no Real-Debrid token.
+            if (s && this.currentMediaType === 'podcast') {
+                ok = this.shimCanAdd;
+            } else if (s && s.rdTokenSet && s.canGrab !== false) {
                 const st = await ABS.request('/api/admin/storage/status');
                 const folders = (st?.folders || []).filter(f => f.provider === 'pcloud_oauth');
                 const mine = folders.find(f => f.libraryId === this.currentLibraryId) || folders[0];
@@ -1408,6 +1414,7 @@ const App = {
     },
 
     showAdd() {
+        if (this.currentMediaType === 'podcast') return this.showPodcastAdd();
         document.getElementById('header-title').textContent = 'Add audiobook';
         document.getElementById('back-btn').classList.remove('hidden');
         if (!this._abbRoot) {
@@ -2603,7 +2610,8 @@ const App = {
                             : '';
                     } else {
                         title = meta.title || entity.title || 'Unknown';
-                        subtitle = meta.authorName || '';
+                        // A podcast's metadata says `author`, a book's `authorName`.
+                        subtitle = meta.authorName || meta.author || '';
                     }
                     const progress = entity.mediaProgress?.progress || entity.progress?.progress || 0;
                     const episodeId = isEpisode && ep ? ep.id : '';
@@ -2760,39 +2768,52 @@ const App = {
     },
 
     // ── Latest (podcasts) ──
+    // Unplayed episodes across every show, newest first.
     async showLatest() {
         document.getElementById('header-title').textContent = 'Latest';
         return this._renderTab('latest', async () => {
-            const data = await ABS.request(`/api/libraries/${this.currentLibraryId}/recent-episodes?limit=50`);
+            const [data, progress] = await Promise.all([
+                ABS.request(`/api/libraries/${this.currentLibraryId}/recent-episodes?limit=50`),
+                this._episodeProgress(),
+            ]);
             const episodes = data.episodes || [];
             if (!episodes.length) return '<div class="empty-state">No recent episodes</div>';
-            let html = '<ul class="tracklist">';
-            for (const ep of episodes) {
-                const title = ep.title || 'Unknown Episode';
-                const podcastTitle = ep.podcast?.metadata?.title || '';
-                const dur = ep.duration || 0;
-                const pubDate = ep.publishedAt ? new Date(ep.publishedAt).toLocaleDateString() : '';
-                html += `<li class="tracklist-item" data-item-id="${ep.libraryItemId}" data-episode-id="${ep.id}">`;
-                html += `<div class="tracklist-progress" style="width:0%"></div>`;
-                html += `<button class="tracklist-play">`;
-                html += `<img class="ep-cover" src="${ABS.coverUrl(ep.libraryItemId)}" alt="" onerror="this.style.visibility='hidden'">`;
-                html += `<span class="tracklist-title"><strong>${esc(title)}</strong><br><span class="text-muted">${esc(podcastTitle)} &bull; ${pubDate}</span></span>`;
-                html += `<span class="tracklist-duration">${formatTime(dur)}</span>`;
-                html += '</button></li>';
+            for (const ep of episodes) if (progress.has(ep.id)) ep.mediaProgress = progress.get(ep.id);
+            const html = '<ul class="tracklist">' + episodes.map(ep => this._episodeRowHtml(ep.libraryItemId, ep, ep.mediaProgress,
+                { cover: true, show: ep.podcast?.metadata?.title || '' })).join('') + '</ul>';
+            return { html, bindData: episodes };
+        }, (episodes) => {
+            const content = document.getElementById('content');
+            // A cold-launch paint of last session's render comes without the
+            // episodes: rows still play, the lookup happens on tap.
+            if (!episodes) {
+                content.querySelectorAll('.episode-row').forEach(li => {
+                    li.querySelector('.episode-play')?.addEventListener('click', () => this.playEpisode(li.dataset.itemId, li.dataset.episodeId));
+                    li.querySelector('.episode-more')?.addEventListener('click', () => this.showItem(li.dataset.itemId));
+                });
+                return;
             }
-            html += '</ul>';
-            return html;
-        }, () => {
-            document.querySelectorAll('.tracklist-item[data-episode-id]').forEach(el => {
-                el.addEventListener('click', () => this.playEpisode(el.dataset.itemId, el.dataset.episodeId));
-            });
+            const progress = new Map(episodes.filter(e => e.mediaProgress).map(e => [e.id, e.mediaProgress]));
+            // Each row belongs to its own show; bind per show.
+            const byShow = new Map();
+            for (const ep of episodes) {
+                (byShow.get(ep.libraryItemId) || byShow.set(ep.libraryItemId, []).get(ep.libraryItemId)).push(ep);
+            }
+            for (const [itemId, eps] of byShow) {
+                const show = { id: itemId, media: { metadata: eps[0].podcast?.metadata || {}, episodes: eps, canArchive: false } };
+                const rows = [...content.querySelectorAll(`.episode-row[data-item-id="${CSS.escape(itemId)}"]`)];
+                this._bindEpisodeRows(content, show, eps, progress, rows);
+            }
         });
     },
 
-    async playEpisode(itemId, episodeId) {
+    // `episodeHint` / `itemHint`: callers that already hold them (the show
+    // page, the feed browser — whose episodes aren't on the show, so the
+    // item fetch wouldn't find them) skip the lookup.
+    async playEpisode(itemId, episodeId, episodeHint = null, itemHint = null) {
         try {
-            const item = await ABS.getItem(itemId);
-            const episode = item.media?.episodes?.find(e => e.id === episodeId);
+            const item = itemHint || await ABS.getItem(itemId);
+            const episode = item.media?.episodes?.find(e => e.id === episodeId) || episodeHint;
             if (!episode) { console.warn('Episode not found'); return; }
             // Build a pseudo-item for the player with episode data
             const pseudoItem = {
@@ -3134,6 +3155,26 @@ const App = {
                 }
                 html += '</div>';
             }
+            // A podcast library answers with shows and episodes instead.
+            const shows = data.podcast || [];
+            if (shows.length) {
+                html += '<div class="section-title">Podcasts</div><div class="grid">';
+                for (const p of shows) {
+                    const item = p.libraryItem || p;
+                    const meta = item.media?.metadata || {};
+                    html += this.gridItemHtml(item.id, meta.title, meta.author, 0, meta);
+                }
+                html += '</div>';
+            }
+            const episodeHits = (data.episodes || []).filter(e => e.libraryItem?.recentEpisode);
+            if (episodeHits.length) {
+                html += '<div class="section-title">Episodes</div><ul class="tracklist">';
+                for (const e of episodeHits) {
+                    const show = e.libraryItem;
+                    html += this._episodeRowHtml(show.id, show.recentEpisode, show.mediaProgress, { cover: true, show: show.media?.metadata?.title || '' });
+                }
+                html += '</ul>';
+            }
             const authors = data.authors || [];
             if (authors.length) {
                 html += '<div class="section-title">Authors</div><div class="list-view">';
@@ -3158,6 +3199,14 @@ const App = {
             if (!html) html = '<div class="empty-state">No results</div>';
             resultsEl.innerHTML = html;
             this.bindSearchClicks(resultsEl);
+            resultsEl.querySelectorAll('.episode-row').forEach(li => {
+                const hit = episodeHits.find(e => e.libraryItem.recentEpisode.id === li.dataset.episodeId);
+                li.querySelector('.episode-play').addEventListener('click', () => {
+                    this.hideSearch();
+                    this.playEpisode(li.dataset.itemId, li.dataset.episodeId, hit?.libraryItem.recentEpisode);
+                });
+                li.querySelector('.episode-more').addEventListener('click', () => { this.hideSearch(); this.showItem(li.dataset.itemId); });
+            });
         } catch (e) {
             resultsEl.innerHTML = `<div class="loading">Error: ${esc(e.message)}</div>`;
         }
@@ -3200,7 +3249,7 @@ const App = {
         for (const item of items) {
             const meta = item.media?.metadata || {};
             const progress = item.mediaProgress?.progress || 0;
-            html += this.gridItemHtml(item.id, meta.title, meta.authorName, progress, meta);
+            html += this.gridItemHtml(item.id, meta.title, meta.authorName || meta.author, progress, meta);
         }
         html += '</div>';
         return html;
@@ -3239,7 +3288,12 @@ const App = {
             const type = el.dataset.type;
             // Long-press a book → "delete from pCloud?" (ABS_shim servers only).
             if (this.shimCanDelete && !el.dataset.episodeId && type !== 'series' && type !== 'authors') {
-                this._wireLongPress(el, () => this.confirmDeleteItem(el.dataset.id, el.dataset.title || el.querySelector('.card-title, .item-title')?.textContent || 'this book'));
+                const title = () => el.dataset.title || el.querySelector('.card-title, .item-title')?.textContent;
+                // A show isn't a book: long-press unsubscribes, and keeps
+                // any archived episodes unless asked otherwise.
+                this._wireLongPress(el, () => (type === 'podcast' || this.currentMediaType === 'podcast')
+                    ? this.confirmUnsubscribe(el.dataset.id, title() || 'this podcast')
+                    : this.confirmDeleteItem(el.dataset.id, title() || 'this book'));
             }
             el.addEventListener('click', () => {
                 if (el._longPressed) { el._longPressed = false; return; }
@@ -3649,11 +3703,23 @@ const App = {
         }
     },
 
-    showPodcastDetail(item) {
-        const meta = item.media?.metadata || {};
-        const episodes = (item.media?.episodes || []).sort((a, b) => (b.publishedAt || 0) - (a.publishedAt || 0));
+    // ── Podcasts ──
+    // A show's page lists the episodes on the show (ABS's "downloaded"
+    // episodes; on ABS_shim they stream from the publisher until archived)
+    // with the listener's progress on each. Tapping a row plays it; its ⋯
+    // opens the show notes and actions. On ABS_shim the page also carries the
+    // feed controls (check now, every episode the feed lists, archiving to
+    // pCloud); a stock ABS server gets the list and playback.
+    async _reloadPodcast(itemId) {
+        try { this.showPodcastDetail(await ABS.getItem(itemId)); }
+        catch (e) { this.setContent(`<div class="loading">Error: ${esc(e.message)}</div>`); }
+    },
 
-        this.setNavTop(meta.title || 'Unknown', () => this.showPodcastDetail(item));
+    async showPodcastDetail(item) {
+        const meta = item.media?.metadata || {};
+        const episodes = [...(item.media?.episodes || [])].sort((a, b) => (b.publishedAt || 0) - (a.publishedAt || 0));
+        this.setNavTop(meta.title || 'Unknown', () => this._reloadPodcast(item.id));
+        const progress = await this._episodeProgress();
 
         let html = '<div class="detail-view">';
         html += '<div class="detail-header">';
@@ -3661,30 +3727,377 @@ const App = {
         html += '<div class="detail-meta">';
         html += `<h3>${esc(meta.title || 'Unknown')}</h3>`;
         if (meta.author) html += `<div class="author">${esc(meta.author)}</div>`;
-        html += `<div class="duration">${episodes.length} episode${episodes.length !== 1 ? 's' : ''}</div>`;
-        if (meta.description) html += `<div class="description">${esc(meta.description)}</div>`;
+        html += `<div class="duration">${episodes.length} episode${episodes.length !== 1 ? 's' : ''}${item.media?.archive ? ' · archiving to pCloud' : ''}</div>`;
         html += '</div></div>';
-
-        if (episodes.length) {
-            html += '<div class="section-title">Episodes</div><ul class="tracklist">';
-            for (const ep of episodes) {
-                const dur = ep.duration || 0;
-                const pubDate = ep.publishedAt ? new Date(ep.publishedAt).toLocaleDateString() : '';
-                html += `<li class="tracklist-item" data-item-id="${item.id}" data-episode-id="${ep.id}">`;
-                html += `<div class="tracklist-progress" style="width:0%"></div>`;
-                html += `<button class="tracklist-play">`;
-                html += `<span class="tracklist-title">${esc(ep.title || 'Unknown')}<br><span class="text-muted">${pubDate}</span></span>`;
-                html += `<span class="tracklist-duration">${formatTime(dur)}</span>`;
-                html += '</button></li>';
+        if (meta.description) html += `<div class="author-bio podcast-desc">${esc(this._plainText(meta.description))}</div>`;
+        if (this.isShim) {
+            html += '<div class="podcast-actions">';
+            html += '<button class="text-btn" data-pod-check>Check for new episodes</button>';
+            html += '<button class="text-btn" data-pod-all>All episodes in the feed</button>';
+            if (item.media?.canArchive && this.shimCanAdd) {
+                html += `<label class="podcast-toggle"><input type="checkbox" data-pod-archive${item.media.archive ? ' checked' : ''}> Archive new episodes to pCloud</label>`;
             }
-            html += '</ul>';
+            html += '<span class="text-muted" data-pod-status></span>';
+            html += '</div>';
         }
+        html += '<div class="section-title">Episodes</div>';
+        html += episodes.length
+            ? '<ul class="tracklist">' + episodes.map(ep => this._episodeRowHtml(item.id, ep, progress.get(ep.id))).join('') + '</ul>'
+            : '<div class="empty-state">No episodes on the show yet</div>';
         html += '</div>';
         this.setContent(html);
 
-        document.querySelectorAll('.tracklist-item[data-episode-id]').forEach(el => {
-            el.addEventListener('click', () => this.playEpisode(el.dataset.itemId, el.dataset.episodeId));
+        const content = document.getElementById('content');
+        content.querySelector('.podcast-desc')?.addEventListener('click', (e) => e.currentTarget.classList.toggle('open'));
+        this._bindEpisodeRows(content, item, episodes, progress);
+        const status = content.querySelector('[data-pod-status]');
+        content.querySelector('[data-pod-check]')?.addEventListener('click', async (e) => {
+            const btn = e.currentTarget;
+            btn.disabled = true; status.textContent = 'Checking the feed…';
+            try {
+                const r = await this._shimCall(`/api/podcasts/${encodeURIComponent(item.id)}/checknew`);
+                const n = (r.episodes || []).length;
+                status.textContent = n ? `${n} new episode${n === 1 ? '' : 's'}` : 'Nothing new';
+                if (n) { this._invalidateTabCache(); this._reloadPodcast(item.id); }
+            } catch (err) {
+                status.textContent = 'Check failed: ' + err.message;
+            } finally { btn.disabled = false; }
         });
+        content.querySelector('[data-pod-all]')?.addEventListener('click', () => {
+            this.pushNav('All episodes', () => this.showFeedEpisodes(item));
+            this.showFeedEpisodes(item);
+        });
+        content.querySelector('[data-pod-archive]')?.addEventListener('change', async (e) => {
+            const box = e.currentTarget;
+            try {
+                await this._shimCall(`/api/items/${encodeURIComponent(item.id)}/media`, {
+                    method: 'PATCH', body: JSON.stringify({ archive: box.checked }),
+                });
+                status.textContent = box.checked ? 'New episodes will be copied to pCloud as they come out' : 'Archiving off';
+            } catch (err) {
+                box.checked = !box.checked;
+                status.textContent = 'Change failed: ' + err.message;
+            }
+        });
+    },
+
+    // Every episode the feed has listed (ABS_shim's /all-episodes), newest
+    // first, with an Add button on the ones that aren't on the show. A long
+    // back catalogue is paged; the search box matches titles.
+    async showFeedEpisodes(item, q = '') {
+        const meta = item.media?.metadata || {};
+        this.setNavTop('All episodes', () => this.showFeedEpisodes(item, q));
+        let html = '<div class="inline-search"><div class="search-bar"><span class="search-wrap">'
+            + `<input type="text" id="feed-q" placeholder="Search ${esc(meta.title || 'this podcast')}" autocomplete="off" value="${esc(q)}">`
+            + '</span></div></div><ul class="tracklist" id="feed-list"></ul>'
+            + '<button class="text-btn abb-more hidden" id="feed-more">More</button>';
+        this.setContent(html);
+        const content = document.getElementById('content');
+        const list = content.querySelector('#feed-list');
+        const more = content.querySelector('#feed-more');
+        const progress = await this._episodeProgress();
+        let offset = 0, total = 0;
+        const load = async () => {
+            more.disabled = true;
+            try {
+                const r = await this._shimCall(`/api/podcasts/${encodeURIComponent(item.id)}/all-episodes?limit=50&offset=${offset}${q ? '&q=' + encodeURIComponent(q) : ''}`);
+                total = r.total;
+                offset += r.episodes.length;
+                const tmp = document.createElement('ul');
+                tmp.innerHTML = r.episodes.map(ep => this._episodeRowHtml(item.id, ep, progress.get(ep.id), { feed: true })).join('');
+                const rows = [...tmp.children];
+                list.append(...rows);
+                this._bindEpisodeRows(list, item, r.episodes, progress, rows);
+                if (!total) list.innerHTML = '<div class="empty-state">No episodes match</div>';
+            } catch (e) {
+                list.insertAdjacentHTML('beforeend', `<div class="empty-state">${esc(e.message)}</div>`);
+            }
+            more.disabled = false;
+            more.classList.toggle('hidden', offset >= total);
+            more.textContent = `More (${total - offset} older)`;
+        };
+        more.addEventListener('click', load);
+        let timer = null;
+        content.querySelector('#feed-q').addEventListener('input', (e) => {
+            clearTimeout(timer);
+            timer = setTimeout(() => { q = e.target.value.trim(); offset = 0; list.innerHTML = ''; this.setNavTop(null, () => this.showFeedEpisodes(item, q)); load(); }, 350);
+        });
+        load();
+    },
+
+    // The caller's progress per episode id, from /api/me (one request for
+    // every show, and the same on real ABS).
+    async _episodeProgress() {
+        const map = new Map();
+        try {
+            const me = await ABS.request('/api/me');
+            for (const p of me?.mediaProgress || []) if (p.episodeId) map.set(p.episodeId, p);
+        } catch {}
+        return map;
+    },
+
+    // Show notes are HTML (the shim sanitizes them, so does ABS). Shown as
+    // text: parsed in an inert DOMParser document, which runs no scripts and
+    // loads no images, unlike innerHTML on a detached element.
+    _plainText(html) {
+        const marked = String(html || '').replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|li|div)>/gi, '\n');
+        const text = new DOMParser().parseFromString(marked, 'text/html').body.textContent || '';
+        return text.replace(/[ \t]+/g, ' ').replace(/\n\s*\n+/g, '\n\n').trim();
+    },
+
+    _episodeRowHtml(itemId, ep, prog, opts = {}) {
+        const played = !!prog?.isFinished;
+        const pct = played ? 0 : Math.round((prog?.progress || 0) * 1000) / 10;
+        const date = ep.publishedAt ? new Date(ep.publishedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+        const dur = ep.duration || ep.audioFile?.duration || 0;
+        const left = !played && prog?.currentTime > 0 && dur ? Math.max(0, dur - prog.currentTime) : 0;
+        const bits = [opts.show, date, dur ? (left ? formatTime(left) + ' left' : formatTime(dur)) : ''];
+        if (played) bits.push('Played');
+        if (ep.archiveState === 'done') bits.push('Archived');
+        else if (ep.archiveState === 'queued' || ep.archiveState === 'fetching') bits.push('Archiving');
+        else if (ep.archiveState === 'error') bits.push('Archive failed');
+        if (opts.feed && ep.inLibrary === false) bits.push(ep.removed ? 'Removed' : 'Not on the show');
+        let h = `<li class="tracklist-item episode-row${played ? ' is-played' : ''}" data-item-id="${esc(itemId)}" data-episode-id="${esc(ep.id)}">`;
+        h += `<div class="tracklist-progress" style="width:${pct}%"></div>`;
+        h += '<div class="episode-main">';
+        h += '<button class="tracklist-play episode-play">';
+        if (opts.cover) h += `<img class="ep-cover" src="${ABS.coverUrl(itemId)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
+        h += `<span class="tracklist-title"><span class="episode-title">${esc(ep.title || 'Untitled')}</span><br><span class="text-muted">${esc(bits.filter(Boolean).join(' · '))}</span></span>`;
+        h += '</button>';
+        if (opts.feed && ep.inLibrary === false && this.shimCanAdd) h += '<button class="episode-add" data-add>Add</button>';
+        h += '<button class="episode-more" aria-label="Show notes and actions">⋯</button>';
+        h += '</div>';
+        h += '<div class="episode-details hidden"></div>';
+        h += '</li>';
+        return h;
+    },
+
+    // Wire episode rows: tap plays, ⋯ toggles notes and actions. `rows`
+    // limits it to rows just appended (the feed view pages in).
+    _bindEpisodeRows(root, item, episodes, progress, rows) {
+        const byId = new Map(episodes.map(ep => [ep.id, ep]));
+        for (const li of rows || root.querySelectorAll('.episode-row')) {
+            const ep = byId.get(li.dataset.episodeId);
+            if (!ep) continue;
+            li.querySelector('.episode-play').addEventListener('click', () => this.playEpisode(item.id, ep.id, ep, item));
+            li.querySelector('[data-add]')?.addEventListener('click', async (e) => {
+                const btn = e.currentTarget;
+                btn.disabled = true;
+                try {
+                    await this._shimCall(`/api/podcasts/${encodeURIComponent(item.id)}/episodes/add`, {
+                        method: 'POST', body: JSON.stringify({ episodeIds: [ep.id] }),
+                    });
+                    btn.textContent = 'Added';
+                    this._invalidateTabCache();
+                } catch (err) { btn.disabled = false; alert('Add failed: ' + err.message); }
+            });
+            li.querySelector('.episode-more').addEventListener('click', () => {
+                const box = li.querySelector('.episode-details');
+                if (!box.classList.contains('hidden')) { box.classList.add('hidden'); return; }
+                this._renderEpisodeDetails(box, li, item, ep, progress);
+                box.classList.remove('hidden');
+            });
+        }
+    },
+
+    _renderEpisodeDetails(box, li, item, ep, progress) {
+        const prog = progress.get(ep.id);
+        const played = !!prog?.isFinished;
+        const notes = this._plainText(ep.description || ep.subtitle || '');
+        let h = notes ? `<div class="episode-notes">${esc(notes)}</div>` : '';
+        h += '<div class="episode-actions">';
+        h += `<button class="text-btn" data-played>${played ? 'Mark as unplayed' : 'Mark as played'}</button>`;
+        if (this.isShim && this.shimCanAdd) {
+            if (item.media?.canArchive && !['done', 'queued', 'fetching'].includes(ep.archiveState)) {
+                h += '<button class="text-btn" data-archive>Archive to pCloud</button>';
+            }
+            if (ep.inLibrary !== false) h += '<button class="text-btn" data-remove>Remove from show</button>';
+        }
+        if (ep.archiveError) h += `<div class="text-muted">Archiving failed: ${esc(ep.archiveError)}</div>`;
+        h += '</div>';
+        box.innerHTML = h;
+        box.querySelector('[data-played]').addEventListener('click', async () => {
+            const body = played
+                ? { isFinished: false, progress: 0, currentTime: 0 }
+                : { isFinished: true, progress: 1, currentTime: ep.duration || 0, duration: ep.duration || 0 };
+            try {
+                const p = await ABS.updateProgress(`${item.id}/${ep.id}`, body);
+                progress.set(ep.id, p || { ...body, episodeId: ep.id });
+                const fresh = document.createElement('ul');
+                fresh.innerHTML = this._episodeRowHtml(item.id, ep, progress.get(ep.id), { feed: ep.inLibrary !== undefined });
+                const row = fresh.firstElementChild;
+                li.replaceWith(row);
+                this._bindEpisodeRows(row.parentElement, item, [ep], progress, [row]);
+                this._invalidateTabCache();
+            } catch (err) { alert('Failed: ' + err.message); }
+        });
+        box.querySelector('[data-archive]')?.addEventListener('click', async (e) => {
+            const btn = e.currentTarget;
+            btn.disabled = true;
+            try {
+                await this._shimCall(`/api/podcasts/${encodeURIComponent(item.id)}/archive`, {
+                    method: 'POST', body: JSON.stringify({ episodeIds: [ep.id] }),
+                });
+                btn.textContent = 'Queued for pCloud';
+            } catch (err) { btn.disabled = false; alert('Archive failed: ' + err.message); }
+        });
+        box.querySelector('[data-remove]')?.addEventListener('click', async () => {
+            if (!confirm(`Remove "${ep.title}" from the show? It stays in the feed and can be added back.`)) return;
+            try {
+                await this._shimCall(`/api/podcasts/${encodeURIComponent(item.id)}/episode/${encodeURIComponent(ep.id)}`, { method: 'DELETE' });
+                li.remove();
+                this._invalidateTabCache();
+            } catch (err) { alert('Remove failed: ' + err.message); }
+        });
+    },
+
+    // Long-press on a show. Unsubscribing keeps archived episodes on pCloud
+    // unless the box is ticked; the publisher's copies are never touched.
+    confirmUnsubscribe(itemId, title) {
+        const overlay = document.createElement('div');
+        overlay.className = 'modal confirm-modal';
+        overlay.innerHTML =
+            '<div class="modal-content modal-narrow">' +
+              '<div class="modal-header"><h3>Unsubscribe?</h3></div>' +
+              '<div class="modal-body"><p class="confirm-title"></p><p class="text-muted">Removes the podcast from the library. Listening progress for its episodes is lost.</p>' +
+              '<label class="podcast-toggle hidden" data-files-row><input type="checkbox" data-files> Also delete its archived episodes from pCloud</label></div>' +
+              '<div class="modal-actions"><button class="text-btn" data-cancel>Cancel</button><button class="danger-btn" data-ok>Unsubscribe</button></div>' +
+            '</div>';
+        overlay.querySelector('.confirm-title').textContent = title;
+        ABS.getItem(itemId).then(it => {
+            const n = (it?.media?.episodes || []).filter(e => e.archiveState === 'done').length;
+            if (n) {
+                const row = overlay.querySelector('[data-files-row]');
+                row.lastChild.textContent = ` Also delete its ${n} archived episode${n === 1 ? '' : 's'} from pCloud`;
+                row.classList.remove('hidden');
+            }
+        }).catch(() => {});
+        const close = () => overlay.remove();
+        overlay.querySelector('[data-cancel]').addEventListener('click', close);
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+        overlay.querySelector('[data-ok]').addEventListener('click', async () => {
+            const ok = overlay.querySelector('[data-ok]');
+            ok.disabled = true; ok.textContent = 'Removing…';
+            const files = overlay.querySelector('[data-files]').checked;
+            try {
+                const r = await this._shimCall(`/api/admin/items/${encodeURIComponent(itemId)}${files ? '?deleteFiles=1' : ''}`, { method: 'DELETE' });
+                close();
+                this._invalidateTabCache();
+                this.switchTab(this.currentTab);
+                if (r && r.reason) alert(r.reason);
+            } catch (e) {
+                ok.disabled = false; ok.textContent = 'Unsubscribe';
+                alert('Unsubscribe failed: ' + e.message);
+            }
+        });
+        document.body.appendChild(overlay);
+    },
+
+    // The Add screen in a podcast library (ABS_shim): search Apple's
+    // directory, or paste a feed URL, and subscribe. Mirrors the
+    // AudioBookBay screen's layout and is kept detached between visits the
+    // same way, so a search survives switching tabs.
+    _podRoot: null,
+    showPodcastAdd() {
+        document.getElementById('header-title').textContent = 'Add podcast';
+        document.getElementById('back-btn').classList.remove('hidden');
+        if (!this._podRoot) {
+            const root = document.createElement('div');
+            root.className = 'abb-root';
+            root.innerHTML =
+                '<div class="search-bar abb-search"><span class="search-wrap"><input type="text" id="pod-q" placeholder="Search podcasts, or paste a feed URL" autocomplete="off"></span><button id="pod-go" class="abb-go">Search</button></div>' +
+                '<ul class="tracklist" id="pod-results"></ul>';
+            const go = () => this._podSearch(root.querySelector('#pod-q').value.trim());
+            root.querySelector('#pod-go').addEventListener('click', go);
+            root.querySelector('#pod-q').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.target.blur(); go(); } });
+            this._podRoot = root;
+        }
+        const content = document.getElementById('content');
+        content.innerHTML = '';
+        content.appendChild(this._podRoot);
+    },
+
+    // Apple's directory is searched from the phone: Apple rate-limits per IP
+    // and refuses the shim's shared Cloudflare IPs, but sends CORS headers.
+    // A pasted feed URL, or Apple failing, goes through the shim instead
+    // (which retries Apple, then falls back to fyyd.de).
+    async _podDirectorySearch(term, country) {
+        if (!/^https?:\/\//i.test(term)) {
+            try {
+                const q = new URLSearchParams({ term, entity: 'podcast', media: 'podcast', country, limit: '25' });
+                const r = await fetch('https://itunes.apple.com/search?' + q, { credentials: 'omit' });
+                if (r.ok) {
+                    const d = await r.json();
+                    return (d.results || []).filter(x => x.feedUrl).map(x => ({
+                        id: x.collectionId, artistId: x.artistId || null, title: x.collectionName, artistName: x.artistName,
+                        genres: x.genres || [], cover: x.artworkUrl600 || x.artworkUrl100 || '', trackCount: x.trackCount,
+                        feedUrl: x.feedUrl, pageUrl: x.collectionViewUrl,
+                    }));
+                }
+            } catch { /* fall through to the shim */ }
+        }
+        return this._shimCall(`/api/search/podcast?term=${encodeURIComponent(term)}&country=${country}`);
+    },
+
+    async _podSearch(term) {
+        const list = this._podRoot.querySelector('#pod-results');
+        if (!term) return;
+        list.innerHTML = '<div class="loading">Searching</div>';
+        let results;
+        try {
+            const country = (navigator.language || 'en-US').split('-')[1]?.toLowerCase() || 'us';
+            results = await this._podDirectorySearch(term, country);
+        } catch (e) {
+            list.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`;
+            return;
+        }
+        if (!results.length) { list.innerHTML = '<div class="empty-state">Nothing found</div>'; return; }
+        // Already subscribed? By iTunes id where both sides have one (two
+        // shows can share a title: "This American Life" has imitators), by
+        // title only for shows without one.
+        let ids = new Set(), titles = new Set();
+        try {
+            const t = await ABS.request(`/api/libraries/${this.currentLibraryId}/podcast-titles`);
+            for (const p of t?.podcasts || []) {
+                if (p.itunesId) ids.add(String(p.itunesId));
+                else titles.add((p.title || '').toLowerCase());
+            }
+        } catch {}
+        list.innerHTML = results.map((r, i) => {
+            const have = r.id ? ids.has(String(r.id)) : titles.has((r.title || '').toLowerCase());
+            const sub = [r.artistName, r.trackCount ? `${r.trackCount} episodes` : '', (r.genres || [])[0]].filter(Boolean).join(' · ');
+            return `<li class="tracklist-item abb-item"><div class="abb-main">`
+                + (r.cover ? `<img class="abb-cover" src="${esc(r.cover)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : '')
+                + `<span class="tracklist-title"><strong>${esc(r.title)}</strong><span class="text-muted">${esc(sub)}</span></span>`
+                + `<button class="abb-grab${have ? ' abb-grab-again' : ''}" data-sub="${i}">${have ? '✓ Subscribed' : 'Subscribe'}</button>`
+                + '</div></li>';
+        }).join('');
+        list.querySelectorAll('[data-sub]').forEach(btn => btn.addEventListener('click', async () => {
+            const r = results[Number(btn.dataset.sub)];
+            btn.disabled = true; btn.innerHTML = '<span class="abb-spinner"></span>Adding';
+            try {
+                const item = await this._shimCall('/api/podcasts', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        libraryId: this.currentLibraryId,
+                        media: {
+                            metadata: {
+                                feedUrl: r.feedUrl, title: r.title, author: r.artistName, imageUrl: r.cover || null, genres: r.genres || [],
+                                itunesId: r.id ? String(r.id) : null, itunesArtistId: r.artistId ? String(r.artistId) : null, itunesPageUrl: r.pageUrl || null,
+                            },
+                            autoDownloadEpisodes: true,
+                        },
+                    }),
+                });
+                const n = item?.media?.numEpisodes || 0;
+                btn.textContent = `✓ ${n} episode${n === 1 ? '' : 's'}`;
+                this._invalidateTabCache();
+            } catch (e) {
+                btn.disabled = false;
+                btn.textContent = /already exists/i.test(e.message) ? '✓ Subscribed' : 'Subscribe';
+                if (!/already exists/i.test(e.message)) alert('Subscribe failed: ' + e.message);
+            }
+        }));
     },
 
     // ── Settings ──

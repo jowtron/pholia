@@ -1007,3 +1007,18 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
 .author-photo { width: 160px; height: 160px; object-fit: cover; border-radius: 50%; cursor: zoom-in; box-shadow: 0 4px 16px var(--shadow); }
 .author-bio { font-size: 0.9rem; line-height: 1.45; color: var(--text-muted); white-space: pre-line; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; max-width: 40rem; }
 .author-bio.open { display: block; -webkit-line-clamp: unset; }
+
+/* ── Podcasts: show page, episode rows, feed browser ── */
+.podcast-desc { margin: 0.25rem 1rem 0.5rem; }
+.podcast-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 1rem; padding: 0 1rem 0.5rem; }
+.podcast-toggle { display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; color: var(--text-muted); }
+.episode-main { display: flex; align-items: center; position: relative; z-index: 1; }
+.episode-main .episode-play { flex: 1; min-width: 0; }
+.episode-title { font-weight: 500; }
+.episode-row.is-played .episode-title { color: var(--text-muted); font-weight: 400; }
+.episode-more { background: none; border: none; color: var(--text-muted); font-size: 1.2rem; padding: 0.5rem 0.75rem; cursor: pointer; flex-shrink: 0; }
+.episode-add { padding: 0.3rem 0.7rem; background: var(--accent); color: #fff; border: none; border-radius: var(--radius); font-size: 0.8rem; flex-shrink: 0; }
+.episode-add:disabled { opacity: 0.7; }
+.episode-details { position: relative; z-index: 1; padding: 0 0.75rem 0.75rem 0.75rem; }
+.episode-notes { font-size: 0.85rem; line-height: 1.45; color: var(--text-muted); white-space: pre-line; max-height: 18rem; overflow-y: auto; margin-bottom: 0.5rem; }
+.episode-actions { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; align-items: center; }
