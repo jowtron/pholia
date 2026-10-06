@@ -166,6 +166,7 @@ paths) are intentionally left out of this repo; keep them in private notes.
     - **One-tap download:** a download button per row (`[data-quick-dl]`) shows its percentage while downloading.
     - **Show filter:** All / Unplayed / On this phone / On pCloud (`_podFilter`, `pholia_pod_filter`, one choice for every show per phone; the older `pholia_pod_unplayed_only` carries over). It works by a `filter-*` class on the list, so a redrawn row (marked played, downloaded) drops out of view without a re-render. The header counts unplayed, on this phone and on pCloud.
     - **Archive all to pCloud** sits beside the archive switch when `media.canArchive`.
+    - **One-tap archive per episode:** a cloud-up button on any row whose episode says `canArchive` (`_canArchiveEp`), in every list (show page, Latest, search, playlists). `_archiveEpisode` queues it, then polls `GET /api/podcasts/:id/episode/:ep` every 15 s (up to 7.5 min), redrawing the row from "Archiving" to the pCloud badge (`_redrawEpisodeRow`, which keeps a row's show label via `data-show`). The ⋯ menu's "Archive to pCloud" uses the same path.
   - **Fullscreen player: an episode's author line is its show**, a link (`data-show-id`) to the show page.
   - **Chapters may arrive with the session.** The shim looks them up the first time an episode plays, so `startItem` adopts `session.chapters` when the item carried none (never replacing a book's).
   - **The podcast library's Add** is a "+" in the header (`checkAbbSupport` swaps the AudioBookBay logo out) plus "+ Add podcast" on the Library tab.

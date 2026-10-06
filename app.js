@@ -3613,6 +3613,13 @@ const App = {
                     this.playEpisode(li.dataset.itemId, li.dataset.episodeId, hit?.libraryItem.recentEpisode);
                 });
                 li.querySelector('.episode-more').addEventListener('click', () => { this.hideSearch(); this.showItem(li.dataset.itemId); });
+                li.querySelector('[data-quick-archive]')?.addEventListener('click', async (e) => {
+                    const btn = e.currentTarget;
+                    btn.disabled = true; btn.classList.add('busy');
+                    const show = { id: hit.libraryItem.id, media: hit.libraryItem.media || {} };
+                    try { await this._archiveEpisode(show, hit.libraryItem.recentEpisode, li, new Map()); }
+                    catch (err) { btn.disabled = false; btn.classList.remove('busy'); alert('Archive failed: ' + err.message); }
+                });
             });
         } catch (e) {
             resultsEl.innerHTML = `<div class="loading">Error: ${esc(e.message)}</div>`;
@@ -4322,6 +4329,52 @@ const App = {
     _STORAGE_LOGOS: {
         pcloud_oauth: '<svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16.645996 10.693924"><path fill="#1ebcc5" d="M16.645 8.02c0-.843-.39-1.593-.998-2.083-.241.487-.655.87-1.159 1.078.72-.373 1.213-1.123 1.213-1.989 0-1.237-1.001-2.227-2.238-2.227-.094 0-.182.007-.273.018.309.677.481 1.416.481 2.209 0 .051-.003.101-.004.152C13.578 2.303 11.221 0 8.324 0 5.436 0 3.084 2.29 2.982 5.154 2.981 5.111 2.977 5.069 2.977 5.026c0-.792.177-1.541.485-2.216C1.511 3.054 0 4.716 0 6.734c0 2.187 1.773 3.96 3.959 3.96h10.069v-.005c1.45-.029 2.618-1.212 2.618-2.67"/><path fill="#fff" d="M8.941 5.3h-.005-1.171-.005v-.941h.005 1.171.005c.26 0 .47.21.47.47 0 .26-.21.471-.47.471M7.161 3.237c-.333 0-.604.27-.604.604V7.12c0 .333.271.604.604.604.334 0 .605-.271.605-.604v-.698h1.17V6.42c.879 0 1.592-.712 1.592-1.591 0-.879-.712-1.592-1.592-1.592"/></svg>',
     },
+    // Archiving is ABS_shim's, and only where the episode's library is on
+    // pCloud: the episode says so itself (canArchive), so every list knows.
+    _canArchiveEp(ep) { return !!(this.isShim && this.shimCanAdd && ep?.canArchive); },
+
+    // Queue one episode for pCloud, then follow it until pCloud has it:
+    // the server copies it within a minute or two, and the row turns from
+    // "Archiving" into the pCloud badge without a reload.
+    async _archiveEpisode(item, ep, li, progress) {
+        await this._shimCall(`/api/podcasts/${encodeURIComponent(item.id)}/archive`, {
+            method: 'POST', body: JSON.stringify({ episodeIds: [ep.id] }),
+        });
+        ep.archiveState = 'queued';
+        ep.archiveError = null;
+        let row = await this._redrawEpisodeRow(item, ep, li, progress);
+        for (let i = 0; i < 30 && row?.isConnected; i++) {
+            await new Promise(r => setTimeout(r, 15000));
+            let fresh;
+            try { fresh = await ABS.request(`/api/podcasts/${encodeURIComponent(item.id)}/episode/${encodeURIComponent(ep.id)}`); } catch { continue; }
+            if (!fresh || fresh.archiveState === ep.archiveState) continue;
+            ep.archiveState = fresh.archiveState;
+            ep.archiveError = fresh.archiveError;
+            if (ep.archiveState === 'done') {
+                // The audio now comes from pCloud: the badge names it.
+                ep.audioFile = { ...(ep.audioFile || {}), storage: { provider: 'pcloud_oauth', name: 'pCloud', detail: '' } };
+            }
+            if (!row?.isConnected) return;
+            row = await this._redrawEpisodeRow(item, ep, row, progress);
+            if (ep.archiveState === 'done' || ep.archiveState === 'error') return;
+        }
+    },
+
+    async _redrawEpisodeRow(item, ep, li, progress) {
+        if (!li?.isConnected) return null;
+        const fresh = document.createElement('ul');
+        fresh.innerHTML = this._episodeRowHtml(item.id, ep, progress.get(ep.id), {
+            feed: ep.inLibrary !== undefined, dl: await Offline.fullyDownloadedIds(),
+            cover: !!li.querySelector('.ep-cover'), show: li.dataset.show || '',
+        });
+        const row = fresh.firstElementChild;
+        if (li.dataset.show) row.dataset.show = li.dataset.show;
+        if (li.dataset.playlistId) row.dataset.playlistId = li.dataset.playlistId;
+        li.replaceWith(row);
+        this._bindEpisodeRows(row.parentElement, item, [ep], progress, [row]);
+        return row;
+    },
+
     _storageBadge(storage) {
         const name = storage?.name || 'cloud storage';
         const logo = this._STORAGE_LOGOS[storage?.provider];
@@ -4345,7 +4398,7 @@ const App = {
         // line, so a show's downloads stand out at a glance.
         const isDl = !!opts.dl?.has(`${itemId}~${ep.id}`);
         const isArch = ep.archiveState === 'done';
-        let h = `<li class="tracklist-item episode-row${played ? ' is-played' : ''}${isDl ? ' is-downloaded' : ''}${isArch ? ' is-archived' : ''}" data-item-id="${esc(itemId)}" data-episode-id="${esc(ep.id)}">`;
+        let h = `<li class="tracklist-item episode-row${played ? ' is-played' : ''}${isDl ? ' is-downloaded' : ''}${isArch ? ' is-archived' : ''}" data-item-id="${esc(itemId)}" data-episode-id="${esc(ep.id)}"${opts.show ? ` data-show="${esc(opts.show)}"` : ''}>`;
         h += `<div class="tracklist-progress" style="width:${pct}%"></div>`;
         h += '<div class="episode-main">';
         h += '<button class="tracklist-play episode-play">';
@@ -4356,9 +4409,16 @@ const App = {
         const archBadge = ep.archiveState === 'done' ? this._storageBadge(ep.audioFile?.storage) : '';
         h += `<span class="tracklist-title">${dlBadge}${archBadge}<span class="episode-title">${esc(ep.title || 'Untitled')}</span><br><span class="text-muted">${esc(bits.filter(Boolean).join(' · '))}</span></span>`;
         h += '</button>';
-        if (opts.feed && ep.inLibrary === false && this.shimCanAdd) h += '<button class="episode-add" data-add>Add</button>';
+        // A feed episode that isn't on the show gets Add instead of Download.
+        const addable = opts.feed && ep.inLibrary === false && this.shimCanAdd;
+        if (addable) h += '<button class="episode-add" data-add>Add</button>';
+        // Archive to the library's pCloud, one tap (ABS_shim, when the
+        // episode's library can archive and it isn't there or on its way).
+        if (this._canArchiveEp(ep) && !['done', 'queued', 'fetching'].includes(ep.archiveState)) {
+            h += '<button class="episode-dlbtn" data-quick-archive aria-label="Archive to pCloud" title="Archive to pCloud"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18h10a4 4 0 0 0 .6-7.96A6 6 0 0 0 6.1 9.2 4.5 4.5 0 0 0 7 18z"/><path d="M12 15V10M9.5 12.5 12 10l2.5 2.5"/></svg></button>';
+        }
         // Download to this phone, one tap, without opening the ⋯ menu.
-        else if (!isDl && ep.audioFile?.ino && opts.dl) h += '<button class="episode-dlbtn" data-quick-dl aria-label="Download to this phone" title="Download to this phone"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12M6 11l6 6 6-6M5 21h14"/></svg></button>';
+        if (!addable && !isDl && ep.audioFile?.ino && opts.dl) h += '<button class="episode-dlbtn" data-quick-dl aria-label="Download to this phone" title="Download to this phone"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12M6 11l6 6 6-6M5 21h14"/></svg></button>';
         h += '<button class="episode-more" aria-label="Show notes and actions">⋯</button>';
         h += '</div>';
         h += '<div class="episode-details hidden"></div>';
@@ -4374,6 +4434,14 @@ const App = {
             const ep = byId.get(li.dataset.episodeId);
             if (!ep) continue;
             li.querySelector('.episode-play').addEventListener('click', () => this.playEpisode(item.id, ep.id, ep, item));
+            li.querySelector('[data-quick-archive]')?.addEventListener('click', async (e) => {
+                const btn = e.currentTarget;
+                if (btn.disabled) return;
+                btn.disabled = true;
+                btn.classList.add('busy');
+                try { await this._archiveEpisode(item, ep, li, progress); }
+                catch (err) { btn.disabled = false; btn.classList.remove('busy'); alert('Archive failed: ' + err.message); }
+            });
             li.querySelector('[data-quick-dl]')?.addEventListener('click', async (e) => {
                 const btn = e.currentTarget;
                 if (btn.disabled) return;
@@ -4423,7 +4491,7 @@ const App = {
         h += `<button class="text-btn" data-played>${played ? 'Mark as unplayed' : 'Mark as played'}</button>`;
         if (ep.audioFile?.ino) h += downloaded ? '<button class="text-btn" data-dl-remove>Remove download</button>' : '<button class="text-btn" data-dl>Download</button>';
         if (this.isShim && this.shimCanAdd) {
-            if (item.media?.canArchive && !['done', 'queued', 'fetching'].includes(ep.archiveState)) {
+            if ((ep.canArchive || item.media?.canArchive) && !['done', 'queued', 'fetching'].includes(ep.archiveState)) {
                 h += '<button class="text-btn" data-archive>Archive to pCloud</button>';
             }
             if (ep.inLibrary !== false) h += '<button class="text-btn" data-remove>Remove from show</button>';
@@ -4489,12 +4557,9 @@ const App = {
         box.querySelector('[data-archive]')?.addEventListener('click', async (e) => {
             const btn = e.currentTarget;
             btn.disabled = true;
-            try {
-                await this._shimCall(`/api/podcasts/${encodeURIComponent(item.id)}/archive`, {
-                    method: 'POST', body: JSON.stringify({ episodeIds: [ep.id] }),
-                });
-                btn.textContent = 'Queued for pCloud';
-            } catch (err) { btn.disabled = false; alert('Archive failed: ' + err.message); }
+            btn.textContent = 'Archiving…';
+            try { await this._archiveEpisode(item, ep, li, progress); }
+            catch (err) { btn.disabled = false; btn.textContent = 'Archive to pCloud'; alert('Archive failed: ' + err.message); }
         });
         box.querySelector('[data-remove]')?.addEventListener('click', async () => {
             if (!confirm(`Remove "${ep.title}" from the show? It stays in the feed and can be added back.`)) return;
