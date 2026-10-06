@@ -925,6 +925,7 @@ const Player = {
         const pauseSvg = '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>';
         document.getElementById('pp-play').innerHTML = playing ? '\u275A\u275A' : '\u25B6';
         document.getElementById('fs-play').innerHTML = playing ? pauseSvg : playSvg;
+        App?.paintPlayingEpisode?.();
     },
 
     _lastChapterIndex: -1,
@@ -1154,6 +1155,8 @@ const Player = {
         // Detail view chapter list (data-index items inside #content)
         const detailItems = document.querySelectorAll('#content .tracklist-item[data-index]');
         if (detailItems.length) updateChapterItems(detailItems, 'index');
+        // An episode's row in whatever list is showing.
+        App?.paintPlayingEpisode?.();
     },
 
     updateMediaSession() {

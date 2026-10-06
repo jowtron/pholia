@@ -2394,6 +2394,7 @@ const App = {
     setContent(html) {
         document.getElementById('content').innerHTML = html;
         this._markShelves();
+        this.paintPlayingEpisode();
     },
 
     // Mark each .h-scroll with can-scroll / at-end so CSS can fade the right
@@ -4167,6 +4168,16 @@ const App = {
         const keep = this._keepCount(item.id);
         html += `<label class="podcast-toggle">Keep on this phone <select data-pod-keep>${[0, 1, 3, 5, 10]
             .map(n => `<option value="${n}"${n === keep ? ' selected' : ''}>${n ? 'newest ' + n : 'none'}</option>`).join('')}</select></label>`;
+        // When an episode counts as played (ABS_shim): this show's own
+        // threshold, or the library's (Settings). Only shown by a shim that
+        // knows the field.
+        const finishOwn = item.media?.markAsFinishedTimeRemaining;
+        if (this.isShim && this.shimCanAdd && finishOwn !== undefined) {
+            const lib = this._libFinishRemaining(item.libraryId);
+            html += `<label class="podcast-toggle">Mark played with <select data-pod-finish>`
+                + `<option value=""${finishOwn == null ? ' selected' : ''}>default (${this._finishLabel(lib)} left)</option>`
+                + this._finishOptions(finishOwn) + '</select></label>';
+        }
         html += '<span class="text-muted" data-pod-status></span>';
         html += '</div>';
         // "Unplayed only" hides played rows with a class on the list, so
@@ -4234,6 +4245,22 @@ const App = {
             status.textContent = n ? `Newest ${n} kept on this phone` : '';
             if (document.contains(status)) this._reloadPodcast(item.id);
         });
+        content.querySelector('[data-pod-finish]')?.addEventListener('change', async (e) => {
+            const sel = e.currentTarget;
+            const v = sel.value === '' ? null : Number(sel.value);
+            try {
+                await this._shimCall(`/api/items/${encodeURIComponent(item.id)}/media`, {
+                    method: 'PATCH', body: JSON.stringify({ markAsFinishedTimeRemaining: v }),
+                });
+                item.media.markAsFinishedTimeRemaining = v;
+                this._invalidateTabCache();
+                const secs = v ?? this._libFinishRemaining(item.libraryId);
+                status.textContent = `Episodes of this show now count as played with ${this._finishLabel(secs)} left`;
+            } catch (err) {
+                sel.value = finishOwn == null ? '' : String(finishOwn);
+                status.textContent = 'Change failed: ' + err.message;
+            }
+        });
         content.querySelector('[data-pod-archive-all]')?.addEventListener('click', async (e) => {
             const btn = e.currentTarget;
             const left = episodes.filter(ep => !['done', 'queued', 'fetching'].includes(ep.archiveState)).length;
@@ -4257,6 +4284,53 @@ const App = {
                 status.textContent = 'Change failed: ' + err.message;
             }
         });
+    },
+
+    // "Played" thresholds: seconds left at which the server marks an
+    // episode played (ABS's library markAsFinishedTimeRemaining, default
+    // 10 s; ABS_shim adds a per-show override). Playback carries on to the
+    // end either way; it only decides Unplayed and Continue Listening.
+    _FINISH_CHOICES: [10, 30, 60, 120, 180, 300, 600],
+    _finishLabel(sec) {
+        if (sec < 60) return `${sec} s`;
+        return sec % 60 ? formatTime(sec) : `${sec / 60} min`;
+    },
+    _finishOptions(selected) {
+        const list = [...this._FINISH_CHOICES];
+        if (selected != null && !list.includes(selected)) list.push(selected), list.sort((a, b) => a - b);
+        return list.map(n => `<option value="${n}"${n === selected ? ' selected' : ''}>${this._finishLabel(n)} left</option>`).join('');
+    },
+    _libFinishRemaining(libraryId) {
+        const v = (this.libraries || []).find(l => l.id === libraryId)?.settings?.markAsFinishedTimeRemaining;
+        return typeof v === 'number' ? v : 10;
+    },
+    // Settings: the library-wide threshold, per podcast library. The
+    // library's own setting, so only its owner sees it, and it holds for
+    // everyone on every device.
+    _renderFinishSetting() {
+        const box = document.getElementById('setting-finish');
+        if (!box) return;
+        const libs = (this.libraries || []).filter(l => l.mediaType === 'podcast');
+        if (!this.isShim || !this.shimCanDelete || !libs.length) { box.innerHTML = ''; return; }
+        box.innerHTML = libs.map(l => `<label class="toggle-row">${libs.length > 1 ? esc(l.name) + ': mark' : 'Mark'} episodes played with`
+            + `<select data-finish-lib="${esc(l.id)}">${this._finishOptions(this._libFinishRemaining(l.id))}</select></label>`).join('')
+            + '<div class="setting-hint">For every show that doesn\'t set its own (on the show\'s page), for everyone. A played episode leaves Unplayed and Continue Listening; it still plays to the end.</div>';
+        box.querySelectorAll('[data-finish-lib]').forEach(sel => sel.addEventListener('change', async () => {
+            const id = sel.dataset.finishLib;
+            try {
+                const lib = await this._shimCall(`/api/libraries/${encodeURIComponent(id)}`, {
+                    method: 'PATCH', body: JSON.stringify({ settings: { markAsFinishedTimeRemaining: Number(sel.value) } }),
+                });
+                const l = this.libraries.find(x => x.id === id);
+                if (l && lib?.settings) {
+                    l.settings = lib.settings;
+                    this._saveCachedLibraries({ serverUrl: ABS.serverUrl, username: localStorage.getItem('pholia_username') }, this.libraries);
+                }
+            } catch (err) {
+                alert('Change failed: ' + err.message);
+                this._renderFinishSetting();
+            }
+        }));
     },
 
     // Every episode the feed has listed (ABS_shim's /all-episodes), newest
@@ -4407,7 +4481,10 @@ const App = {
         // Archived: the logo of the service holding the copy (the episode's
         // audioFile.storage, sent by ABS_shim), a plain cloud for one without.
         const archBadge = ep.archiveState === 'done' ? this._storageBadge(ep.audioFile?.storage) : '';
-        h += `<span class="tracklist-title">${dlBadge}${archBadge}<span class="episode-title">${esc(ep.title || 'Untitled')}</span><br><span class="text-muted">${esc(bits.filter(Boolean).join(' · '))}</span></span>`;
+        // The time ("12:34 left") has its own span: the playing episode's
+        // row keeps it current (paintPlayingEpisode).
+        const line = bits.map((b, i) => !b ? '' : i === 2 ? `<span class="ep-time">${esc(b)}</span>` : esc(b)).filter(Boolean).join(' · ');
+        h += `<span class="tracklist-title">${dlBadge}${archBadge}<span class="episode-title">${esc(ep.title || 'Untitled')}</span><br><span class="text-muted">${line}</span></span>`;
         h += '</button>';
         // A feed episode that isn't on the show gets Add instead of Download.
         const addable = opts.feed && ep.inLibrary === false && this.shimCanAdd;
@@ -4424,6 +4501,43 @@ const App = {
         h += '<div class="episode-details hidden"></div>';
         h += '</li>';
         return h;
+    },
+
+    // The episode in the player, wherever it's listed (show page, Latest,
+    // playlists, search): its row is highlighted, with bars that move while
+    // it plays, and its progress bar and "left" follow the playhead. The
+    // list was drawn from /api/me, which the player only updates every 30 s.
+    // Called by the player on every tick (Player.updateUI, ~4 Hz while
+    // visible) and on play/pause, and after any list is drawn, since a
+    // paused player doesn't tick.
+    paintPlayingEpisode() {
+        const content = document.getElementById('content');
+        if (!content) return;
+        const it = Player.item;
+        const key = it?.episodeId ? `${it.id}~${it.episodeId}` : '';
+        for (const li of content.querySelectorAll('.episode-row.is-playing')) {
+            if (`${li.dataset.itemId}~${li.dataset.episodeId}` === key) continue;
+            li.classList.remove('is-playing', 'is-paused');
+            li.querySelector('.ep-eq')?.remove();
+        }
+        if (!key) return;
+        const rows = content.querySelectorAll(`.episode-row[data-item-id="${CSS.escape(it.id)}"][data-episode-id="${CSS.escape(it.episodeId)}"]`);
+        if (!rows.length) return;
+        const gt = Player.getGlobalTime(), dur = Player.getTotalDuration();
+        const pct = dur > 0 ? Math.min(100, Math.max(0, (gt / dur) * 100)) + '%' : '0%';
+        const left = dur > 0 ? formatTime(Math.max(0, dur - gt)) + ' left' : '';
+        const paused = !Player.isPlaying;
+        for (const li of rows) {
+            if (!li.classList.contains('is-playing')) {
+                li.classList.add('is-playing');
+                li.querySelector('.episode-title')?.insertAdjacentHTML('beforebegin', '<span class="ep-eq" aria-label="Now playing"><i></i><i></i><i></i></span>');
+            }
+            li.classList.toggle('is-paused', paused);
+            const bar = li.querySelector('.tracklist-progress');
+            if (bar && bar.style.width !== pct) bar.style.width = pct;
+            const time = li.querySelector('.ep-time');
+            if (time && left && time.textContent !== left) time.textContent = left;
+        }
     },
 
     // Wire episode rows: tap plays, ⋯ toggles notes and actions. `rows`
@@ -4478,6 +4592,7 @@ const App = {
                 box.classList.remove('hidden');
             });
         }
+        this.paintPlayingEpisode();
     },
 
     async _renderEpisodeDetails(box, li, item, ep, progress) {
@@ -4750,6 +4865,7 @@ const App = {
             this._shimRescanWired = true;
             document.getElementById('shim-rescan').addEventListener('click', () => this.shimRescan());
         }
+        this._renderFinishSetting();
         document.getElementById('settings-modal').classList.remove('hidden');
         this._renderSwLog();
         this.renderDownloadsList();
