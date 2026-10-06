@@ -1036,3 +1036,10 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
 .editor-kind { flex-direction: column; align-items: flex-start !important; }
 .playlist-shows { display: flex; flex-direction: column; padding: 0 1rem; }
 .playlist-show { display: flex; align-items: center; gap: 0.6rem; padding: 0.4rem 0; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
+
+/* Show page: downloaded badge and the unplayed-only filter */
+.ep-dl { display: inline-flex; align-items: center; justify-content: center; width: 1.05rem; height: 1.05rem; margin-right: 0.35rem; border-radius: 50%; background: var(--accent); color: #fff; vertical-align: -0.12rem; }
+.episodes-head { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.episodes-head .episodes-count { font-weight: 400; flex: 1; }
+.episodes-head .podcast-toggle { font-weight: 400; text-transform: none; letter-spacing: 0; }
+.tracklist.only-unplayed .episode-row.is-played { display: none; }

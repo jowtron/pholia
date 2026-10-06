@@ -4143,9 +4143,18 @@ const App = {
             .map(n => `<option value="${n}"${n === keep ? ' selected' : ''}>${n ? 'newest ' + n : 'none'}</option>`).join('')}</select></label>`;
         html += '<span class="text-muted" data-pod-status></span>';
         html += '</div>';
-        html += '<div class="section-title">Episodes</div>';
+        // "Unplayed only" hides played rows with a class on the list, so
+        // marking an episode played (which redraws its row as .is-played)
+        // takes it out of view at once. One switch for every show, per phone.
+        const onlyUnplayed = localStorage.getItem('pholia_pod_unplayed_only') === 'true';
+        const unplayed = episodes.filter(ep => !progress.get(ep.id)?.isFinished).length;
+        const downloadedHere = episodes.filter(ep => dl.has(`${item.id}~${ep.id}`)).length;
+        html += '<div class="section-title episodes-head"><span>Episodes</span>'
+            + `<span class="text-muted episodes-count">${unplayed} unplayed${downloadedHere ? ` · ${downloadedHere} downloaded` : ''}</span>`
+            + `<label class="podcast-toggle"><input type="checkbox" data-only-unplayed${onlyUnplayed ? ' checked' : ''}> Unplayed only</label></div>`;
         html += episodes.length
-            ? '<ul class="tracklist">' + episodes.map(ep => this._episodeRowHtml(item.id, ep, progress.get(ep.id), { dl })).join('') + '</ul>'
+            ? `<ul class="tracklist${onlyUnplayed ? ' only-unplayed' : ''}" data-episode-list>` + episodes.map(ep => this._episodeRowHtml(item.id, ep, progress.get(ep.id), { dl })).join('') + '</ul>'
+              + `<div class="empty-state all-played-note${onlyUnplayed && !unplayed ? '' : ' hidden'}">Everything here has been played</div>`
             : '<div class="empty-state">No episodes on the show yet</div>';
         html += '</div>';
         this.setContent(html);
@@ -4169,6 +4178,13 @@ const App = {
         content.querySelector('[data-pod-all]')?.addEventListener('click', () => {
             this.pushNav('All episodes', () => this.showFeedEpisodes(item));
             this.showFeedEpisodes(item);
+        });
+        content.querySelector('[data-only-unplayed]')?.addEventListener('change', (e) => {
+            const on = e.currentTarget.checked;
+            try { localStorage.setItem('pholia_pod_unplayed_only', on ? 'true' : 'false'); } catch {}
+            content.querySelector('[data-episode-list]')?.classList.toggle('only-unplayed', on);
+            const anyUnplayed = !!content.querySelector('[data-episode-list] .episode-row:not(.is-played)');
+            content.querySelector('.all-played-note')?.classList.toggle('hidden', !(on && !anyUnplayed));
         });
         content.querySelector('[data-pod-keep]')?.addEventListener('change', async (e) => {
             const n = Number(e.currentTarget.value) || 0;
@@ -4268,13 +4284,16 @@ const App = {
         else if (ep.archiveState === 'queued' || ep.archiveState === 'fetching') bits.push('Archiving');
         else if (ep.archiveState === 'error') bits.push('Archive failed');
         if (opts.feed && ep.inLibrary === false) bits.push(ep.removed ? 'Removed' : 'Not on the show');
-        if (opts.dl?.has(`${itemId}~${ep.id}`)) bits.push('Downloaded');
-        let h = `<li class="tracklist-item episode-row${played ? ' is-played' : ''}" data-item-id="${esc(itemId)}" data-episode-id="${esc(ep.id)}">`;
+        // Downloaded: a badge before the title, not just a word in the grey
+        // line, so a show's downloads stand out at a glance.
+        const isDl = !!opts.dl?.has(`${itemId}~${ep.id}`);
+        let h = `<li class="tracklist-item episode-row${played ? ' is-played' : ''}${isDl ? ' is-downloaded' : ''}" data-item-id="${esc(itemId)}" data-episode-id="${esc(ep.id)}">`;
         h += `<div class="tracklist-progress" style="width:${pct}%"></div>`;
         h += '<div class="episode-main">';
         h += '<button class="tracklist-play episode-play">';
         if (opts.cover) h += `<img class="ep-cover" src="${ABS.coverUrl(itemId)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
-        h += `<span class="tracklist-title"><span class="episode-title">${esc(ep.title || 'Untitled')}</span><br><span class="text-muted">${esc(bits.filter(Boolean).join(' · '))}</span></span>`;
+        const dlBadge = isDl ? '<span class="ep-dl" title="Downloaded to this phone" aria-label="Downloaded"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12M6 11l6 6 6-6M5 21h14"/></svg></span>' : '';
+        h += `<span class="tracklist-title">${dlBadge}<span class="episode-title">${esc(ep.title || 'Untitled')}</span><br><span class="text-muted">${esc(bits.filter(Boolean).join(' · '))}</span></span>`;
         h += '</button>';
         if (opts.feed && ep.inLibrary === false && this.shimCanAdd) h += '<button class="episode-add" data-add>Add</button>';
         h += '<button class="episode-more" aria-label="Show notes and actions">⋯</button>';
