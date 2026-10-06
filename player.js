@@ -375,6 +375,10 @@ const Player = {
             this.session = null;
         }
         this._logMark('session', Date.now() - tSession);
+        // A podcast episode's chapters can arrive with the session: the shim
+        // looks them up the first time an episode is played. Only when the
+        // item carried none, so a book's chapters are never replaced.
+        if (!this.chapters.length && this.session?.chapters?.length) this.chapters = this.session.chapters;
 
         if (startTime === null) {
             let serverTime = null, serverAt = 0;
