@@ -4316,6 +4316,19 @@ const App = {
         return text.replace(/[ \t]+/g, ' ').replace(/\n\s*\n+/g, '\n\n').trim();
     },
 
+    // Service logos for archived episodes, keyed by ABS_shim's storage
+    // provider id. Inline so they show offline; add one per service as
+    // archiving learns to target it (only pCloud today).
+    _STORAGE_LOGOS: {
+        pcloud_oauth: '<svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16.645996 10.693924"><path fill="#1ebcc5" d="M16.645 8.02c0-.843-.39-1.593-.998-2.083-.241.487-.655.87-1.159 1.078.72-.373 1.213-1.123 1.213-1.989 0-1.237-1.001-2.227-2.238-2.227-.094 0-.182.007-.273.018.309.677.481 1.416.481 2.209 0 .051-.003.101-.004.152C13.578 2.303 11.221 0 8.324 0 5.436 0 3.084 2.29 2.982 5.154 2.981 5.111 2.977 5.069 2.977 5.026c0-.792.177-1.541.485-2.216C1.511 3.054 0 4.716 0 6.734c0 2.187 1.773 3.96 3.959 3.96h10.069v-.005c1.45-.029 2.618-1.212 2.618-2.67"/><path fill="#fff" d="M8.941 5.3h-.005-1.171-.005v-.941h.005 1.171.005c.26 0 .47.21.47.47 0 .26-.21.471-.47.471M7.161 3.237c-.333 0-.604.27-.604.604V7.12c0 .333.271.604.604.604.334 0 .605-.271.605-.604v-.698h1.17V6.42c.879 0 1.592-.712 1.592-1.591 0-.879-.712-1.592-1.592-1.592"/></svg>',
+    },
+    _storageBadge(storage) {
+        const name = storage?.name || 'cloud storage';
+        const logo = this._STORAGE_LOGOS[storage?.provider];
+        if (logo) return `<span class="ep-arch ep-arch-logo" title="Archived on ${esc(name)}" aria-label="Archived on ${esc(name)}">${logo}</span>`;
+        return `<span class="ep-arch" title="Archived on ${esc(name)}" aria-label="Archived on ${esc(name)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18h10a4 4 0 0 0 .6-7.96A6 6 0 0 0 6.1 9.2 4.5 4.5 0 0 0 7 18z"/></svg></span>`;
+    },
+
     _episodeRowHtml(itemId, ep, prog, opts = {}) {
         const played = !!prog?.isFinished;
         const pct = played ? 0 : Math.round((prog?.progress || 0) * 1000) / 10;
@@ -4324,7 +4337,7 @@ const App = {
         const left = !played && prog?.currentTime > 0 && dur ? Math.max(0, dur - prog.currentTime) : 0;
         const bits = [opts.show, date, dur ? (left ? formatTime(left) + ' left' : formatTime(dur)) : ''];
         if (played) bits.push('Played');
-        if (ep.archiveState === 'done') bits.push('On pCloud');
+        if (ep.archiveState === 'done') bits.push(`On ${ep.audioFile?.storage?.name || 'pCloud'}`);
         else if (ep.archiveState === 'queued' || ep.archiveState === 'fetching') bits.push('Archiving');
         else if (ep.archiveState === 'error') bits.push('Archive failed');
         if (opts.feed && ep.inLibrary === false) bits.push(ep.removed ? 'Removed' : 'Not on the show');
@@ -4338,8 +4351,9 @@ const App = {
         h += '<button class="tracklist-play episode-play">';
         if (opts.cover) h += `<img class="ep-cover" src="${ABS.coverUrl(itemId)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
         const dlBadge = isDl ? '<span class="ep-dl" title="Downloaded to this phone" aria-label="Downloaded"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12M6 11l6 6 6-6M5 21h14"/></svg></span>' : '';
-        // Archived: a cloud — the episode has a copy in the library's pCloud.
-        const archBadge = ep.archiveState === 'done' ? '<span class="ep-arch" title="Archived on pCloud" aria-label="Archived on pCloud"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18h10a4 4 0 0 0 .6-7.96A6 6 0 0 0 6.1 9.2 4.5 4.5 0 0 0 7 18z"/></svg></span>' : '';
+        // Archived: the logo of the service holding the copy (the episode's
+        // audioFile.storage, sent by ABS_shim), a plain cloud for one without.
+        const archBadge = ep.archiveState === 'done' ? this._storageBadge(ep.audioFile?.storage) : '';
         h += `<span class="tracklist-title">${dlBadge}${archBadge}<span class="episode-title">${esc(ep.title || 'Untitled')}</span><br><span class="text-muted">${esc(bits.filter(Boolean).join(' · '))}</span></span>`;
         h += '</button>';
         if (opts.feed && ep.inLibrary === false && this.shimCanAdd) h += '<button class="episode-add" data-add>Add</button>';
