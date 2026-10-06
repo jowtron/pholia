@@ -361,11 +361,15 @@ const Player = {
         // Fetch progress alongside the session (not after it) so a resume
         // adds no extra await between the tap and play() — iOS lets the user
         // activation lapse if that gap grows.
-        const local = startTime === null ? this._localPos(item.id) : null;
-        const progressP = (startTime === null) ? ABS.getProgress(item.id).catch(() => null) : Promise.resolve(null);
+        // A podcast episode (App._episodeItem) is a one-file item carrying
+        // its episodeId: its progress, session and local position are the
+        // episode's own, under the show's item id.
+        const ep = item.episodeId || null;
+        const local = startTime === null ? this._localPos(ep ? `${item.id}:${ep}` : item.id) : null;
+        const progressP = (startTime === null) ? ABS.getProgress(ep ? `${item.id}/${ep}` : item.id).catch(() => null) : Promise.resolve(null);
         const tSession = Date.now();
         try {
-            this.session = await (sessionP || ABS.startSession(item.id));
+            this.session = await (sessionP || ABS.startSession(item.id, ep));
         } catch (e) {
             console.warn('Could not start session', e);
             this.session = null;
@@ -1005,6 +1009,9 @@ const Player = {
             this._tryPlay('next-track');
         } else {
             this.syncProgress(true);
+            // A finished episode: tidy its offline copy, fetch the next for
+            // shows kept downloaded (App.onEpisodeFinished).
+            if (this.item?.episodeId) App?.onEpisodeFinished?.(this.item);
         }
     },
 

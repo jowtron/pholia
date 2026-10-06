@@ -223,6 +223,10 @@
                     <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
                     <span>Latest</span>
                 </button>
+                <button class="tab" data-tab="playlists" style="display:none">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h13M3 12h13M3 18h9"/><path d="m17 15 5 3-5 3z"/></svg>
+                    <span>Playlists</span>
+                </button>
                 <button class="tab" data-tab="series">
                     <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="6" height="18" rx="1"/><rect x="9" y="3" width="6" height="18" rx="1"/><rect x="16" y="3" width="6" height="18" rx="1"/></svg>
                     <span>Series</span>
@@ -289,6 +293,11 @@
                         <input type="checkbox" id="setting-auto-cache">
                     </label>
                     <div class="setting-hint">Caches up to 1 hour ahead in the background. Off by default — uses bandwidth that can compete with playback on slower connections.</div>
+                    <label class="toggle-row">
+                        Keep podcast episodes after they're played
+                        <input type="checkbox" id="setting-keep-played">
+                    </label>
+                    <div class="setting-hint">Off: a downloaded episode is removed from this phone once you've listened to the end.</div>
                     <label class="toggle-row">
                         Hide Collections tab
                         <input type="checkbox" id="setting-hide-collections">

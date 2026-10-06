@@ -526,6 +526,9 @@ const App = {
         document.getElementById('setting-auto-rewind').addEventListener('change', e => {
             localStorage.setItem('pholia_auto_rewind', e.target.checked ? 'true' : 'false');
         });
+        document.getElementById('setting-keep-played').addEventListener('change', e => {
+            localStorage.setItem('pholia_keep_played_episodes', e.target.checked ? 'true' : 'false');
+        });
         document.getElementById('setting-auto-cache').addEventListener('change', e => {
             localStorage.setItem('pholia_auto_cache', e.target.checked ? 'true' : 'false');
             if (e.target.checked && Player.item) Player._startAutoCache();
@@ -718,9 +721,14 @@ const App = {
             if (document.visibilityState === 'visible' && ABS.token && !this._offlineMode) {
                 this._refreshCurrentItemProgress();
                 if (Date.now() - (this._librariesCheckedAt || 0) > 5 * 60 * 1000) this._refreshLibraries();
+                this._podcastHousekeeping();
             }
         });
+        // Podcast downloads kept current, and "played" marks made offline
+        // delivered, a little after launch (clear of the cold-launch work).
+        setTimeout(() => { if (ABS.token && !this._offlineMode) this._podcastHousekeeping(true); }, 15000);
         window.addEventListener('online', () => {
+            if (ABS.token) setTimeout(() => this._podcastHousekeeping(true), 3000);
             if (this._offlineMode && ABS.token) {
                 this.retryConnect();
             }
@@ -1144,19 +1152,20 @@ const App = {
         const item = Player.item || this._currentDetailItem;
         if (!item || Player.isPlaying) return;
         let progress;
-        try { progress = await ABS.getProgress(item.id); } catch { return; }
+        // An episode's progress is its own (the item id is the show's).
+        try { progress = await ABS.getProgress(item.episodeId ? `${item.id}/${item.episodeId}` : item.id); } catch { return; }
         if (!progress) return;
         const serverTime = progress.currentTime || 0;
         // Only reseat the player if the server's time is meaningfully ahead
         // — the forward-only guard. Going backwards is almost always stale
         // data clobbering newer state. 5 s slack covers normal sync jitter.
-        if (Player.item?.id === item.id) {
+        if (Player.item?.id === item.id && Player.item?.episodeId === item.episodeId) {
             const localTime = Player.getGlobalTime();
             if (serverTime > localTime + 5) Player.loadTime(serverTime);
         }
         // Re-render the detail view so the resume time / chapter highlight /
         // % complete reflect the new progress.
-        if (this._currentDetailItem?.id === item.id && document.querySelector('.detail-view')) {
+        if (!item.episodeId && this._currentDetailItem?.id === item.id && document.querySelector('.detail-view')) {
             this.showBookDetail(item);
         }
     },
@@ -1342,6 +1351,8 @@ const App = {
         });
         const latestTab = document.querySelector('[data-tab="latest"]');
         if (latestTab) latestTab.style.display = isPodcast ? '' : 'none';
+        const playlistsTab = document.querySelector('[data-tab="playlists"]');
+        if (playlistsTab) playlistsTab.style.display = isPodcast ? '' : 'none';
         this.checkAbbSupport();
     },
 
@@ -1385,6 +1396,17 @@ const App = {
         } catch { this.isShim = false; /* not a shim, or no access */ }
         this.abbAvailable = ok;
         btn.classList.toggle('hidden', !ok);
+        // In a podcast library the same button subscribes to podcasts, so it
+        // shouldn't wear AudioBookBay's logo.
+        const pod = this.currentMediaType === 'podcast';
+        if (btn.dataset.kind !== (pod ? 'podcast' : 'abb')) {
+            btn.dataset.kind = pod ? 'podcast' : 'abb';
+            btn.innerHTML = pod
+                ? '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>'
+                : '<img src="icons/abb.svg" alt="" width="22" height="22">';
+            btn.title = pod ? 'Add podcast' : 'Add from AudioBookBay';
+            btn.setAttribute('aria-label', btn.title);
+        }
         if (!ok && this.currentTab === 'add') this.switchTab('home');
     },
 
@@ -2302,6 +2324,7 @@ const App = {
             case 'home': this.showHome(); break;
             case 'library': this.showLibrary(); break;
             case 'latest': this.showLatest(); break;
+            case 'playlists': this.showPlaylists(); break;
             case 'add': this.showAdd(); break;
             case 'series': this.showSeries(); break;
             case 'collections': this.showCollections(); break;
@@ -2677,12 +2700,12 @@ const App = {
     _loadKnownOffline() {
         try {
             const v = JSON.parse(localStorage.getItem(this._knownOfflineKey()) || '[]');
-            return Array.isArray(v) ? v.filter(x => x && x.id).map(x => ({ id: x.id, media: { metadata: { title: x.title, authorName: x.author } } })) : [];
+            return Array.isArray(v) ? v.filter(x => x && x.id).map(x => ({ id: x.id, ...(x.ep ? { episodeId: x.ep } : {}), media: { metadata: { title: x.title, authorName: x.author } } })) : [];
         } catch { return []; }
     },
     _saveKnownOffline(items) {
         try {
-            const v = items.map(i => ({ id: i.id, title: i.media?.metadata?.title || '', author: i.media?.metadata?.authorName || '' }));
+            const v = items.map(i => ({ id: i.id, ...(i.episodeId ? { ep: i.episodeId } : {}), title: i.media?.metadata?.title || '', author: i.media?.metadata?.authorName || '' }));
             localStorage.setItem(this._knownOfflineKey(), JSON.stringify(v));
         } catch {}
     },
@@ -2704,7 +2727,8 @@ const App = {
         const entry = this._tabCache[key];
         if (entry?.bindData && typeof entry.bindData === 'object') entry.bindData.items = items;
         const live = [...box.querySelectorAll('.offline-card')].map(el => el.dataset.offlineId);
-        if (live.length === items.length && live.every((id, i) => id === items[i].id)) return;
+        const shown = this._offlineForLibrary(items);
+        if (live.length === shown.length && live.every((id, i) => id === Offline.oid(shown[i]))) return;
         box.innerHTML = this.renderOfflineSection(items);
         this.bindOfflineCardClicks(items);
         this._markShelves();
@@ -2714,17 +2738,26 @@ const App = {
         }
     },
 
+    // A podcast library's Downloaded row shows its episodes, a book
+    // library's its books: one offline store holds both.
+    _offlineForLibrary(items) {
+        const pod = this.currentMediaType === 'podcast';
+        return items.filter(i => pod ? !!i.episodeId : !i.episodeId);
+    },
+
     renderOfflineSection(items) {
+        items = this._offlineForLibrary(items);
         if (!items.length) return '';
         let html = `<div class="section-title">Downloaded</div><div class="h-scroll">`;
         for (const item of items) {
             const meta = item.media?.metadata || {};
             const title = meta.title || 'Unknown';
             const subtitle = meta.authorName || '';
-            html += `<div class="card offline-card" data-offline-id="${item.id}">`;
+            const oid = Offline.oid(item);
+            html += `<div class="card offline-card" data-offline-id="${esc(oid)}">`;
             html += '<div class="cover-box">';
             html += `<img src="${ABS.coverUrl(item.id)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
-            html += `<button class="play-overlay" data-offline-play="${item.id}">▶</button>`;
+            html += `<button class="play-overlay" data-offline-play="${esc(oid)}">▶</button>`;
             html += '</div>';
             html += `<div class="card-title">${esc(title)}</div>`;
             html += `<div class="card-sub">${esc(subtitle)}</div>`;
@@ -2735,25 +2768,33 @@ const App = {
     },
 
     bindOfflineCardClicks(items) {
-        const byId = Object.fromEntries(items.map(i => [i.id, i]));
+        const byId = Object.fromEntries(items.map(i => [Offline.oid(i), i]));
+        // No items when the home was painted from its persisted copy: look
+        // the tapped one up in the offline store instead.
+        const find = async (oid) => byId[oid] || (await Offline.listDownloaded().catch(() => [])).find(i => Offline.oid(i) === oid);
         document.querySelectorAll('.offline-card[data-offline-id]').forEach(el => {
             el.addEventListener('click', async (e) => {
                 if (e.target.closest('.play-overlay')) return;
-                // No items when the home was painted from its persisted copy:
-                // look the tapped one up in the offline store instead.
-                let item = byId[el.dataset.offlineId];
-                if (!item) {
-                    try { item = (await Offline.listDownloaded()).find(i => i.id === el.dataset.offlineId); } catch {}
-                }
-                if (item) this.showBookDetail(item);
+                const item = await find(el.dataset.offlineId);
+                if (!item) return;
+                // A downloaded episode has no page of its own: a tap plays
+                // it, from the phone.
+                if (item.episodeId) this.playEpisode(item.id, item.episodeId);
+                else this.showBookDetail(item);
             });
         });
         // Funnel through quickPlay so the cache-first lookup is consistent
         // with Continue Listening — both end up using the cached META.
         document.querySelectorAll('.play-overlay[data-offline-play]').forEach(btn => {
-            btn.addEventListener('click', (e) => {
+            btn.addEventListener('click', async (e) => {
                 e.stopPropagation();
-                this.quickPlay(btn.dataset.offlinePlay);
+                const oid = btn.dataset.offlinePlay;
+                if (oid.includes('~')) {
+                    const [itemId, episodeId] = oid.split('~');
+                    this.playEpisode(itemId, episodeId);
+                } else {
+                    this.quickPlay(oid);
+                }
             });
         });
     },
@@ -2763,8 +2804,15 @@ const App = {
         document.getElementById('header-title').textContent = 'Library';
         return this._renderTab('library', async () => {
             const data = await ABS.getLibraryItems(this.currentLibraryId, 0, 200);
-            return this.gridHtml(data.results);
-        }, () => this.bindCardClicks());
+            if (this.currentMediaType !== 'podcast') return this.gridHtml(data.results);
+            // A podcast library's own way in to subscribing, beside the
+            // header's + (which is easy to miss).
+            const add = '<div class="podcast-add-bar"><button class="text-btn" data-open-add>+ Add podcast</button></div>';
+            return add + (data.results.length ? this.gridHtml(data.results) : '<div class="empty-state">No podcasts yet</div>');
+        }, () => {
+            this.bindCardClicks();
+            document.querySelector('#content [data-open-add]')?.addEventListener('click', () => this.toggleAdd());
+        });
     },
 
     // ── Latest (podcasts) ──
@@ -2772,15 +2820,16 @@ const App = {
     async showLatest() {
         document.getElementById('header-title').textContent = 'Latest';
         return this._renderTab('latest', async () => {
-            const [data, progress] = await Promise.all([
+            const [data, progress, dl] = await Promise.all([
                 ABS.request(`/api/libraries/${this.currentLibraryId}/recent-episodes?limit=50`),
                 this._episodeProgress(),
+                Offline.fullyDownloadedIds(),
             ]);
             const episodes = data.episodes || [];
             if (!episodes.length) return '<div class="empty-state">No recent episodes</div>';
             for (const ep of episodes) if (progress.has(ep.id)) ep.mediaProgress = progress.get(ep.id);
             const html = '<ul class="tracklist">' + episodes.map(ep => this._episodeRowHtml(ep.libraryItemId, ep, ep.mediaProgress,
-                { cover: true, show: ep.podcast?.metadata?.title || '' })).join('') + '</ul>';
+                { cover: true, show: ep.podcast?.metadata?.title || '', dl })).join('') + '</ul>';
             return { html, bindData: episodes };
         }, (episodes) => {
             const content = document.getElementById('content');
@@ -2807,54 +2856,404 @@ const App = {
         });
     },
 
-    // `episodeHint` / `itemHint`: callers that already hold them (the show
-    // page, the feed browser — whose episodes aren't on the show, so the
-    // item fetch wouldn't find them) skip the lookup.
-    async playEpisode(itemId, episodeId, episodeHint = null, itemHint = null) {
-        try {
-            const item = itemHint || await ABS.getItem(itemId);
-            const episode = item.media?.episodes?.find(e => e.id === episodeId) || episodeHint;
-            if (!episode) { console.warn('Episode not found'); return; }
-            // Build a pseudo-item for the player with episode data
-            const pseudoItem = {
-                id: itemId,
-                episodeId: episodeId,
-                media: {
-                    metadata: {
-                        title: episode.title,
-                        authorName: item.media?.metadata?.title || '',
-                    },
-                    duration: episode.duration,
-                    chapters: episode.chapters || [],
-                    audioFiles: [],
-                },
-            };
-            if (Player.session) await Player.closeCurrentSession();
-            // Mirror startItem's teardown: kill any auto-cache loop still
-            // running against the previous book (its sliding-window math would
-            // otherwise track the podcast's timeline) and reset recovery state.
-            if (Player._autoCacheController) { Player._autoCacheController.abort(); Player._autoCacheController = null; }
-            Player._audioRecoveryAttempts = 0;
-            Player._prewarmedFromTrackIndex = -1;
-            Player.item = pseudoItem;
-            Player.chapters = episode.chapters || [];
-            Player.tracks = [];
-            try {
-                Player.session = await ABS.startSession(itemId, episodeId);
-            } catch (e) {
-                console.warn('Could not start session', e);
-                Player.session = null;
+    // ── Playlists (podcast libraries) ──
+    // ABS playlists, plus ABS_shim's smart ones: a playlist with `rules`
+    // ({podcastIds, include, sort}) is recomputed by the server on every read
+    // ("every unplayed episode of these shows, newest first"; ABS issue
+    // #1477). Playing from a playlist queues the rest of it: when an episode
+    // ends the next one starts (onEpisodeFinished).
+    async showPlaylists() {
+        document.getElementById('header-title').textContent = 'Playlists';
+        return this._renderTab('playlists', async () => {
+            const data = await ABS.request(`/api/libraries/${this.currentLibraryId}/playlists`);
+            const lists = data.results || [];
+            let html = '<div class="podcast-add-bar"><button class="text-btn" data-new-playlist>+ New playlist</button></div>';
+            html += '<div class="list-view">';
+            for (const pl of lists) {
+                const n = (pl.items || []).length;
+                const kind = pl.rules ? this._rulesSummary(pl.rules) : 'Playlist';
+                html += `<div class="list-item" data-playlist-id="${esc(pl.id)}">`;
+                html += `<div class="list-placeholder">${pl.rules ? '✦' : '≡'}</div>`;
+                html += `<div class="playlist-info"><div class="list-name">${esc(pl.name)}</div><div class="list-count">${n} episode${n !== 1 ? 's' : ''} · ${esc(kind)}</div></div>`;
+                if (n) html += `<button class="playlist-play" data-play-playlist="${esc(pl.id)}" aria-label="Play">▶</button>`;
+                html += '</div>';
             }
-            const startTime = Player.session?.currentTime || 0;
-            Player.loadTime(startTime);
-            Player.startSync();
-            Player.updateMediaSession();
-            Player.updateUI();
-            document.getElementById('player-bar').classList.remove('hidden');
-            document.getElementById('main-screen').classList.add('player-active');
+            if (!lists.length) html += '<div class="empty-state">No playlists yet. A smart playlist gathers the unplayed episodes of the shows you pick, so one tap plays the lot.</div>';
+            html += '</div>';
+            return html;
+        }, () => {
+            const content = document.getElementById('content');
+            content.querySelector('[data-new-playlist]')?.addEventListener('click', () => {
+                this.pushNav('New playlist', () => this.showPlaylistEditor(null));
+                this.showPlaylistEditor(null);
+            });
+            content.querySelectorAll('.list-item[data-playlist-id]').forEach(el => el.addEventListener('click', (e) => {
+                if (e.target.closest('[data-play-playlist]')) return;
+                this.showPlaylist(el.dataset.playlistId);
+            }));
+            content.querySelectorAll('[data-play-playlist]').forEach(btn => btn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                try { this._playFromPlaylist(await ABS.request(`/api/playlists/${btn.dataset.playPlaylist}`), 0); }
+                catch (err) { alert('Could not load the playlist: ' + err.message); }
+            }));
+        });
+    },
+
+    _rulesSummary(r) {
+        const shows = (r.podcastIds || []).length;
+        const what = r.include === 'inProgress' ? 'In progress' : r.include === 'all' ? 'Every episode' : 'Unplayed';
+        return `${what} from ${shows} show${shows === 1 ? '' : 's'}, ${r.sort === 'oldest' ? 'oldest' : 'newest'} first`;
+    },
+
+    async showPlaylist(id) {
+        this.pushNav('Playlist', () => this.showPlaylist(id));
+        this.showLoading();
+        let pl;
+        try { pl = await ABS.request(`/api/playlists/${id}`); }
+        catch (e) { this.setContent(`<div class="loading">Error: ${esc(e.message)}</div>`); return; }
+        this.setNavTop(pl.name);
+        const items = (pl.items || []).filter(i => i.episode);
+        const [progress, dl] = await Promise.all([this._episodeProgress(), Offline.fullyDownloadedIds()]);
+        let html = '<div class="detail-view">';
+        html += `<div class="playlist-header"><h3>${esc(pl.name)}</h3>`;
+        html += `<div class="text-muted">${items.length} episode${items.length !== 1 ? 's' : ''}${pl.rules ? ' · ' + esc(this._rulesSummary(pl.rules)) : ''}</div>`;
+        html += '<div class="podcast-actions">';
+        if (items.length) html += '<button class="abb-go playlist-play-all" data-play-all>▶ Play</button>';
+        html += '<button class="text-btn" data-edit>Edit</button><button class="text-btn" data-delete>Delete</button>';
+        html += '</div></div>';
+        html += items.length
+            ? '<ul class="tracklist">' + items.map(i => this._episodeRowHtml(i.libraryItemId, i.episode, progress.get(i.episodeId),
+                { cover: true, show: i.libraryItem?.media?.metadata?.title || '', dl })).join('') + '</ul>'
+            : `<div class="empty-state">${pl.rules ? 'Nothing matches right now.' : 'Empty. Add episodes from their ⋯ menu.'}</div>`;
+        html += '</div>';
+        this.setContent(html);
+        const content = document.getElementById('content');
+        content.querySelector('[data-play-all]')?.addEventListener('click', () => this._playFromPlaylist(pl, 0));
+        content.querySelector('[data-edit]').addEventListener('click', () => {
+            this.pushNav('Edit playlist', () => this.showPlaylistEditor(pl));
+            this.showPlaylistEditor(pl);
+        });
+        content.querySelector('[data-delete]').addEventListener('click', async () => {
+            if (!confirm(`Delete the playlist "${pl.name}"? The episodes themselves stay.`)) return;
+            try {
+                await ABS.request(`/api/playlists/${pl.id}`, { method: 'DELETE' });
+                this._invalidateTabCache('playlists');
+                this.goBack();
+            } catch (e) { alert('Delete failed: ' + e.message); }
+        });
+        // Rows: each belongs to its own show; tapping one plays the playlist
+        // from there.
+        const rows = [...content.querySelectorAll('.episode-row')];
+        rows.forEach((li, idx) => {
+            const it = items[idx];
+            const show = { id: it.libraryItemId, libraryId: it.libraryItem?.libraryId, media: { ...(it.libraryItem?.media || {}), episodes: [it.episode] } };
+            this._bindEpisodeRows(li.parentElement, show, [it.episode], progress, [li]);
+            const play = li.querySelector('.episode-play');
+            const fresh = play.cloneNode(true);   // drop the single-episode handler
+            play.replaceWith(fresh);
+            fresh.addEventListener('click', () => this._playFromPlaylist(pl, idx));
+            if (!pl.rules) li.dataset.playlistId = pl.id;
+        });
+    },
+
+    // Play a playlist's episodes in order from `index`, queueing the rest.
+    _playFromPlaylist(pl, index) {
+        const items = (pl.items || []).filter(i => i.episode);
+        if (!items[index]) return;
+        const queue = { playlistId: pl.id, name: pl.name, items, index };
+        const it = items[index];
+        const show = { id: it.libraryItemId, libraryId: it.libraryItem?.libraryId, media: it.libraryItem?.media || {} };
+        this.playEpisode(it.libraryItemId, it.episodeId, it.episode, show, { queue });
+    },
+
+    // New (pl = null) or edit. Smart: name the shows and the rule. Ordinary:
+    // just a name, filled from episodes' ⋯ "Add to playlist".
+    async showPlaylistEditor(pl) {
+        this.setNavTop(pl ? 'Edit playlist' : 'New playlist', () => this.showPlaylistEditor(pl));
+        this.showLoading();
+        let shows = [];
+        try { shows = (await ABS.getLibraryItems(this.currentLibraryId, 0, 500)).results || []; } catch {}
+        const r = pl?.rules || { podcastIds: [], include: 'unplayed', sort: 'newest' };
+        const smart = pl ? !!pl.rules : true;
+        const picked = new Set(r.podcastIds || []);
+        let html = '<div class="detail-view playlist-editor">';
+        html += `<label class="editor-row">Name <input type="text" id="pl-name" value="${esc(pl?.name || '')}" placeholder="e.g. Tech" autocomplete="off"></label>`;
+        if (!pl) {
+            html += '<div class="editor-row editor-kind">'
+                + '<label><input type="radio" name="pl-kind" value="smart" checked> Smart: the shows you pick, kept up to date</label>'
+                + '<label><input type="radio" name="pl-kind" value="manual"> Hand-picked episodes</label></div>';
+        }
+        html += `<div id="pl-smart"${smart ? '' : ' class="hidden"'}>`;
+        html += '<div class="editor-row"><select id="pl-include">'
+            + `<option value="unplayed"${r.include === 'unplayed' ? ' selected' : ''}>Unplayed episodes</option>`
+            + `<option value="inProgress"${r.include === 'inProgress' ? ' selected' : ''}>Episodes in progress</option>`
+            + `<option value="all"${r.include === 'all' ? ' selected' : ''}>Every episode</option></select>`
+            + ' <select id="pl-sort">'
+            + `<option value="newest"${r.sort !== 'oldest' ? ' selected' : ''}>Newest first</option>`
+            + `<option value="oldest"${r.sort === 'oldest' ? ' selected' : ''}>Oldest first</option></select></div>`;
+        html += '<div class="section-title">From these shows</div><div class="playlist-shows">';
+        for (const sh of shows.sort((a, b) => (a.media?.metadata?.title || '').localeCompare(b.media?.metadata?.title || ''))) {
+            html += `<label class="playlist-show"><input type="checkbox" value="${esc(sh.id)}"${picked.has(sh.id) ? ' checked' : ''}>`
+                + `<img class="ep-cover" src="${ABS.coverUrl(sh.id)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`
+                + `<span>${esc(sh.media?.metadata?.title || 'Untitled')}</span></label>`;
+        }
+        if (!shows.length) html += '<div class="empty-state">No podcasts in this library yet</div>';
+        html += '</div></div>';
+        html += '<div class="podcast-actions"><button class="abb-go" id="pl-save">Save</button><span class="text-muted" id="pl-status"></span></div>';
+        html += '</div>';
+        this.setContent(html);
+        const content = document.getElementById('content');
+        content.querySelectorAll('input[name="pl-kind"]').forEach(el => el.addEventListener('change', () => {
+            content.querySelector('#pl-smart').classList.toggle('hidden', content.querySelector('input[name="pl-kind"]:checked').value !== 'smart');
+        }));
+        content.querySelector('#pl-save').addEventListener('click', async () => {
+            const name = content.querySelector('#pl-name').value.trim();
+            const status = content.querySelector('#pl-status');
+            if (!name) { status.textContent = 'Give it a name'; return; }
+            const isSmart = pl ? !!pl.rules : content.querySelector('input[name="pl-kind"]:checked').value === 'smart';
+            const body = { name };
+            if (isSmart) {
+                const ids = [...content.querySelectorAll('.playlist-show input:checked')].map(i => i.value);
+                if (!ids.length) { status.textContent = 'Pick at least one show'; return; }
+                body.rules = { podcastIds: ids, include: content.querySelector('#pl-include').value, sort: content.querySelector('#pl-sort').value };
+            }
+            try {
+                const saved = pl
+                    ? await ABS.request(`/api/playlists/${pl.id}`, { method: 'PATCH', body: JSON.stringify(body) })
+                    : await ABS.request('/api/playlists', { method: 'POST', body: JSON.stringify({ ...body, libraryId: this.currentLibraryId }) });
+                this._invalidateTabCache('playlists');
+                // Replace the editor level with the playlist itself.
+                this.navStack.pop();
+                if (pl) this.navStack.pop();
+                this.showPlaylist(saved.id);
+            } catch (e) { status.textContent = 'Save failed: ' + e.message; }
+        });
+    },
+
+    // The ⋯ menu's "Add to playlist": ordinary playlists only (a smart
+    // one's contents come from its rules), or a new one named on the spot.
+    async _addToPlaylistUi(box, itemId, ep) {
+        let lists = [];
+        try { lists = ((await ABS.request(`/api/libraries/${this.currentLibraryId}/playlists`)).results || []).filter(p => !p.rules); } catch {}
+        const row = document.createElement('div');
+        row.className = 'episode-actions';
+        row.innerHTML = '<select data-pl-pick>' + lists.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')
+            + '<option value="__new">New playlist…</option></select> <button class="text-btn" data-pl-add>Add</button><span class="text-muted" data-pl-msg></span>';
+        box.appendChild(row);
+        row.querySelector('[data-pl-add]').addEventListener('click', async () => {
+            const msg = row.querySelector('[data-pl-msg]');
+            let id = row.querySelector('[data-pl-pick]').value;
+            try {
+                if (id === '__new') {
+                    const name = prompt('Name for the new playlist');
+                    if (!name || !name.trim()) return;
+                    const created = await ABS.request('/api/playlists', { method: 'POST', body: JSON.stringify({ libraryId: this.currentLibraryId, name: name.trim(), items: [{ libraryItemId: itemId, episodeId: ep.id }] }) });
+                    id = created.id;
+                } else {
+                    await ABS.request(`/api/playlists/${id}/item`, { method: 'POST', body: JSON.stringify({ libraryItemId: itemId, episodeId: ep.id }) });
+                }
+                msg.textContent = ' Added';
+                this._invalidateTabCache('playlists');
+            } catch (e) { msg.textContent = ' Failed: ' + e.message; }
+        });
+    },
+
+    // A podcast episode as the player and the offline store take it: a
+    // one-file "book" under the show's item id, carrying its episodeId. The
+    // show's title stands in for the author (mini player, lock screen,
+    // Downloaded row), and the notes are plain text (the fullscreen player
+    // sets them with textContent).
+    _episodeItem(show, ep) {
+        const smeta = show.media?.metadata || {};
+        const af = ep.audioFile || {};
+        const duration = ep.duration || af.duration || 0;
+        return {
+            id: show.id,
+            episodeId: ep.id,
+            libraryId: show.libraryId,
+            mediaType: 'podcast',
+            media: {
+                metadata: {
+                    title: ep.title || 'Episode',
+                    authorName: smeta.title || '',
+                    podcastTitle: smeta.title || '',
+                    description: this._plainText(ep.description || ep.subtitle || ''),
+                    publishedAt: ep.publishedAt || null,
+                },
+                duration,
+                chapters: ep.chapters || [],
+                audioFiles: af.ino ? [{ ...af, duration: af.duration || duration }] : [],
+            },
+        };
+    },
+
+    // `episodeHint` / `itemHint`: callers that already hold them (the show
+    // page, the feed browser, whose episodes aren't on the show) skip the
+    // lookup. A downloaded episode plays from the phone with no network at
+    // all; otherwise it goes through Player.startItem like a book, which
+    // brings resume, the sessionless offline fallback and auto-cache.
+    async playEpisode(itemId, episodeId, episodeHint = null, itemHint = null, opts = {}) {
+        // Started from a playlist: the rest of it follows (onEpisodeFinished).
+        // Anything else ends the queue.
+        this._queue = opts.queue || null;
+        try {
+            // Tapping the episode that's already playing resumes it rather
+            // than restarting it (the same rule as Continue Listening).
+            if (Player.item?.id === itemId && Player.item?.episodeId === episodeId) {
+                if (Player.audio.paused) Player.play();
+                return;
+            }
+            const oid = `${itemId}~${episodeId}`;
+            let epItem = null;
+            if ((await Offline.fullyDownloadedIds()).has(oid)) {
+                epItem = (await Offline.fullyDownloaded()).find(i => Offline.oid(i) === oid) || null;
+            }
+            if (!epItem) {
+                const show = itemHint || await ABS.getItem(itemId);
+                const ep = show.media?.episodes?.find(e => e.id === episodeId) || episodeHint;
+                if (!ep) { console.warn('Episode not found'); return; }
+                epItem = this._episodeItem(show, ep);
+            }
+            await Player.startItem(epItem);
         } catch (e) {
             console.error('Play episode failed', e);
         }
+    },
+
+    // ── Podcast downloads ──
+    // Downloads are per phone, in the same Cache Storage chunks as books
+    // (Offline.downloadBook works on any item with audioFiles). `autoKept`
+    // marks a copy fetched by a show's "keep newest N" rule, which that rule
+    // may delete again; a copy you asked for is yours until you remove it or
+    // finish it.
+
+    async downloadEpisode(show, ep, onProgress) {
+        const item = this._episodeItem(show, ep);
+        item.downloadedAt = Date.now();
+        await Offline.downloadBook(item, (i, n, received, total) => onProgress?.(received, total));
+        this._invalidateHomeCache?.();
+    },
+
+    _keepKey(showId) { return `pholia_pod_keep:${ABS.serverUrl}|${showId}`; },
+    _keepCount(showId) {
+        try { return Number(localStorage.getItem(this._keepKey(showId))) || 0; } catch { return 0; }
+    },
+    _setKeepCount(showId, n) {
+        try {
+            if (n > 0) localStorage.setItem(this._keepKey(showId), String(n));
+            else localStorage.removeItem(this._keepKey(showId));
+        } catch {}
+    },
+    _keepRules() {
+        const prefix = `pholia_pod_keep:${ABS.serverUrl}|`;
+        const out = [];
+        try {
+            for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                if (k && k.startsWith(prefix)) out.push({ showId: k.slice(prefix.length), n: Number(localStorage.getItem(k)) || 0 });
+            }
+        } catch {}
+        return out;
+    },
+
+    // Bring every "keep newest N" show up to date: download its newest N
+    // unplayed episodes that aren't here yet, and delete copies the rule
+    // fetched that have fallen out of that set. Runs at launch, on
+    // returning to the app (at most every 20 minutes), when a rule changes
+    // and when an episode finishes. iOS only runs it while Pholia is open.
+    _keepSyncRunning: false,
+    _keepSyncAt: 0,
+    async syncKeptDownloads(onlyShowId = null) {
+        if (this._keepSyncRunning || !navigator.onLine) return;
+        this._keepSyncRunning = true;
+        this._keepSyncAt = Date.now();
+        let changed = false;
+        try {
+            const rules = this._keepRules().filter(r => !onlyShowId || r.showId === onlyShowId);
+            // A show whose rule was just switched off still needs its
+            // auto-fetched copies cleared.
+            if (onlyShowId && !rules.length) rules.push({ showId: onlyShowId, n: 0 });
+            if (!rules.length) return;
+            const progress = await this._episodeProgress();
+            for (const rule of rules) {
+                const downloaded = (await Offline.listDownloaded()).filter(i => i.id === rule.showId && i.episodeId);
+                let show = null;
+                if (rule.n > 0) {
+                    try { show = await ABS.getItem(rule.showId); } catch { continue; }
+                }
+                const want = (show?.media?.episodes || [])
+                    .filter(e => !progress.get(e.id)?.isFinished)
+                    .sort((a, b) => (b.publishedAt || 0) - (a.publishedAt || 0))
+                    .slice(0, rule.n);
+                const wantIds = new Set(want.map(e => e.id));
+                for (const it of downloaded) {
+                    if (it.autoKept && !wantIds.has(it.episodeId) && Player.item?.episodeId !== it.episodeId) {
+                        await Offline.deleteBook(it);
+                        changed = true;
+                    }
+                }
+                const have = await Offline.fullyDownloadedIds();
+                for (const ep of want) {
+                    if (have.has(`${rule.showId}~${ep.id}`)) continue;
+                    const item = this._episodeItem(show, ep);
+                    item.autoKept = true;
+                    item.downloadedAt = Date.now();
+                    try { await Offline.downloadBook(item); changed = true; }
+                    catch (e) { console.warn('Keep-downloaded fetch failed', e); break; }
+                }
+            }
+        } finally {
+            this._keepSyncRunning = false;
+            if (changed) this._invalidateHomeCache?.();
+        }
+    },
+
+    // Called by the player when an episode plays to its end. Unless kept
+    // on purpose (Settings), its offline copy goes: a played episode is the
+    // one thing nobody downloads twice. Then the show's rule tops up.
+    async onEpisodeFinished(item) {
+        const q = this._queue;
+        if (q && q.items[q.index]?.episodeId === item.episodeId && q.items[q.index + 1]) {
+            const next = q.items[q.index + 1];
+            const show = { id: next.libraryItemId, libraryId: next.libraryItem?.libraryId, media: next.libraryItem?.media || {} };
+            this.playEpisode(next.libraryItemId, next.episodeId, next.episode, show, { queue: { ...q, index: q.index + 1 } });
+        }
+        // Offline, the "finished" sync failed: queue it for the next time
+        // the server is reachable, or the episode comes back as unplayed.
+        if (!navigator.onLine) this._queueEpisodeFinished(item);
+        const keep = localStorage.getItem('pholia_keep_played_episodes') === 'true';
+        try {
+            const oid = Offline.oid(item);
+            const stored = (await Offline.listDownloaded()).find(i => Offline.oid(i) === oid);
+            if (stored && !keep) { await Offline.deleteBook(stored); this._invalidateHomeCache?.(); }
+        } catch {}
+        if (this._keepCount(item.id) > 0) setTimeout(() => this.syncKeptDownloads(item.id), 3000);
+    },
+
+    async _podcastHousekeeping(force = false) {
+        await this.flushEpisodeOutbox();
+        if (force || Date.now() - this._keepSyncAt > 20 * 60 * 1000) this.syncKeptDownloads();
+    },
+
+    _outboxKey() { return `pholia_ep_outbox:${ABS.serverUrl}`; },
+    _queueEpisodeFinished(item) {
+        try {
+            const q = JSON.parse(localStorage.getItem(this._outboxKey()) || '[]');
+            q.push({ itemId: item.id, episodeId: item.episodeId, duration: item.media?.duration || 0 });
+            localStorage.setItem(this._outboxKey(), JSON.stringify(q.slice(-200)));
+        } catch {}
+    },
+    async flushEpisodeOutbox() {
+        let q;
+        try { q = JSON.parse(localStorage.getItem(this._outboxKey()) || '[]'); } catch { return; }
+        if (!q.length || !navigator.onLine) return;
+        const left = [];
+        for (const e of q) {
+            try {
+                await ABS.updateProgress(`${e.itemId}/${e.episodeId}`, { isFinished: true, progress: 1, currentTime: e.duration, duration: e.duration });
+            } catch { left.push(e); }
+        }
+        try { localStorage.setItem(this._outboxKey(), JSON.stringify(left)); } catch {}
     },
 
     // ── Series ──
@@ -3719,7 +4118,7 @@ const App = {
         const meta = item.media?.metadata || {};
         const episodes = [...(item.media?.episodes || [])].sort((a, b) => (b.publishedAt || 0) - (a.publishedAt || 0));
         this.setNavTop(meta.title || 'Unknown', () => this._reloadPodcast(item.id));
-        const progress = await this._episodeProgress();
+        const [progress, dl] = await Promise.all([this._episodeProgress(), Offline.fullyDownloadedIds()]);
 
         let html = '<div class="detail-view">';
         html += '<div class="detail-header">';
@@ -3730,19 +4129,23 @@ const App = {
         html += `<div class="duration">${episodes.length} episode${episodes.length !== 1 ? 's' : ''}${item.media?.archive ? ' · archiving to pCloud' : ''}</div>`;
         html += '</div></div>';
         if (meta.description) html += `<div class="author-bio podcast-desc">${esc(this._plainText(meta.description))}</div>`;
+        html += '<div class="podcast-actions">';
         if (this.isShim) {
-            html += '<div class="podcast-actions">';
             html += '<button class="text-btn" data-pod-check>Check for new episodes</button>';
             html += '<button class="text-btn" data-pod-all>All episodes in the feed</button>';
             if (item.media?.canArchive && this.shimCanAdd) {
                 html += `<label class="podcast-toggle"><input type="checkbox" data-pod-archive${item.media.archive ? ' checked' : ''}> Archive new episodes to pCloud</label>`;
             }
-            html += '<span class="text-muted" data-pod-status></span>';
-            html += '</div>';
         }
+        // Per phone: the newest N unplayed episodes stay downloaded here.
+        const keep = this._keepCount(item.id);
+        html += `<label class="podcast-toggle">Keep on this phone <select data-pod-keep>${[0, 1, 3, 5, 10]
+            .map(n => `<option value="${n}"${n === keep ? ' selected' : ''}>${n ? 'newest ' + n : 'none'}</option>`).join('')}</select></label>`;
+        html += '<span class="text-muted" data-pod-status></span>';
+        html += '</div>';
         html += '<div class="section-title">Episodes</div>';
         html += episodes.length
-            ? '<ul class="tracklist">' + episodes.map(ep => this._episodeRowHtml(item.id, ep, progress.get(ep.id))).join('') + '</ul>'
+            ? '<ul class="tracklist">' + episodes.map(ep => this._episodeRowHtml(item.id, ep, progress.get(ep.id), { dl })).join('') + '</ul>'
             : '<div class="empty-state">No episodes on the show yet</div>';
         html += '</div>';
         this.setContent(html);
@@ -3766,6 +4169,14 @@ const App = {
         content.querySelector('[data-pod-all]')?.addEventListener('click', () => {
             this.pushNav('All episodes', () => this.showFeedEpisodes(item));
             this.showFeedEpisodes(item);
+        });
+        content.querySelector('[data-pod-keep]')?.addEventListener('change', async (e) => {
+            const n = Number(e.currentTarget.value) || 0;
+            this._setKeepCount(item.id, n);
+            status.textContent = n ? `Downloading the newest ${n}…` : 'Removing kept downloads…';
+            await this.syncKeptDownloads(item.id);
+            status.textContent = n ? `Newest ${n} kept on this phone` : '';
+            if (document.contains(status)) this._reloadPodcast(item.id);
         });
         content.querySelector('[data-pod-archive]')?.addEventListener('change', async (e) => {
             const box = e.currentTarget;
@@ -3795,7 +4206,7 @@ const App = {
         const content = document.getElementById('content');
         const list = content.querySelector('#feed-list');
         const more = content.querySelector('#feed-more');
-        const progress = await this._episodeProgress();
+        const [progress, dl] = await Promise.all([this._episodeProgress(), Offline.fullyDownloadedIds()]);
         let offset = 0, total = 0;
         const load = async () => {
             more.disabled = true;
@@ -3804,7 +4215,7 @@ const App = {
                 total = r.total;
                 offset += r.episodes.length;
                 const tmp = document.createElement('ul');
-                tmp.innerHTML = r.episodes.map(ep => this._episodeRowHtml(item.id, ep, progress.get(ep.id), { feed: true })).join('');
+                tmp.innerHTML = r.episodes.map(ep => this._episodeRowHtml(item.id, ep, progress.get(ep.id), { feed: true, dl })).join('');
                 const rows = [...tmp.children];
                 list.append(...rows);
                 this._bindEpisodeRows(list, item, r.episodes, progress, rows);
@@ -3857,6 +4268,7 @@ const App = {
         else if (ep.archiveState === 'queued' || ep.archiveState === 'fetching') bits.push('Archiving');
         else if (ep.archiveState === 'error') bits.push('Archive failed');
         if (opts.feed && ep.inLibrary === false) bits.push(ep.removed ? 'Removed' : 'Not on the show');
+        if (opts.dl?.has(`${itemId}~${ep.id}`)) bits.push('Downloaded');
         let h = `<li class="tracklist-item episode-row${played ? ' is-played' : ''}" data-item-id="${esc(itemId)}" data-episode-id="${esc(ep.id)}">`;
         h += `<div class="tracklist-progress" style="width:${pct}%"></div>`;
         h += '<div class="episode-main">';
@@ -3900,22 +4312,38 @@ const App = {
         }
     },
 
-    _renderEpisodeDetails(box, li, item, ep, progress) {
+    async _renderEpisodeDetails(box, li, item, ep, progress) {
         const prog = progress.get(ep.id);
         const played = !!prog?.isFinished;
+        const oid = `${item.id}~${ep.id}`;
+        const downloaded = (await Offline.fullyDownloadedIds()).has(oid);
         const notes = this._plainText(ep.description || ep.subtitle || '');
         let h = notes ? `<div class="episode-notes">${esc(notes)}</div>` : '';
         h += '<div class="episode-actions">';
         h += `<button class="text-btn" data-played>${played ? 'Mark as unplayed' : 'Mark as played'}</button>`;
+        if (ep.audioFile?.ino) h += downloaded ? '<button class="text-btn" data-dl-remove>Remove download</button>' : '<button class="text-btn" data-dl>Download</button>';
         if (this.isShim && this.shimCanAdd) {
             if (item.media?.canArchive && !['done', 'queued', 'fetching'].includes(ep.archiveState)) {
                 h += '<button class="text-btn" data-archive>Archive to pCloud</button>';
             }
             if (ep.inLibrary !== false) h += '<button class="text-btn" data-remove>Remove from show</button>';
         }
+        h += '<button class="text-btn" data-to-playlist>Add to playlist</button>';
+        if (li.dataset.playlistId) h += '<button class="text-btn" data-from-playlist>Remove from playlist</button>';
         if (ep.archiveError) h += `<div class="text-muted">Archiving failed: ${esc(ep.archiveError)}</div>`;
         h += '</div>';
         box.innerHTML = h;
+        box.querySelector('[data-to-playlist]').addEventListener('click', (e) => {
+            e.currentTarget.disabled = true;
+            this._addToPlaylistUi(box, item.id, ep);
+        });
+        box.querySelector('[data-from-playlist]')?.addEventListener('click', async () => {
+            try {
+                await ABS.request(`/api/playlists/${li.dataset.playlistId}/item/${item.id}/${ep.id}`, { method: 'DELETE' });
+                li.remove();
+                this._invalidateTabCache('playlists');
+            } catch (err) { alert('Remove failed: ' + err.message); }
+        });
         box.querySelector('[data-played]').addEventListener('click', async () => {
             const body = played
                 ? { isFinished: false, progress: 0, currentTime: 0 }
@@ -3930,6 +4358,33 @@ const App = {
                 this._bindEpisodeRows(row.parentElement, item, [ep], progress, [row]);
                 this._invalidateTabCache();
             } catch (err) { alert('Failed: ' + err.message); }
+        });
+        const redrawRow = async () => {
+            const fresh = document.createElement('ul');
+            fresh.innerHTML = this._episodeRowHtml(item.id, ep, progress.get(ep.id), { feed: ep.inLibrary !== undefined, dl: await Offline.fullyDownloadedIds() });
+            const row = fresh.firstElementChild;
+            if (!li.isConnected) return;
+            li.replaceWith(row);
+            this._bindEpisodeRows(row.parentElement, item, [ep], progress, [row]);
+        };
+        box.querySelector('[data-dl]')?.addEventListener('click', async (e) => {
+            const btn = e.currentTarget;
+            btn.disabled = true; btn.textContent = 'Downloading…';
+            try {
+                await this.downloadEpisode(item, ep, (received, total) => {
+                    if (total) btn.textContent = `Downloading ${Math.floor((received / total) * 100)}%`;
+                });
+                redrawRow();
+            } catch (err) {
+                btn.disabled = false; btn.textContent = 'Download';
+                alert('Download failed: ' + err.message);
+            }
+        });
+        box.querySelector('[data-dl-remove]')?.addEventListener('click', async () => {
+            const stored = (await Offline.listDownloaded()).find(i => Offline.oid(i) === oid);
+            if (stored) await Offline.deleteBook(stored);
+            this._invalidateHomeCache();
+            redrawRow();
         });
         box.querySelector('[data-archive]')?.addEventListener('click', async (e) => {
             const btn = e.currentTarget;
@@ -4028,7 +4483,15 @@ const App = {
                 const r = await fetch('https://itunes.apple.com/search?' + q, { credentials: 'omit' });
                 if (r.ok) {
                     const d = await r.json();
-                    return (d.results || []).filter(x => x.feedUrl).map(x => ({
+                    // One result per feed: Apple can list one feed under two
+                    // ids (Linux Matters is 1682797246 and 976672924).
+                    const seen = new Set();
+                    return (d.results || []).filter(x => {
+                        const k = this._feedKey(x.feedUrl);
+                        if (!k || seen.has(k)) return false;
+                        seen.add(k);
+                        return true;
+                    }).map(x => ({
                         id: x.collectionId, artistId: x.artistId || null, title: x.collectionName, artistName: x.artistName,
                         genres: x.genres || [], cover: x.artworkUrl600 || x.artworkUrl100 || '', trackCount: x.trackCount,
                         feedUrl: x.feedUrl, pageUrl: x.collectionViewUrl,
@@ -4038,6 +4501,8 @@ const App = {
         }
         return this._shimCall(`/api/search/podcast?term=${encodeURIComponent(term)}&country=${country}`);
     },
+
+    _feedKey(u) { return String(u || '').trim().toLowerCase().replace(/^https?:\/\/(www\.)?/, '').replace(/\/+$/, ''); },
 
     async _podSearch(term) {
         const list = this._podRoot.querySelector('#pod-results');
@@ -4052,19 +4517,18 @@ const App = {
             return;
         }
         if (!results.length) { list.innerHTML = '<div class="empty-state">Nothing found</div>'; return; }
-        // Already subscribed? By iTunes id where both sides have one (two
-        // shows can share a title: "This American Life" has imitators), by
-        // title only for shows without one.
-        let ids = new Set(), titles = new Set();
+        // Already subscribed? By feed URL (ABS_shim sends it), else by iTunes
+        // id. Never by title alone: "This American Life" has imitators.
+        let ids = new Set(), feeds = new Set();
         try {
             const t = await ABS.request(`/api/libraries/${this.currentLibraryId}/podcast-titles`);
             for (const p of t?.podcasts || []) {
                 if (p.itunesId) ids.add(String(p.itunesId));
-                else titles.add((p.title || '').toLowerCase());
+                if (p.feedUrl) feeds.add(this._feedKey(p.feedUrl));
             }
         } catch {}
         list.innerHTML = results.map((r, i) => {
-            const have = r.id ? ids.has(String(r.id)) : titles.has((r.title || '').toLowerCase());
+            const have = feeds.has(this._feedKey(r.feedUrl)) || (!!r.id && ids.has(String(r.id)));
             const sub = [r.artistName, r.trackCount ? `${r.trackCount} episodes` : '', (r.genres || [])[0]].filter(Boolean).join(' · ');
             return `<li class="tracklist-item abb-item"><div class="abb-main">`
                 + (r.cover ? `<img class="abb-cover" src="${esc(r.cover)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : '')
@@ -4109,6 +4573,7 @@ const App = {
         document.getElementById('setting-skip').value = Player.skipDuration;
         document.getElementById('setting-theme').value = localStorage.getItem('pholia_theme') || 'dark';
         document.getElementById('setting-auto-cache').checked = localStorage.getItem('pholia_auto_cache') === 'true';
+        document.getElementById('setting-keep-played').checked = localStorage.getItem('pholia_keep_played_episodes') === 'true';
         document.getElementById('setting-auto-rewind').checked = localStorage.getItem('pholia_auto_rewind') !== 'false';
         document.getElementById('setting-hide-collections').checked = localStorage.getItem('pholia_hide_collections') === 'true';
         const swExp = localStorage.getItem('pholia_sw_experimental') === 'true';
@@ -4337,18 +4802,18 @@ const App = {
             const meta = item.media?.metadata || {};
             const title = meta.title || 'Unknown';
             const author = meta.authorName || '';
-            html += `<div class="downloads-row" data-id="${item.id}">`;
+            html += `<div class="downloads-row" data-id="${esc(Offline.oid(item))}">`;
             html += `<div class="downloads-info">`;
             html += `<div class="downloads-title">${esc(title)}</div>`;
             html += `<div class="downloads-sub">${esc(author)} • ${formatBytes(sizes[i])}</div>`;
             html += `</div>`;
-            html += `<button class="text-btn downloads-remove" data-id="${item.id}">Remove</button>`;
+            html += `<button class="text-btn downloads-remove" data-id="${esc(Offline.oid(item))}">Remove</button>`;
             html += `</div>`;
         });
         list.innerHTML = html;
         list.querySelectorAll('.downloads-remove').forEach(btn => {
             btn.addEventListener('click', async () => {
-                const item = items.find(i => i.id === btn.dataset.id);
+                const item = items.find(i => Offline.oid(i) === btn.dataset.id);
                 if (!item) return;
                 btn.disabled = true; btn.textContent = 'Removing…';
                 await Offline.deleteBook(item);
@@ -4357,7 +4822,7 @@ const App = {
             });
         });
         clearBtn.onclick = async () => {
-            if (!confirm(`Remove all ${items.length} cached book${items.length === 1 ? '' : 's'}?`)) return;
+            if (!confirm(`Remove all ${items.length} cached download${items.length === 1 ? '' : 's'}?`)) return;
             list.innerHTML = '<div class="downloads-empty">Clearing…</div>';
             for (const item of items) await Offline.deleteBook(item);
             this._invalidateHomeCache();
@@ -4880,6 +5345,12 @@ const Offline = {
 
     metaKey(itemId) { return `https://pholia.local/meta/${itemId}`; },
 
+    // An offline entry's own id. A podcast episode shares its show's item
+    // id (its audio is /api/items/<show>/file/<ino>, which is what the
+    // chunks are keyed by), so its record, coverage memo and "downloaded"
+    // set entries use show~episode. A book's is just its id.
+    oid(item) { return item?.episodeId ? `${item.id}~${item.episodeId}` : item?.id; },
+
     trackUrls(item) {
         return (item.media?.audioFiles || []).map(t => ABS.trackUrl(item.id, t.ino));
     },
@@ -5089,7 +5560,7 @@ const Offline = {
         this._invalidateCoverage();
         const metaCache = await caches.open(this.META_CACHE);
         await metaCache.put(
-            this.metaKey(item.id),
+            this.metaKey(this.oid(item)),
             new Response(JSON.stringify(item), { headers: { 'Content-Type': 'application/json' } })
         );
     },
@@ -5100,13 +5571,13 @@ const Offline = {
     // cached: Set<int> } for chunked entries. Memoized — see _coverageCache.
     async chunkCoverage(item) {
         const ver = this._coverageVersion;
-        const hit = this._coverageCache.get(item.id);
+        const hit = this._coverageCache.get(this.oid(item));
         if (hit && hit.version === ver) return hit.coverage;
         const coverage = await this._computeChunkCoverage(item);
         // Only commit if the version hasn't moved underneath us during the
         // async walk (another chunk wrote mid-compute → next caller rebuilds).
         if (this._coverageVersion === ver) {
-            this._coverageCache.set(item.id, { coverage, version: ver });
+            this._coverageCache.set(this.oid(item), { coverage, version: ver });
         }
         return coverage;
     },
@@ -5155,9 +5626,9 @@ const Offline = {
                     if (urlSet.has(key)) return { legacy: true };
                     return null;
                 }));
-                out.set(item.id, coverage);
+                out.set(this.oid(item), coverage);
                 if (this._coverageVersion === ver) {
-                    this._coverageCache.set(item.id, { coverage, version: ver });
+                    this._coverageCache.set(this.oid(item), { coverage, version: ver });
                 }
             }
             return out;
@@ -5234,9 +5705,13 @@ const Offline = {
             }
             await audioCache.delete(this.completeKey(key));
         }
-        await audioCache.delete(this.keyFor(ABS.coverUrl(item.id)));
-        await metaCache.delete(this.metaKey(item.id));
-        this._coverageCache.delete(item.id);
+        // A show's cover serves every downloaded episode of it: keep it while
+        // another one is still here.
+        const sharesCover = item.episodeId
+            && (await this.listDownloaded()).some(i => i.id === item.id && this.oid(i) !== this.oid(item));
+        if (!sharesCover) await audioCache.delete(this.keyFor(ABS.coverUrl(item.id)));
+        await metaCache.delete(this.metaKey(this.oid(item)));
+        this._coverageCache.delete(this.oid(item));
         this._invalidateCoverage();
         this.notifySwCacheChanged();
     },
@@ -5314,8 +5789,8 @@ const Offline = {
             let full = [];
             if (items.length) {
                 const coverages = await this._coverageBatch(items);
-                full = items.filter(item => this._isFullyDownloadedFromCoverage(item, coverages.get(item.id)));
-                for (const item of full) ids.add(item.id);
+                full = items.filter(item => this._isFullyDownloadedFromCoverage(item, coverages.get(this.oid(item))));
+                for (const item of full) ids.add(this.oid(item));
             }
             const out = { version: ver, ts: Date.now(), items: full, ids };
             this._fullyLast = out;
@@ -5359,6 +5834,8 @@ const Offline = {
             const allUrls = (await audioCache.keys()).map(r => r.url);
             const urlSet = new Set(allUrls);
             const keys = await metaCache.keys();
+            const phantoms = [];
+            const kept = new Set();
             for (const req of keys) {
                 const res = await metaCache.match(req);
                 if (!res) continue;
@@ -5377,14 +5854,20 @@ const Offline = {
 
                 if (!hasAny) {
                     await metaCache.delete(req);
-                    await audioCache.delete(this.keyFor(ABS.coverUrl(item.id)));
+                    phantoms.push(item);
                     // Also drop any orphan meta/chunk entries (none expected,
                     // but be safe).
                     for (const t of tracks) {
                         const k = this.keyFor(ABS.trackUrl(item.id, t.ino));
                         await audioCache.delete(this.chunkMetaKey(k));
                     }
+                } else {
+                    kept.add(item.id);
                 }
+            }
+            // Covers last: episodes of one show share it.
+            for (const item of phantoms) {
+                if (!kept.has(item.id)) await audioCache.delete(this.keyFor(ABS.coverUrl(item.id)));
             }
         } catch {}
     },
