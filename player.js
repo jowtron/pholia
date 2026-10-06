@@ -1084,7 +1084,11 @@ const Player = {
         // rebuilt only when the names change — this runs on every tick.
         const authors = this.item.media?.metadata?.authors;
         const authorList = Array.isArray(authors) ? authors.filter((a) => a && a.name) : [];
-        const authorKey = authorList.length
+        // A podcast episode's "author" line is its show, tappable to the
+        // show's page.
+        const showLink = this.item.episodeId && author ? { id: this.item.id, name: author } : null;
+        const authorKey = showLink ? `show|${showLink.id}|${showLink.name}`
+            : authorList.length
             ? authorList.map((a) => `${a.id || ''}|${a.name}`).join(',')
             : author;
         if (last['fs-author|key'] !== authorKey) {
@@ -1092,7 +1096,14 @@ const Player = {
             const el = document.getElementById('fs-author');
             if (el) {
                 el.textContent = '';
-                if (authorList.length) {
+                if (showLink) {
+                    const link = document.createElement('a');
+                    link.className = 'author-link';
+                    link.href = '#';
+                    link.dataset.showId = showLink.id;
+                    link.textContent = showLink.name;
+                    el.append(link);
+                } else if (authorList.length) {
                     authorList.forEach((a, i) => {
                         if (i) el.append(', ');
                         if (!a.id) { el.append(a.name); return; }

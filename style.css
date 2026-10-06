@@ -1042,4 +1042,11 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
 .episodes-head { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
 .episodes-head .episodes-count { font-weight: 400; flex: 1; }
 .episodes-head .podcast-toggle { font-weight: 400; text-transform: none; letter-spacing: 0; }
-.tracklist.only-unplayed .episode-row.is-played { display: none; }
+
+.ep-arch { display: inline-flex; align-items: center; justify-content: center; width: 1.05rem; height: 1.05rem; margin-right: 0.35rem; border-radius: 50%; background: var(--text-muted); color: var(--bg, #000); vertical-align: -0.12rem; }
+.episode-dlbtn { background: none; border: none; color: var(--text-muted); padding: 0.4rem 0.3rem; cursor: pointer; flex-shrink: 0; font-size: 0.75rem; min-width: 2rem; }
+.episode-dlbtn.busy { color: var(--accent); }
+.episodes-head select { font-size: 0.85rem; padding: 0.2rem 0.3rem; border-radius: var(--radius); border: 1px solid var(--border); background: var(--card-bg); color: var(--text); text-transform: none; letter-spacing: 0; }
+.tracklist.filter-unplayed .episode-row.is-played,
+.tracklist.filter-downloaded .episode-row:not(.is-downloaded),
+.tracklist.filter-archived .episode-row:not(.is-archived) { display: none; }

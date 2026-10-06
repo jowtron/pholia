@@ -676,7 +676,15 @@ const App = {
         // rebuilt whenever the playing book changes.
         document.getElementById('fs-author').addEventListener('click', (e) => {
             const link = e.target.closest('.author-link');
-            if (!link || !link.dataset.authorId) return;
+            if (!link) return;
+            // A podcast episode's line is its show: open the show's page.
+            if (link.dataset.showId) {
+                e.preventDefault();
+                this.closeFullscreen();
+                this.showItem(link.dataset.showId);
+                return;
+            }
+            if (!link.dataset.authorId) return;
             e.preventDefault();
             this.closeFullscreen();
             this.showAuthorDetail(link.dataset.authorId, link.dataset.authorName);
@@ -4109,6 +4117,16 @@ const App = {
     // opens the show notes and actions. On ABS_shim the page also carries the
     // feed controls (check now, every episode the feed lists, archiving to
     // pCloud); a stock ABS server gets the list and playback.
+    // The show page's list filter, one choice for every show on this phone.
+    // ("Unplayed only" was a checkbox before; it carries over.)
+    _podFilter() {
+        try {
+            const f = localStorage.getItem('pholia_pod_filter');
+            if (['all', 'unplayed', 'downloaded', 'archived'].includes(f)) return f;
+            return localStorage.getItem('pholia_pod_unplayed_only') === 'true' ? 'unplayed' : 'all';
+        } catch { return 'all'; }
+    },
+
     async _reloadPodcast(itemId) {
         try { this.showPodcastDetail(await ABS.getItem(itemId)); }
         catch (e) { this.setContent(`<div class="loading">Error: ${esc(e.message)}</div>`); }
@@ -4135,6 +4153,7 @@ const App = {
             html += '<button class="text-btn" data-pod-all>All episodes in the feed</button>';
             if (item.media?.canArchive && this.shimCanAdd) {
                 html += `<label class="podcast-toggle"><input type="checkbox" data-pod-archive${item.media.archive ? ' checked' : ''}> Archive new episodes to pCloud</label>`;
+                html += '<button class="text-btn" data-pod-archive-all>Archive all to pCloud</button>';
             }
         }
         // Per phone: the newest N unplayed episodes stay downloaded here.
@@ -4146,15 +4165,18 @@ const App = {
         // "Unplayed only" hides played rows with a class on the list, so
         // marking an episode played (which redraws its row as .is-played)
         // takes it out of view at once. One switch for every show, per phone.
-        const onlyUnplayed = localStorage.getItem('pholia_pod_unplayed_only') === 'true';
+        const filter = this._podFilter();
         const unplayed = episodes.filter(ep => !progress.get(ep.id)?.isFinished).length;
         const downloadedHere = episodes.filter(ep => dl.has(`${item.id}~${ep.id}`)).length;
+        const archived = episodes.filter(ep => ep.archiveState === 'done').length;
+        const counts = [`${unplayed} unplayed`, downloadedHere ? `${downloadedHere} on this phone` : '', archived ? `${archived} on pCloud` : ''].filter(Boolean).join(' · ');
+        const opt = (v, label) => `<option value="${v}"${filter === v ? ' selected' : ''}>${label}</option>`;
         html += '<div class="section-title episodes-head"><span>Episodes</span>'
-            + `<span class="text-muted episodes-count">${unplayed} unplayed${downloadedHere ? ` · ${downloadedHere} downloaded` : ''}</span>`
-            + `<label class="podcast-toggle"><input type="checkbox" data-only-unplayed${onlyUnplayed ? ' checked' : ''}> Unplayed only</label></div>`;
+            + `<span class="text-muted episodes-count">${counts}</span>`
+            + `<select data-ep-filter aria-label="Show">${opt('all', 'All')}${opt('unplayed', 'Unplayed')}${opt('downloaded', 'On this phone')}${opt('archived', 'On pCloud')}</select></div>`;
         html += episodes.length
-            ? `<ul class="tracklist${onlyUnplayed ? ' only-unplayed' : ''}" data-episode-list>` + episodes.map(ep => this._episodeRowHtml(item.id, ep, progress.get(ep.id), { dl })).join('') + '</ul>'
-              + `<div class="empty-state all-played-note${onlyUnplayed && !unplayed ? '' : ' hidden'}">Everything here has been played</div>`
+            ? `<ul class="tracklist filter-${filter}" data-episode-list>` + episodes.map(ep => this._episodeRowHtml(item.id, ep, progress.get(ep.id), { dl })).join('') + '</ul>'
+              + '<div class="empty-state filter-empty hidden"></div>'
             : '<div class="empty-state">No episodes on the show yet</div>';
         html += '</div>';
         this.setContent(html);
@@ -4179,12 +4201,23 @@ const App = {
             this.pushNav('All episodes', () => this.showFeedEpisodes(item));
             this.showFeedEpisodes(item);
         });
-        content.querySelector('[data-only-unplayed]')?.addEventListener('change', (e) => {
-            const on = e.currentTarget.checked;
-            try { localStorage.setItem('pholia_pod_unplayed_only', on ? 'true' : 'false'); } catch {}
-            content.querySelector('[data-episode-list]')?.classList.toggle('only-unplayed', on);
-            const anyUnplayed = !!content.querySelector('[data-episode-list] .episode-row:not(.is-played)');
-            content.querySelector('.all-played-note')?.classList.toggle('hidden', !(on && !anyUnplayed));
+        const applyFilter = (f) => {
+            const list = content.querySelector('[data-episode-list]');
+            if (!list) return;
+            list.className = `tracklist filter-${f}`;
+            const sel = { unplayed: ':not(.is-played)', downloaded: '.is-downloaded', archived: '.is-archived' }[f];
+            const none = !!sel && !list.querySelector(`.episode-row${sel}`);
+            const note = content.querySelector('.filter-empty');
+            if (note) {
+                note.textContent = { unplayed: 'Everything here has been played', downloaded: 'No episodes of this show are on this phone', archived: 'Nothing from this show is archived on pCloud yet' }[f] || '';
+                note.classList.toggle('hidden', !none);
+            }
+        };
+        applyFilter(filter);
+        content.querySelector('[data-ep-filter]')?.addEventListener('change', (e) => {
+            const f = e.currentTarget.value;
+            try { localStorage.setItem('pholia_pod_filter', f); } catch {}
+            applyFilter(f);
         });
         content.querySelector('[data-pod-keep]')?.addEventListener('change', async (e) => {
             const n = Number(e.currentTarget.value) || 0;
@@ -4193,6 +4226,17 @@ const App = {
             await this.syncKeptDownloads(item.id);
             status.textContent = n ? `Newest ${n} kept on this phone` : '';
             if (document.contains(status)) this._reloadPodcast(item.id);
+        });
+        content.querySelector('[data-pod-archive-all]')?.addEventListener('click', async (e) => {
+            const btn = e.currentTarget;
+            const left = episodes.filter(ep => !['done', 'queued', 'fetching'].includes(ep.archiveState)).length;
+            if (!left) { status.textContent = 'Everything on the show is already archived or on its way'; return; }
+            if (!confirm(`Copy ${left} episode${left === 1 ? '' : 's'} of this show into pCloud? It runs on the server, a few at a time.`)) return;
+            btn.disabled = true;
+            try {
+                const r = await this._shimCall(`/api/podcasts/${encodeURIComponent(item.id)}/archive`, { method: 'POST', body: '{}' });
+                status.textContent = `${r.queued} queued for pCloud. The server copies them a few at a time.`;
+            } catch (err) { btn.disabled = false; status.textContent = 'Archive failed: ' + err.message; }
         });
         content.querySelector('[data-pod-archive]')?.addEventListener('change', async (e) => {
             const box = e.currentTarget;
@@ -4280,22 +4324,27 @@ const App = {
         const left = !played && prog?.currentTime > 0 && dur ? Math.max(0, dur - prog.currentTime) : 0;
         const bits = [opts.show, date, dur ? (left ? formatTime(left) + ' left' : formatTime(dur)) : ''];
         if (played) bits.push('Played');
-        if (ep.archiveState === 'done') bits.push('Archived');
+        if (ep.archiveState === 'done') bits.push('On pCloud');
         else if (ep.archiveState === 'queued' || ep.archiveState === 'fetching') bits.push('Archiving');
         else if (ep.archiveState === 'error') bits.push('Archive failed');
         if (opts.feed && ep.inLibrary === false) bits.push(ep.removed ? 'Removed' : 'Not on the show');
         // Downloaded: a badge before the title, not just a word in the grey
         // line, so a show's downloads stand out at a glance.
         const isDl = !!opts.dl?.has(`${itemId}~${ep.id}`);
-        let h = `<li class="tracklist-item episode-row${played ? ' is-played' : ''}${isDl ? ' is-downloaded' : ''}" data-item-id="${esc(itemId)}" data-episode-id="${esc(ep.id)}">`;
+        const isArch = ep.archiveState === 'done';
+        let h = `<li class="tracklist-item episode-row${played ? ' is-played' : ''}${isDl ? ' is-downloaded' : ''}${isArch ? ' is-archived' : ''}" data-item-id="${esc(itemId)}" data-episode-id="${esc(ep.id)}">`;
         h += `<div class="tracklist-progress" style="width:${pct}%"></div>`;
         h += '<div class="episode-main">';
         h += '<button class="tracklist-play episode-play">';
         if (opts.cover) h += `<img class="ep-cover" src="${ABS.coverUrl(itemId)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
         const dlBadge = isDl ? '<span class="ep-dl" title="Downloaded to this phone" aria-label="Downloaded"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12M6 11l6 6 6-6M5 21h14"/></svg></span>' : '';
-        h += `<span class="tracklist-title">${dlBadge}<span class="episode-title">${esc(ep.title || 'Untitled')}</span><br><span class="text-muted">${esc(bits.filter(Boolean).join(' · '))}</span></span>`;
+        // Archived: a cloud — the episode has a copy in the library's pCloud.
+        const archBadge = ep.archiveState === 'done' ? '<span class="ep-arch" title="Archived on pCloud" aria-label="Archived on pCloud"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18h10a4 4 0 0 0 .6-7.96A6 6 0 0 0 6.1 9.2 4.5 4.5 0 0 0 7 18z"/></svg></span>' : '';
+        h += `<span class="tracklist-title">${dlBadge}${archBadge}<span class="episode-title">${esc(ep.title || 'Untitled')}</span><br><span class="text-muted">${esc(bits.filter(Boolean).join(' · '))}</span></span>`;
         h += '</button>';
         if (opts.feed && ep.inLibrary === false && this.shimCanAdd) h += '<button class="episode-add" data-add>Add</button>';
+        // Download to this phone, one tap, without opening the ⋯ menu.
+        else if (!isDl && ep.audioFile?.ino && opts.dl) h += '<button class="episode-dlbtn" data-quick-dl aria-label="Download to this phone" title="Download to this phone"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12M6 11l6 6 6-6M5 21h14"/></svg></button>';
         h += '<button class="episode-more" aria-label="Show notes and actions">⋯</button>';
         h += '</div>';
         h += '<div class="episode-details hidden"></div>';
@@ -4311,6 +4360,24 @@ const App = {
             const ep = byId.get(li.dataset.episodeId);
             if (!ep) continue;
             li.querySelector('.episode-play').addEventListener('click', () => this.playEpisode(item.id, ep.id, ep, item));
+            li.querySelector('[data-quick-dl]')?.addEventListener('click', async (e) => {
+                const btn = e.currentTarget;
+                if (btn.disabled) return;
+                btn.disabled = true;
+                btn.classList.add('busy');
+                try {
+                    await this.downloadEpisode(item, ep, (received, total) => {
+                        if (total) btn.textContent = Math.floor((received / total) * 100) + '%';
+                    });
+                    const fresh = document.createElement('ul');
+                    fresh.innerHTML = this._episodeRowHtml(item.id, ep, progress.get(ep.id), { feed: ep.inLibrary !== undefined, dl: await Offline.fullyDownloadedIds() });
+                    const row = fresh.firstElementChild;
+                    if (li.isConnected) { li.replaceWith(row); this._bindEpisodeRows(row.parentElement, item, [ep], progress, [row]); }
+                } catch (err) {
+                    btn.disabled = false; btn.classList.remove('busy');
+                    alert('Download failed: ' + err.message);
+                }
+            });
             li.querySelector('[data-add]')?.addEventListener('click', async (e) => {
                 const btn = e.currentTarget;
                 btn.disabled = true;

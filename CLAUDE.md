@@ -161,7 +161,12 @@ paths) are intentionally left out of this repo; keep them in private notes.
   - **Download** is in an episode's ⋯ menu. A show's "Keep on this phone: newest N" (`_keepCount`, localStorage per server and show) is applied by `syncKeptDownloads`: at launch +15 s, on foreground at most every 20 min, on change, and after an episode finishes. Only copies it fetched (`autoKept`) are ever pruned by it.
   - **A played episode's copy is removed** (`onEpisodeFinished`) unless Settings → "Keep podcast episodes after they're played". A "played" mark made offline is queued in `pholia_ep_outbox:<server>` and sent when back online.
   - **Playlists tab** (podcast libraries): ABS playlists plus ABS_shim's smart ones (`rules`). `_playFromPlaylist` sets `_queue`, and `onEpisodeFinished` starts the next entry. Any other `playEpisode` clears the queue. Untested on a locked phone: whether iOS lets the next episode start in the background (it needs a session round trip before `src` is set).
-  - **Show page list:** downloaded episodes get an accent badge (`.ep-dl`, row class `is-downloaded`). "Unplayed only" (`pholia_pod_unplayed_only`, one switch for every show, per phone) hides played rows with the list class `only-unplayed`, so a row redrawn as `.is-played` vanishes without a re-render. The header counts unplayed and downloaded.
+  - **Show page list:**
+    - **Badges:** downloaded episodes get an accent down-arrow (`.ep-dl`, row `is-downloaded`, "on this phone"); archived ones a grey cloud (`.ep-arch`, row `is-archived`, "on pCloud").
+    - **One-tap download:** a download button per row (`[data-quick-dl]`) shows its percentage while downloading.
+    - **Show filter:** All / Unplayed / On this phone / On pCloud (`_podFilter`, `pholia_pod_filter`, one choice for every show per phone; the older `pholia_pod_unplayed_only` carries over). It works by a `filter-*` class on the list, so a redrawn row (marked played, downloaded) drops out of view without a re-render. The header counts unplayed, on this phone and on pCloud.
+    - **Archive all to pCloud** sits beside the archive switch when `media.canArchive`.
+  - **Fullscreen player: an episode's author line is its show**, a link (`data-show-id`) to the show page.
   - **Chapters may arrive with the session.** The shim looks them up the first time an episode plays, so `startItem` adopts `session.chapters` when the item carried none (never replacing a book's).
   - **The podcast library's Add** is a "+" in the header (`checkAbbSupport` swaps the AudioBookBay logo out) plus "+ Add podcast" on the Library tab.
   - Search results are collapsed to one per feed URL, and "✓ Subscribed" goes by feed URL (Apple lists some feeds twice).
