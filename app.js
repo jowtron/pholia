@@ -529,6 +529,9 @@ const App = {
         document.getElementById('setting-keep-played').addEventListener('change', e => {
             localStorage.setItem('pholia_keep_played_episodes', e.target.checked ? 'true' : 'false');
         });
+        document.getElementById('setting-autoplay-next').addEventListener('change', e => {
+            localStorage.setItem('pholia_autoplay_next', e.target.checked ? 'true' : 'false');
+        });
         document.getElementById('setting-auto-cache').addEventListener('change', e => {
             localStorage.setItem('pholia_auto_cache', e.target.checked ? 'true' : 'false');
             if (e.target.checked && Player.item) Player._startAutoCache();
@@ -3092,8 +3095,70 @@ const App = {
                 duration,
                 chapters: ep.chapters || [],
                 audioFiles: af.ino ? [{ ...af, duration: af.duration || duration }] : [],
+                skip: show.media?.skip || null,
             },
         };
+    },
+
+    // A show's intro/outro skipping (ABS_shim's media.skip), remembered per
+    // show on this phone: a downloaded episode carries the setting from the
+    // day it was downloaded, and may play with no network to ask.
+    _skipKey() { return `pholia_show_skip:${ABS.serverUrl}`; },
+    _skipMap() {
+        const key = this._skipKey();
+        if (this._skipCache?.key !== key) {
+            let map = {};
+            try { map = JSON.parse(localStorage.getItem(key) || '{}') || {}; } catch {}
+            this._skipCache = { key, map };
+        }
+        return this._skipCache.map;
+    },
+    _skipFor(item) {
+        if (!item?.id) return null;
+        const map = this._skipMap();
+        return item.id in map ? map[item.id] : (item.media?.skip || null);
+    },
+    _rememberSkip(show) {
+        if (!show?.id || show.media?.skip === undefined) return;
+        const map = this._skipMap();
+        if (JSON.stringify(map[show.id] ?? null) === JSON.stringify(show.media.skip)) return;
+        map[show.id] = show.media.skip;
+        try { localStorage.setItem(this._skipKey(), JSON.stringify(map)); } catch {}
+    },
+
+    // Playing from a show's page carries on down the list: the episodes
+    // below the one tapped, as the list shows them (its filter applied),
+    // leaving out the played ones. Settings can turn it off.
+    _showQueue(li, item, ep, progress) {
+        const list = li.closest('[data-episode-list]');
+        if (!list) return null;
+        try { if (localStorage.getItem('pholia_autoplay_next') === 'false') return null; } catch {}
+        const byId = new Map((item.media?.episodes || []).map(e => [e.id, e]));
+        const hidden = { 'filter-unplayed': '.is-played', 'filter-downloaded': ':not(.is-downloaded)', 'filter-archived': ':not(.is-archived)' }[
+            [...list.classList].find(c => c.startsWith('filter-'))];
+        const rows = [...list.querySelectorAll('.episode-row')];
+        const items = [{ libraryItemId: item.id, episodeId: ep.id, episode: ep, libraryItem: item }];
+        for (const r of rows.slice(rows.indexOf(li) + 1)) {
+            const e = byId.get(r.dataset.episodeId);
+            if (!e || r.classList.contains('is-played') || (hidden && r.matches(hidden))) continue;
+            const p = progress?.get(e.id);
+            items.push({ libraryItemId: item.id, episodeId: e.id, episode: e, libraryItem: item, startAt: p && !p.isFinished ? p.currentTime || 0 : 0 });
+            if (items.length > 50) break;
+        }
+        return items.length > 1 ? { showId: item.id, items, index: 0 } : null;
+    },
+
+    // The entry a finished episode hands over to: the next in the queue not
+    // played on this phone since. None while the sleep timer is set to stop
+    // at the end of a chapter, since the end of an episode is one.
+    _nextQueued(item) {
+        const q = this._queue;
+        if (!q || !item?.episodeId || Player.sleepEndOfChapter) return null;
+        if (q.items[q.index]?.episodeId !== item.episodeId) return null;
+        for (let i = q.index + 1; i < q.items.length; i++) {
+            if (!this._playedHere?.has(q.items[i].episodeId)) return { ...q.items[i], index: i };
+        }
+        return null;
     },
 
     // `episodeHint` / `itemHint`: callers that already hold them (the show
@@ -3119,11 +3184,15 @@ const App = {
             }
             if (!epItem) {
                 const show = itemHint || await ABS.getItem(itemId);
+                this._rememberSkip(show);
                 const ep = show.media?.episodes?.find(e => e.id === episodeId) || episodeHint;
                 if (!ep) { console.warn('Episode not found'); return; }
                 epItem = this._episodeItem(show, ep);
             }
-            await Player.startItem(epItem);
+            // The next of a queue starts without waiting on the network
+            // (Player._startItemFast), at the position the queue knew.
+            if (opts.auto) await Player.startItem(epItem, opts.startAt || 0, null, { fast: true });
+            else await Player.startItem(epItem);
         } catch (e) {
             console.error('Play episode failed', e);
         }
@@ -3220,12 +3289,18 @@ const App = {
     // Called by the player when an episode plays to its end. Unless kept
     // on purpose (Settings), its offline copy goes: a played episode is the
     // one thing nobody downloads twice. Then the show's rule tops up.
+    // Also called when a show's outro is skipped (Player._skipOutro), which
+    // counts as the end. The sleep timer stops a queue: a timed one by
+    // pausing (nothing ends then), "end of chapter" here, because an
+    // episode's end is its last chapter's.
     async onEpisodeFinished(item) {
-        const q = this._queue;
-        if (q && q.items[q.index]?.episodeId === item.episodeId && q.items[q.index + 1]) {
-            const next = q.items[q.index + 1];
+        (this._playedHere ||= new Set()).add(item.episodeId);
+        const next = this._nextQueued(item);
+        if (Player.sleepEndOfChapter) Player.clearSleep();
+        if (next) {
             const show = { id: next.libraryItemId, libraryId: next.libraryItem?.libraryId, media: next.libraryItem?.media || {} };
-            this.playEpisode(next.libraryItemId, next.episodeId, next.episode, show, { queue: { ...q, index: q.index + 1 } });
+            this.playEpisode(next.libraryItemId, next.episodeId, next.episode, show,
+                { queue: { ...this._queue, index: next.index }, auto: true, startAt: next.startAt || 0 });
         }
         // Offline, the "finished" sync failed: queue it for the next time
         // the server is reachable, or the episode comes back as unplayed.
@@ -4178,6 +4253,13 @@ const App = {
                 + `<option value=""${finishOwn == null ? ' selected' : ''}>default (${this._finishLabel(lib)} left)</option>`
                 + this._finishOptions(finishOwn) + '</select></label>';
         }
+        // Intro / outro skipping (ABS_shim; the player does it). Chapter
+        // choices only for a show whose episodes have chapters.
+        if (this.isShim && this.shimCanAdd && item.media?.skip !== undefined) {
+            const hasChapters = episodes.some(ep => ep.chapters?.length > 1);
+            html += `<label class="podcast-toggle">Skip the start ${this._skipSelect('start', item.media.skip, hasChapters)}</label>`;
+            html += `<label class="podcast-toggle">Skip the end ${this._skipSelect('end', item.media.skip, hasChapters)}</label>`;
+        }
         html += '<span class="text-muted" data-pod-status></span>';
         html += '</div>';
         // "Unplayed only" hides played rows with a class on the list, so
@@ -4245,6 +4327,30 @@ const App = {
             status.textContent = n ? `Newest ${n} kept on this phone` : '';
             if (document.contains(status)) this._reloadPodcast(item.id);
         });
+        this._rememberSkip(item);
+        content.querySelectorAll('[data-pod-skip]').forEach(sel => sel.addEventListener('change', async () => {
+            const part = (k, chKey, sKey) => {
+                const v = content.querySelector(`[data-pod-skip="${k}"]`)?.value || '';
+                return !v ? {} : { [v[0] === 'c' ? chKey : sKey]: Number(v.slice(1)) };
+            };
+            const want = { ...part('start', 'startChapters', 'startSeconds'), ...part('end', 'endChapters', 'endSeconds') };
+            const skip = Object.keys(want).length ? want : null;
+            try {
+                const r = await this._shimCall(`/api/items/${encodeURIComponent(item.id)}/media`, {
+                    method: 'PATCH', body: JSON.stringify({ skip }),
+                });
+                item.media.skip = r?.libraryItem?.media?.skip !== undefined ? r.libraryItem.media.skip : skip;
+                this._rememberSkip(item);
+                this._invalidateTabCache();
+                status.textContent = this._skipSummary(item.media.skip);
+            } catch (err) {
+                for (const k of ['start', 'end']) {
+                    const el = content.querySelector(`[data-pod-skip="${k}"]`);
+                    if (el) el.value = this._skipValue(k, item.media.skip);
+                }
+                status.textContent = 'Change failed: ' + err.message;
+            }
+        }));
         content.querySelector('[data-pod-finish]')?.addEventListener('change', async (e) => {
             const sel = e.currentTarget;
             const v = sel.value === '' ? null : Number(sel.value);
@@ -4284,6 +4390,30 @@ const App = {
                 status.textContent = 'Change failed: ' + err.message;
             }
         });
+    },
+
+    // The skip selects' values: '' (nothing), 'c<N>' chapters, 's<N>' seconds.
+    _skipValue(kind, skip) {
+        const c = skip?.[kind + 'Chapters'], sec = skip?.[kind + 'Seconds'];
+        return c ? 'c' + c : sec ? 's' + sec : '';
+    },
+    _skipSelect(kind, skip, hasChapters) {
+        const cur = this._skipValue(kind, skip);
+        const word = kind === 'start' ? 'first' : 'last';
+        const opts = [['', 'nothing']];
+        if (hasChapters || cur[0] === 'c') opts.push(['c1', `${word} chapter`], ['c2', `${word} 2 chapters`], ['c3', `${word} 3 chapters`]);
+        for (const n of [5, 10, 15, 20, 30, 45, 60, 90, 120, 180]) opts.push(['s' + n, `${word} ${this._finishLabel(n)}`]);
+        if (cur && !opts.some(o => o[0] === cur)) opts.push([cur, cur[0] === 'c' ? `${word} ${cur.slice(1)} chapters` : `${word} ${this._finishLabel(Number(cur.slice(1)))}`]);
+        return `<select data-pod-skip="${kind}">` + opts.map(([v, l]) => `<option value="${v}"${v === cur ? ' selected' : ''}>${l}</option>`).join('') + '</select>';
+    },
+    _skipSummary(skip) {
+        const bit = (kind) => {
+            const c = skip?.[kind + 'Chapters'], sec = skip?.[kind + 'Seconds'];
+            const word = kind === 'start' ? 'first' : 'last';
+            return c ? `the ${word} ${c === 1 ? 'chapter' : c + ' chapters'}` : sec ? `the ${word} ${this._finishLabel(sec)}` : '';
+        };
+        const parts = [bit('start'), bit('end')].filter(Boolean);
+        return parts.length ? `Skipping ${parts.join(' and ')} of each episode` : 'No skipping';
     },
 
     // "Played" thresholds: seconds left at which the server marks an
@@ -4547,7 +4677,8 @@ const App = {
         for (const li of rows || root.querySelectorAll('.episode-row')) {
             const ep = byId.get(li.dataset.episodeId);
             if (!ep) continue;
-            li.querySelector('.episode-play').addEventListener('click', () => this.playEpisode(item.id, ep.id, ep, item));
+            li.querySelector('.episode-play').addEventListener('click', () =>
+                this.playEpisode(item.id, ep.id, ep, item, { queue: this._showQueue(li, item, ep, progress) }));
             li.querySelector('[data-quick-archive]')?.addEventListener('click', async (e) => {
                 const btn = e.currentTarget;
                 if (btn.disabled) return;
@@ -4854,6 +4985,7 @@ const App = {
         document.getElementById('setting-theme').value = localStorage.getItem('pholia_theme') || 'dark';
         document.getElementById('setting-auto-cache').checked = localStorage.getItem('pholia_auto_cache') === 'true';
         document.getElementById('setting-keep-played').checked = localStorage.getItem('pholia_keep_played_episodes') === 'true';
+        document.getElementById('setting-autoplay-next').checked = localStorage.getItem('pholia_autoplay_next') !== 'false';
         document.getElementById('setting-auto-rewind').checked = localStorage.getItem('pholia_auto_rewind') !== 'false';
         document.getElementById('setting-hide-collections').checked = localStorage.getItem('pholia_hide_collections') === 'true';
         const swExp = localStorage.getItem('pholia_sw_experimental') === 'true';

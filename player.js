@@ -348,7 +348,10 @@ const Player = {
 
     // sessionP: a /play request the caller already fired (quickPlay starts
     // it at the tap, in parallel with the item fetch) — saves a round trip.
-    async startItem(item, startTime = null, sessionP = null) {
+    // opts.fast: the next episode of a queue, started when the last one
+    // ended, possibly with the phone locked (_startItemFast).
+    async startItem(item, startTime = null, sessionP = null, opts = {}) {
+        if (opts.fast) return this._startItemFast(item, startTime || 0);
         if (this.session) await this.closeCurrentSession();
         if (this._autoCacheController) { this._autoCacheController.abort(); this._autoCacheController = null; }
         this._audioRecoveryAttempts = 0;
@@ -394,6 +397,7 @@ const Player = {
             if (local && local.at > serverAt + 2000) startTime = local.t;
         }
         startTime = startTime || 0;
+        if (ep) startTime = this._introTarget(startTime);
 
         this.loadTime(startTime);
         this.startSync();
@@ -404,6 +408,121 @@ const Player = {
         document.getElementById('main-screen').classList.add('player-active');
 
         this._startAutoCache();
+    },
+
+    // The next episode of a queue (App.onEpisodeFinished), started the
+    // moment the last one ends. The phone is often locked by then, and iOS
+    // gives a backgrounded page little time once its audio stops, so the
+    // new file goes into the element FIRST, at a start known without the
+    // network (the queue's progress, this phone's last position, the intro
+    // skip), and the session round trips (close the old, open the new) run
+    // after playback has started. The session's contentUrl is the same
+    // /api/items/:id/file/:ino the element is already playing, so attaching
+    // it later changes nothing about the media load. The book track
+    // boundary (onTrackEnded) works the same way.
+    async _startItemFast(item, startTime) {
+        const old = this.session;
+        const oldTime = this.getGlobalTime(), oldDur = this.getTotalDuration();
+        this.stopSync();
+        this.session = null;
+        if (this._autoCacheController) { this._autoCacheController.abort(); this._autoCacheController = null; }
+        this._audioRecoveryAttempts = 0;
+        this.item = item;
+        this.chapters = item.media?.chapters || [];
+        this.tracks = item.media?.audioFiles || [];
+        this._prewarmedFromTrackIndex = -1;
+        this._lastTickGt = null;
+        const local = this._localPos(`${item.id}:${item.episodeId}`);
+        let t = startTime;
+        if (local && local.t > t) t = local.t;
+        t = this._introTarget(t);
+        const pre = this._prePinned;
+        const url = this.tracks[0]?.ino ? ABS.trackUrl(item.id, this.tracks[0].ino) : null;
+        await this.loadTime(t, 'auto-next', { pinned: !!url && pre?.url === url && Date.now() - pre.at < 300000 });
+        this.updateMediaSession();
+        this.updateUI();
+        if (old) ABS.closeSession(old.id, oldTime, oldDur, 0).catch(() => {});
+        try {
+            const s = await ABS.startSession(item.id, item.episodeId);
+            if (this.item !== item) { if (s?.id) ABS.closeSession(s.id, 0, 0, 0).catch(() => {}); return; }
+            this.session = s;
+            if (!this.chapters.length && s?.chapters?.length) this.chapters = s.chapters;
+            // The server knew a later position (another device): go there,
+            // if this one has barely started.
+            const resume = s?.currentTime || 0;
+            const now = this.getGlobalTime();
+            if (resume > t + 10 && now < t + 20) this.loadTime(this._introTarget(resume), 'auto-next-resume');
+        } catch (e) {
+            console.warn('Could not start session', e);
+        }
+        this.startSync();
+        this._startAutoCache();
+    },
+
+    // ── Intro / outro skipping (a show's media.skip, App._skipFor) ──
+    // Chapters: skip whole chapters at the start or the end, as long as at
+    // least one is left. Seconds: a fixed stretch, as long as a minute of
+    // the episode is left. An episode without the chapters asked for is
+    // played as it is.
+    _skipPoints() {
+        if (!this.item?.episodeId) return null;
+        const s = App?._skipFor?.(this.item);
+        if (!s) return null;
+        const dur = this.getTotalDuration();
+        const ch = this.chapters || [];
+        let start = 0, end = 0;
+        if (s.startChapters && ch.length > s.startChapters) start = ch[s.startChapters].start || 0;
+        else if (s.startSeconds && (!dur || dur > s.startSeconds + 60)) start = s.startSeconds;
+        if (s.endChapters && ch.length > s.endChapters) end = ch[ch.length - s.endChapters].start || 0;
+        else if (s.endSeconds && dur > s.endSeconds + 60) end = dur - s.endSeconds;
+        if (end && end <= start) end = 0;
+        return { start, end };
+    },
+
+    // Where to start: past the intro, when starting before its end (a new
+    // episode, a replay, or a resume inside the intro).
+    _introTarget(t) {
+        const p = this._skipPoints();
+        if (p?.start && t < p.start) { this._logSeekCall('intro-skip', p.start); return p.start; }
+        return t;
+    },
+
+    // Called on every timeupdate (also with the phone locked). Fires when
+    // playback runs into the outro: not when a seek lands past it (a jump
+    // of more than 10 s between ticks), so you can still go back and hear
+    // it on purpose.
+    _checkOutro() {
+        if (!this.item?.episodeId || this.audio.paused) { this._lastTickGt = null; return; }
+        const gt = this.getGlobalTime();
+        const prev = this._lastTickGt;
+        this._lastTickGt = gt;
+        if (prev == null || gt - prev > 10 || gt < prev) return;
+        const end = this._skipPoints()?.end;
+        if (end && prev < end && gt >= end) this._skipOutro();
+    },
+
+    // The outro counts as the end: marked played, the copy tidied and the
+    // next episode of the queue started, exactly as at the real end. With
+    // nothing to go on to, playback stops here.
+    _skipOutro() {
+        const item = this.item;
+        this._lastTickGt = null;
+        this._logSeekCall('outro-skip', this.getGlobalTime());
+        const dur = this.getTotalDuration();
+        if (!App?._nextQueued?.(item)) {
+            // Nothing to go on to: stop AT THE END, not where the outro
+            // starts, so every later sync (a pause, the app going to the
+            // background) reports it played too. A sessionless sync sends
+            // isFinished:false, and the shim only overrides that within the
+            // show's "played" window of the end. Not Player.pause(), whose
+            // sync would race the one below.
+            this.audio.pause();
+            if (dur > 1) this.audio.currentTime = dur - 1;
+        }
+        this._saveLocalPos(true);
+        ABS.updateProgress(`${item.id}/${item.episodeId}`, { isFinished: true, progress: 1, currentTime: dur, duration: dur })
+            .catch(() => {});
+        App?.onEpisodeFinished?.(item);
     },
 
     // True when the audio element is actively playing but doesn't have much
@@ -663,7 +782,9 @@ const Player = {
         if (srcChanged) {
             // Let the SW pin how it will answer this file before the media
             // load begins (all from the worker or none — see sw.js modeFor).
-            await App?.pinMediaMode?.(url);
+            // opts.pinned: the caller pinned it already (a queue's next
+            // episode, 30 s before the last one ended).
+            if (!opts.pinned) await App?.pinMediaMode?.(url);
             this.audio.src = url;
         }
         // iOS completes a seek on a PLAYING element in two stages — a quick
@@ -935,6 +1056,7 @@ const Player = {
     _silentSeek: false,
     onTimeUpdate() {
         this.updateUI();
+        this._checkOutro();
         // Update media session on chapter change
         if (this.currentChapterIndex !== this._lastChapterIndex) {
             this._lastChapterIndex = this.currentChapterIndex;
@@ -965,6 +1087,7 @@ const Player = {
     // Fetch the head of the next track when within 30s of current track end.
     // Primes DNS/TLS/HTTP cache so onTrackEnded swap is near-instant.
     maybePrewarmNextTrack() {
+        if (this.item?.episodeId) return this._maybePrewarmNextEpisode();
         const tracks = this.session?.audioTracks || this.tracks;
         if (!tracks || tracks.length < 2) return;
         if (this.currentTrackIndex >= tracks.length - 1) return;
@@ -985,6 +1108,24 @@ const Player = {
         // Pin the worker's mode for the next file now, while the app is
         // certainly awake, so onTrackEnded can assign src the instant the
         // current one ends instead of waiting a worker round trip first.
+        this._prePinned = { url, at: Date.now() };
+        Promise.resolve(App?.pinMediaMode?.(url)).then(() =>
+            fetch(url, { credentials: 'omit', headers: { Range: 'bytes=0-262143' } }).catch(() => {}));
+    },
+
+    // The same for a queue's next episode: pin and warm its file 30 s
+    // before this one ends (or before its outro, when that's skipped), so
+    // _startItemFast can set src the moment this one finishes.
+    _maybePrewarmNextEpisode() {
+        const key = `${this.item.id}~${this.item.episodeId}`;
+        if (this._prewarmedEpisode === key) return;
+        const end = this._skipPoints()?.end || this.getTotalDuration();
+        if (!end || this.getGlobalTime() < end - 30) return;
+        const next = App?._nextQueued?.(this.item);
+        const ino = next?.episode?.audioFile?.ino;
+        if (!ino) return;
+        this._prewarmedEpisode = key;
+        const url = ABS.trackUrl(next.libraryItemId, ino);
         this._prePinned = { url, at: Date.now() };
         Promise.resolve(App?.pinMediaMode?.(url)).then(() =>
             fetch(url, { credentials: 'omit', headers: { Range: 'bytes=0-262143' } }).catch(() => {}));
