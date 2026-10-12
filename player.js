@@ -523,7 +523,7 @@ const Player = {
         }
         this._saveLocalPos(true);
         ABS.updateProgress(`${item.id}/${item.episodeId}`, { isFinished: true, progress: 1, currentTime: dur, duration: dur })
-            .catch(() => {});
+            .catch(() => App?._queueEpisodeFinished?.(item));
         App?.onEpisodeFinished?.(item);
     },
 
@@ -738,7 +738,11 @@ const Player = {
                 const last = tracks.length - 1;
                 track = tracks[last];
                 this.currentTrackIndex = last;
-                offset = Math.max(0, Math.min(globalTime - track.startOffset, track.duration - 0.1));
+                // A track of unknown length (0: a feed with no duration whose
+                // probe hasn't run) is open-ended, or every seek landed at 0.
+                offset = track.duration > 0
+                    ? Math.max(0, Math.min(globalTime - track.startOffset, track.duration - 0.1))
+                    : Math.max(0, globalTime - track.startOffset);
             }
             url = track.contentUrl.startsWith('http')
                 ? track.contentUrl : `${ABS.serverUrl}${track.contentUrl}?token=${ABS.token}`;
@@ -757,7 +761,7 @@ const Player = {
                 const last = this.tracks.length - 1;
                 this.currentTrackIndex = last;
                 url = ABS.trackUrl(this.item.id, this.tracks[last].ino);
-                offset = Math.max(0, this.tracks[last].duration - 0.1);
+                offset = this.tracks[last].duration > 0 ? Math.max(0, this.tracks[last].duration - 0.1) : Math.max(0, globalTime - elapsed);
             }
         }
         if (!url) return;
@@ -1165,10 +1169,14 @@ const Player = {
             this.audio.currentTime = 0;
             this._tryPlay('next-track');
         } else {
-            this.syncProgress(true);
+            // Not awaited: the next episode of a queue must start now. A
+            // failed write (offline, a bad network iOS still calls online)
+            // is queued for later, or the episode comes back unplayed.
+            const item = this.item;
+            this.syncProgress(true).then((ok) => { if (ok === false && item?.episodeId) App?._queueEpisodeFinished?.(item); });
             // A finished episode: tidy its offline copy, fetch the next for
             // shows kept downloaded (App.onEpisodeFinished).
-            if (this.item?.episodeId) App?.onEpisodeFinished?.(this.item);
+            if (item?.episodeId) App?.onEpisodeFinished?.(item);
         }
     },
 
@@ -1379,7 +1387,8 @@ const Player = {
                 currentTime: gt, duration: dur,
                 progress: dur > 0 ? gt / dur : 0, isFinished: finished,
             }, opts);
-        } catch (e) { console.warn('Sync failed', e); }
+            return true;
+        } catch (e) { console.warn('Sync failed', e); return false; }
     },
 
     async closeCurrentSession() {

@@ -2875,7 +2875,10 @@ const App = {
                 (byShow.get(ep.libraryItemId) || byShow.set(ep.libraryItemId, []).get(ep.libraryItemId)).push(ep);
             }
             for (const [itemId, eps] of byShow) {
-                const show = { id: itemId, media: { metadata: eps[0].podcast?.metadata || {}, episodes: eps, canArchive: false } };
+                // The minified show carries the shim's skip setting (ABS_shim
+                // buildPodcastOld), so Latest skips intros like the show page.
+                const pod = eps[0].podcast || {};
+                const show = { id: itemId, media: { metadata: pod.metadata || {}, episodes: eps, canArchive: false, ...(pod.skip !== undefined ? { skip: pod.skip } : {}) } };
                 const rows = [...content.querySelectorAll(`.episode-row[data-item-id="${CSS.escape(itemId)}"]`)];
                 this._bindEpisodeRows(content, show, eps, progress, rows);
             }
@@ -3228,8 +3231,12 @@ const App = {
     },
     _skipFor(item) {
         if (!item?.id) return null;
+        // The server's setting wins when the item carries it (a change made
+        // on another device); the map covers items that don't (an episode
+        // played offline from its downloaded copy).
+        if (item.media?.skip !== undefined) return item.media.skip;
         const map = this._skipMap();
-        return item.id in map ? map[item.id] : (item.media?.skip || null);
+        return item.id in map ? map[item.id] : null;
     },
     _rememberSkip(show) {
         if (!show?.id || show.media?.skip === undefined) return;
@@ -3280,20 +3287,29 @@ const App = {
     // all; otherwise it goes through Player.startItem like a book, which
     // brings resume, the sessionless offline fallback and auto-cache.
     async playEpisode(itemId, episodeId, episodeHint = null, itemHint = null, opts = {}) {
+        const loaded = Player.item?.id === itemId && Player.item?.episodeId === episodeId;
         // Started from a playlist: the rest of it follows (onEpisodeFinished).
-        // Anything else ends the queue.
-        this._queue = opts.queue || null;
+        // Anything else ends the queue, except resuming the episode already
+        // in the player from another list (Latest, search), which keeps it.
+        if (opts.queue || !loaded) this._queue = opts.queue || null;
         try {
             // Tapping the episode that's already playing resumes it rather
             // than restarting it (the same rule as Continue Listening).
-            if (Player.item?.id === itemId && Player.item?.episodeId === episodeId) {
+            if (loaded) {
                 if (opts.startAt != null) Player.loadTime(opts.startAt, 'episode-page');
                 else if (Player.audio.paused) Player.play();
                 return;
             }
             const oid = `${itemId}~${episodeId}`;
             let epItem = null;
-            if ((await Offline.fullyDownloadedIds()).has(oid)) {
+            if (opts.auto) {
+                // The next of a queue must reach the player without waiting
+                // on the downloads scan (seconds on an iPhone once its memo
+                // is a minute old, and a locked phone gives a page little
+                // time once its audio stops): the last scan's answer will do.
+                const known = Offline.fullyDownloadedKnown();
+                epItem = known?.items.find(i => Offline.oid(i) === oid) || null;
+            } else if ((await Offline.fullyDownloadedIds()).has(oid)) {
                 epItem = (await Offline.fullyDownloaded()).find(i => Offline.oid(i) === oid) || null;
             }
             if (!epItem) {
@@ -3312,6 +3328,7 @@ const App = {
             else await Player.startItem(epItem);
         } catch (e) {
             console.error('Play episode failed', e);
+            if (!opts.auto) alert(!navigator.onLine ? "You're offline and this episode isn't downloaded." : "Couldn't play this episode: " + e.message);
         }
     },
 
@@ -3420,9 +3437,10 @@ const App = {
             this.playEpisode(next.libraryItemId, next.episodeId, next.episode, show,
                 { queue: { ...this._queue, index: next.index }, auto: true, startAt: next.startAt || 0 });
         }
-        // Offline, the "finished" sync failed: queue it for the next time
-        // the server is reachable, or the episode comes back as unplayed.
-        if (!navigator.onLine) this._queueEpisodeFinished(item);
+        // The "finished" write is the player's; when it fails (offline, or a
+        // network iOS still calls online) the player queues it for the next
+        // time the server answers (_queueEpisodeFinished), or the episode
+        // would come back as unplayed.
         const keep = localStorage.getItem('pholia_keep_played_episodes') === 'true';
         try {
             const oid = Offline.oid(item);
@@ -4629,11 +4647,14 @@ const App = {
         const list = content.querySelector('#feed-list');
         const more = content.querySelector('#feed-more');
         const [progress, dl] = await Promise.all([this._episodeProgress(), Offline.fullyDownloadedIds()]);
-        let offset = 0, total = 0;
+        let offset = 0, total = 0, gen = 0;
         const load = async () => {
             more.disabled = true;
+            // A slower answer to an earlier search must not land in a newer one.
+            const mine = ++gen;
             try {
                 const r = await this._shimCall(`/api/podcasts/${encodeURIComponent(item.id)}/all-episodes?limit=50&offset=${offset}${q ? '&q=' + encodeURIComponent(q) : ''}`);
+                if (mine !== gen || !document.contains(list)) return;
                 total = r.total;
                 offset += r.episodes.length;
                 const tmp = document.createElement('ul');
@@ -4666,7 +4687,10 @@ const App = {
             const me = await ABS.request('/api/me');
             for (const p of me?.mediaProgress || []) if (p.episodeId) map.set(p.episodeId, p);
             this._epProgressLast = map;
-        } catch {}
+        } catch {
+            // Offline: last time's answer beats "nothing played".
+            return this._epProgressLast || map;
+        }
         return map;
     },
 
