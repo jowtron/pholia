@@ -1383,9 +1383,15 @@ const Player = {
         try {
             if (this.session) await ABS.syncSession(this.session.id, gt, dur, listened, opts);
             // An episode's progress is its own: /api/me/progress/:item/:episode.
+            // An episode's ordinary sync says nothing about "played": an
+            // explicit isFinished:false is "Mark unplayed" to the server, and
+            // it undid a "Mark played" on the episode still playing 30 s
+            // later. ABS_shim decides from the position instead (played near
+            // the end, un-played by a replay). A book keeps sending false.
             else await ABS.updateProgress(this.item.episodeId ? `${this.item.id}/${this.item.episodeId}` : this.item.id, {
                 currentTime: gt, duration: dur,
-                progress: dur > 0 ? gt / dur : 0, isFinished: finished,
+                progress: dur > 0 ? gt / dur : 0,
+                ...(finished || !this.item.episodeId ? { isFinished: finished } : {}),
             }, opts);
             return true;
         } catch (e) { console.warn('Sync failed', e); return false; }

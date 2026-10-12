@@ -2850,6 +2850,7 @@ const App = {
             ]);
             const episodes = data.episodes || [];
             if (!episodes.length) return '<div class="empty-state">No recent episodes</div>';
+            this._overlayProgress(progress, episodes);
             for (const ep of episodes) if (progress.has(ep.id)) ep.mediaProgress = progress.get(ep.id);
             const html = '<ul class="tracklist">' + episodes.map(ep => this._episodeRowHtml(ep.libraryItemId, ep, ep.mediaProgress,
                 { cover: true, show: ep.podcast?.metadata?.title || '', dl })).join('') + '</ul>';
@@ -2968,6 +2969,7 @@ const App = {
         // Left already (another page, another tab): nothing to redraw.
         if (this.navStack[this.navStack.length - 1] !== top) return;
         this.setNavTop(pl.name);
+        this._overlayProgress(progress, (pl.items || []).map(i => i.episode));
         const scroll = content.scrollTop;
         if (this._drawPlaylist(pl, progress, dl, drawn) !== drawn && cached) content.scrollTop = scroll;
     },
@@ -3033,6 +3035,7 @@ const App = {
                 ]);
                 this._playlistData.set(pl.id, saved);
                 this._invalidateTabCache('playlists');
+                this._overlayProgress(fresh, (saved.items || []).map(i => i.episode));
                 if (this.navStack[this.navStack.length - 1] === top) this._drawPlaylist(saved, fresh, Offline._fullyLast?.ids || dl);
             } catch (e) {
                 control.revert();
@@ -3077,7 +3080,7 @@ const App = {
     // `index` null: from the first episode not played yet.
     async _playFromPlaylist(pl, index, progress) {
         const items = (pl.items || []).filter(i => i.episode);
-        progress = progress || await this._episodeProgress();
+        progress = progress || this._overlayProgress(await this._episodeProgress(), items.map(i => i.episode));
         if (index == null) index = Math.max(0, items.findIndex(it => !progress.get(it.episodeId)?.isFinished));
         if (!items[index]) return;
         const queue = this._playlistQueue(pl, items, index, progress);
@@ -3205,6 +3208,8 @@ const App = {
                     authorName: smeta.title || '',
                     podcastTitle: smeta.title || '',
                     description: this._plainText(ep.description || ep.subtitle || ''),
+                    // ABS_shim sent a snippet: the fullscreen player asks for the rest.
+                    descriptionTrimmed: !!ep.descriptionTrimmed,
                     publishedAt: ep.publishedAt || null,
                 },
                 duration,
@@ -3340,6 +3345,8 @@ const App = {
     // finish it.
 
     async downloadEpisode(show, ep, onProgress) {
+        // The copy is what the episode page shows offline: the whole notes.
+        await this._fullNotes(show.id, ep);
         const item = this._episodeItem(show, ep);
         item.downloadedAt = Date.now();
         await Offline.downloadBook(item, (i, n, received, total) => onProgress?.(received, total));
@@ -3394,6 +3401,7 @@ const App = {
                 if (rule.n > 0) {
                     try { show = await ABS.getItem(rule.showId); } catch { continue; }
                 }
+                this._overlayProgress(progress, show?.media?.episodes);
                 const want = (show?.media?.episodes || [])
                     .filter(e => !progress.get(e.id)?.isFinished)
                     .sort((a, b) => (b.publishedAt || 0) - (a.publishedAt || 0))
@@ -3408,6 +3416,7 @@ const App = {
                 const have = await Offline.fullyDownloadedIds();
                 for (const ep of want) {
                     if (have.has(`${rule.showId}~${ep.id}`)) continue;
+                    await this._fullNotes(show.id, ep);
                     const item = this._episodeItem(show, ep);
                     item.autoKept = true;
                     item.downloadedAt = Date.now();
@@ -4377,6 +4386,7 @@ const App = {
         const episodes = this._sortEpisodes([...(item.media?.episodes || [])], this._podSort(item.id));
         this.setNavTop(meta.title || 'Unknown', () => this._reloadPodcast(item.id));
         const [progress, dl] = await Promise.all([this._episodeProgress(), Offline.fullyDownloadedIds()]);
+        this._overlayProgress(progress, item.media?.episodes);
 
         let html = '<div class="detail-view">';
         html += '<div class="detail-header">';
@@ -4657,6 +4667,7 @@ const App = {
                 if (mine !== gen || !document.contains(list)) return;
                 total = r.total;
                 offset += r.episodes.length;
+                this._overlayProgress(progress, r.episodes);
                 const tmp = document.createElement('ul');
                 tmp.innerHTML = r.episodes.map(ep => this._episodeRowHtml(item.id, ep, progress.get(ep.id), { feed: true, dl })).join('');
                 const rows = [...tmp.children];
@@ -4680,8 +4691,14 @@ const App = {
     },
 
     // The caller's progress per episode id, from /api/me (one request for
-    // every show, and the same on real ABS).
+    // every show, and the same on real ABS). ABS_shim instead puts each
+    // episode's progress on the lists themselves (`mediaProgress`, copied in
+    // by _overlayProgress), and its /api/me no longer carries every played
+    // episode (it grew with every episode ever played, and was fetched for
+    // every show page): there, no request, just what lists have said so far,
+    // which the caller then overlays with the list it is drawing.
     async _episodeProgress() {
+        if (this.isShim) return new Map(this._epProgressLast || []);
         const map = new Map();
         try {
             const me = await ABS.request('/api/me');
@@ -4692,6 +4709,52 @@ const App = {
             return this._epProgressLast || map;
         }
         return map;
+    },
+
+    // ABS_shim's lists of episodes carry the caller's progress on each one
+    // (`mediaProgress`, null when there is none). Copy it into `map`, and
+    // into the last known map that instant paints and offline use; an
+    // episode without the key (stock ABS, an offline copy) keeps what
+    // /api/me said. Returns `map`.
+    _overlayProgress(map, episodes) {
+        if (!this._epProgressLast) this._epProgressLast = new Map();
+        for (const ep of episodes || []) {
+            if (!ep?.id || !('mediaProgress' in ep)) continue;
+            for (const m of new Set([map, this._epProgressLast])) {
+                if (ep.mediaProgress) m.set(ep.id, ep.mediaProgress); else m.delete(ep.id);
+            }
+        }
+        return map;
+    },
+
+    // ABS_shim's lists carry a snippet of an episode's notes
+    // (`descriptionTrimmed: true`); the whole notes come from the episode's
+    // own route. Fills `ep.description` in place, so a redraw, a download
+    // and the player have it, and keeps the last 50 for the session (in
+    // flight ones too, as the fullscreen player can ask twice). A failure
+    // (offline) leaves the snippet. Resolves to the notes.
+    _notesMemo: new Map(),
+    _applyNotesMemo(itemId, ep) {
+        const full = ep?.descriptionTrimmed ? this._notesMemo.get(`${itemId}~${ep.id}`) : null;
+        if (typeof full === 'string') { ep.description = full; ep.descriptionTrimmed = false; }
+        return ep;
+    },
+    async _fullNotes(itemId, ep) {
+        if (!ep?.descriptionTrimmed) return ep?.description || '';
+        const key = `${itemId}~${ep.id}`;
+        let got = this._notesMemo.get(key);
+        if (got == null) {
+            got = ABS.request(`/api/podcasts/${encodeURIComponent(itemId)}/episode/${encodeURIComponent(ep.id)}`)
+                .then(r => (typeof r?.description === 'string' ? r.description : null), () => null);
+            this._notesMemo.set(key, got);
+        }
+        const full = await got;
+        if (full == null) { if (this._notesMemo.get(key) === got) this._notesMemo.delete(key); return ep.description || ''; }
+        this._notesMemo.set(key, full);
+        while (this._notesMemo.size > 50) this._notesMemo.delete(this._notesMemo.keys().next().value);
+        ep.description = full;
+        ep.descriptionTrimmed = false;
+        return full;
     },
 
     // Show notes are HTML (the shim sanitizes them, so does ABS). Shown as
@@ -4945,8 +5008,9 @@ const App = {
         });
         const navTitle = item.media?.metadata?.title || 'Episode';
         if (opts.pushed) this.setNavTop(navTitle, render); else this.pushNav(navTitle, render);
+        this._applyNotesMemo(item.id, ep);
         const [progress, dl] = await Promise.all([
-            opts.progress || this._episodeProgress(),
+            opts.progress || this._episodeProgress().then(m => this._overlayProgress(m, [ep])),
             Offline.fullyDownloadedIds(),
         ]);
 
@@ -5006,6 +5070,13 @@ const App = {
         this._bindEpisodePage(s);
         if (tab === 'transcript') this._loadEpisodeTranscript(s);
         this._paintEpisodePage(true);
+        // A snippet (ABS_shim lists): the whole notes replace it when they come.
+        if (ep.descriptionTrimmed) {
+            this._fullNotes(item.id, ep).then(() => {
+                const panel = this._epPage === s && this._epPageShowing(s) && document.querySelector('#content [data-ep-panel="notes"]');
+                if (panel && !ep.descriptionTrimmed) panel.innerHTML = this._notesHtml(ep.description || ep.subtitle || '', dur) || '<div class="text-muted">No show notes</div>';
+            });
+        }
     },
 
     // The fullscreen player and a Latest row painted from last session's
@@ -5210,6 +5281,10 @@ const App = {
             try {
                 const p = await ABS.updateProgress(`${item.id}/${ep.id}`, body);
                 s.progress.set(ep.id, p || { ...body, episodeId: ep.id });
+                // The list's copy of this episode carries its progress too
+                // (ABS_shim), and a redraw overlays it: it must say the same.
+                ep.mediaProgress = s.progress.get(ep.id);
+                this._epProgressLast?.set(ep.id, ep.mediaProgress);
                 this._invalidateTabCache();
                 this._rerenderEpisodePage(s);
             } catch (err) { alert('Failed: ' + err.message); this._rerenderEpisodePage(s); }
@@ -5901,7 +5976,20 @@ const App = {
         const wrap = document.getElementById('fs-description-wrap');
         const body = document.getElementById('fs-description');
         const btn = document.getElementById('fs-description-toggle');
-        const desc = Player.item?.media?.metadata?.description?.trim();
+        const md = Player.item?.media?.metadata;
+        // An episode whose notes came as a snippet: fetch the rest, then draw again.
+        if (md?.descriptionTrimmed && Player.item.episodeId) {
+            const item = Player.item;
+            const ep = { id: item.episodeId, description: '', descriptionTrimmed: true };
+            this._fullNotes(item.id, ep).then((full) => {
+                // Failed (offline): the snippet stays, and the next opening asks again.
+                if (ep.descriptionTrimmed || Player.item !== item || !md.descriptionTrimmed) return;
+                md.description = this._plainText(full);
+                md.descriptionTrimmed = false;
+                this._renderFsDescription();
+            });
+        }
+        const desc = md?.description?.trim();
         if (!desc) { wrap.hidden = true; return; }
         wrap.hidden = false;
         body.textContent = desc;
