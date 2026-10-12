@@ -2893,6 +2893,7 @@ const App = {
         return this._renderTab('playlists', async () => {
             const data = await ABS.request(`/api/libraries/${this.currentLibraryId}/playlists`);
             const lists = data.results || [];
+            for (const pl of lists) this._playlistData.set(pl.id, pl);
             let html = '<div class="podcast-add-bar"><button class="text-btn" data-new-playlist>+ New playlist</button></div>';
             html += '<div class="list-view">';
             for (const pl of lists) {
@@ -2919,7 +2920,7 @@ const App = {
             }));
             content.querySelectorAll('[data-play-playlist]').forEach(btn => btn.addEventListener('click', async (e) => {
                 e.stopPropagation();
-                try { this._playFromPlaylist(await ABS.request(`/api/playlists/${btn.dataset.playPlaylist}`), 0); }
+                try { this._playFromPlaylist(await ABS.request(`/api/playlists/${btn.dataset.playPlaylist}`), null); }
                 catch (err) { alert('Could not load the playlist: ' + err.message); }
             }));
         });
@@ -2931,30 +2932,75 @@ const App = {
         return `${what} from ${shows} show${shows === 1 ? '' : 's'}, ${r.sort === 'oldest' ? 'oldest' : 'newest'} first`;
     },
 
+    // Opening a playlist paints at once from what the Playlists tab (or the
+    // last visit) already fetched, then redraws if the fresh copy differs.
+    // It used to wait for the playlist (a 160 KB expansion of up to 500
+    // episodes), then for /api/me and the downloads scan one after the
+    // other, and that scan is seconds on an iPhone once its memo is a
+    // minute old.
+    _playlistData: new Map(),
+    _playlistSaves: 0,
+    _epProgressLast: null,
     async showPlaylist(id) {
         this.pushNav('Playlist', () => this.showPlaylist(id));
-        this.showLoading();
-        let pl;
-        try { pl = await ABS.request(`/api/playlists/${id}`); }
-        catch (e) { this.setContent(`<div class="loading">Error: ${esc(e.message)}</div>`); return; }
+        const top = this.navStack[this.navStack.length - 1];
+        const content = document.getElementById('content');
+        const cached = this._playlistData.get(id);
+        let drawn = '';
+        if (cached) {
+            this.setNavTop(cached.name);
+            drawn = this._drawPlaylist(cached, this._epProgressLast || new Map(), Offline._fullyLast?.ids || new Set());
+        } else this.showLoading();
+        const gen = this._playlistSaves;
+        let pl, progress, dl;
+        try {
+            [pl, progress, dl] = await Promise.all([ABS.request(`/api/playlists/${id}`), this._episodeProgress(), Offline.fullyDownloadedIds()]);
+        } catch (e) {
+            if (!cached && this.navStack[this.navStack.length - 1] === top) this.setContent(`<div class="loading">Error: ${esc(e.message)}</div>`);
+            return;
+        }
+        // A Hide played / order change saved meanwhile is newer than this.
+        if (this._playlistSaves !== gen) return;
+        this._playlistData.set(id, pl);
+        // Left already (another page, another tab): nothing to redraw.
+        if (this.navStack[this.navStack.length - 1] !== top) return;
         this.setNavTop(pl.name);
+        const scroll = content.scrollTop;
+        if (this._drawPlaylist(pl, progress, dl, drawn) !== drawn && cached) content.scrollTop = scroll;
+    },
+
+    // Draws a playlist page; returns its markup, and does nothing when that
+    // is `same` (the page as already drawn).
+    _drawPlaylist(pl, progress, dl, same) {
         const items = (pl.items || []).filter(i => i.episode);
-        const [progress, dl] = await Promise.all([this._episodeProgress(), Offline.fullyDownloadedIds()]);
+        const r = pl.rules;
         let html = '<div class="detail-view">';
         html += `<div class="playlist-header"><h3>${esc(pl.name)}</h3>`;
-        html += `<div class="text-muted">${items.length} episode${items.length !== 1 ? 's' : ''}${pl.rules ? ' · ' + esc(this._rulesSummary(pl.rules)) : ''}</div>`;
+        html += `<div class="text-muted">${items.length} episode${items.length !== 1 ? 's' : ''}${r ? ' · ' + esc(this._rulesSummary(r)) : ''}</div>`;
         html += '<div class="podcast-actions">';
         if (items.length) html += '<button class="abb-go playlist-play-all" data-play-all>▶ Play</button>';
         html += '<button class="text-btn" data-edit>Edit</button><button class="text-btn" data-delete>Delete</button>';
-        html += '</div></div>';
+        html += '</div>';
+        // A smart playlist's two everyday choices sit on the page itself
+        // (the rest is behind Edit): whether played episodes stay listed,
+        // and which end comes first. Both are saved in its rules, so they
+        // follow the listener to every device.
+        if (r) {
+            html += '<div class="playlist-controls">';
+            if (r.include !== 'inProgress') html += `<label class="podcast-toggle"><input type="checkbox" data-pl-hide-played${r.include === 'unplayed' ? ' checked' : ''}> Hide played</label>`;
+            html += `<select data-pl-sort aria-label="Order"><option value="newest"${r.sort !== 'oldest' ? ' selected' : ''}>Newest first</option><option value="oldest"${r.sort === 'oldest' ? ' selected' : ''}>Oldest first</option></select>`;
+            html += '<span class="text-muted" data-pl-status></span></div>';
+        }
+        html += '</div>';
         html += items.length
             ? '<ul class="tracklist">' + items.map(i => this._episodeRowHtml(i.libraryItemId, i.episode, progress.get(i.episodeId),
                 { cover: true, show: i.libraryItem?.media?.metadata?.title || '', dl })).join('') + '</ul>'
-            : `<div class="empty-state">${pl.rules ? 'Nothing matches right now.' : 'Empty. Add episodes with Playlist on their page.'}</div>`;
+            : `<div class="empty-state">${r ? 'Nothing matches right now.' : 'Empty. Add episodes with Playlist on their page.'}</div>`;
         html += '</div>';
+        if (html === same) return html;
         this.setContent(html);
         const content = document.getElementById('content');
-        content.querySelector('[data-play-all]')?.addEventListener('click', () => this._playFromPlaylist(pl, 0));
+        content.querySelector('[data-play-all]')?.addEventListener('click', () => this._playFromPlaylist(pl, null, progress));
         content.querySelector('[data-edit]').addEventListener('click', () => {
             this.pushNav('Edit playlist', () => this.showPlaylistEditor(pl));
             this.showPlaylistEditor(pl);
@@ -2963,28 +3009,75 @@ const App = {
             if (!confirm(`Delete the playlist "${pl.name}"? The episodes themselves stay.`)) return;
             try {
                 await ABS.request(`/api/playlists/${pl.id}`, { method: 'DELETE' });
+                this._playlistData.delete(pl.id);
                 this._invalidateTabCache('playlists');
                 this.goBack();
             } catch (e) { alert('Delete failed: ' + e.message); }
         });
+        const status = content.querySelector('[data-pl-status]');
+        const saveRules = async (change, control) => {
+            const top = this.navStack[this.navStack.length - 1];
+            content.querySelectorAll('[data-pl-hide-played], [data-pl-sort]').forEach(el => { el.disabled = true; });
+            status.textContent = 'Saving…';
+            this._playlistSaves++;
+            try {
+                // Progress fetched again: this page may still be the instant
+                // paint, drawn with last visit's (or none), and showing played
+                // episodes needs the real thing.
+                const [saved, fresh] = await Promise.all([
+                    ABS.request(`/api/playlists/${pl.id}`, { method: 'PATCH', body: JSON.stringify({ rules: { ...r, ...change } }) }),
+                    this._episodeProgress(),
+                ]);
+                this._playlistData.set(pl.id, saved);
+                this._invalidateTabCache('playlists');
+                if (this.navStack[this.navStack.length - 1] === top) this._drawPlaylist(saved, fresh, Offline._fullyLast?.ids || dl);
+            } catch (e) {
+                control.revert();
+                content.querySelectorAll('[data-pl-hide-played], [data-pl-sort]').forEach(el => { el.disabled = false; });
+                status.textContent = 'Change failed: ' + e.message;
+            }
+        };
+        const hide = content.querySelector('[data-pl-hide-played]');
+        hide?.addEventListener('change', () => saveRules({ include: hide.checked ? 'unplayed' : 'all' },
+            { revert: () => { hide.checked = !hide.checked; } }));
+        const sort = content.querySelector('[data-pl-sort]');
+        sort?.addEventListener('change', () => saveRules({ sort: sort.value },
+            { revert: () => { sort.value = sort.value === 'oldest' ? 'newest' : 'oldest'; } }));
         // Rows: each belongs to its own show; tapping one plays the playlist
         // from there.
         const rows = [...content.querySelectorAll('.episode-row')];
         rows.forEach((li, idx) => {
             const it = items[idx];
             const show = { id: it.libraryItemId, libraryId: it.libraryItem?.libraryId, media: { ...(it.libraryItem?.media || {}), episodes: [it.episode] } };
-            if (!pl.rules) li.dataset.playlistId = pl.id;
+            if (!r) li.dataset.playlistId = pl.id;
             this._bindEpisodeRows(li.parentElement, show, [it.episode], progress, [li], {
-                queue: () => ({ playlistId: pl.id, name: pl.name, items, index: idx }),
+                queue: () => this._playlistQueue(pl, items, idx, progress),
             });
         });
+        return html;
+    },
+
+    // What plays from row `index` on: that episode, then the ones after it
+    // that aren't played (a playlist showing played ones mustn't replay
+    // them), each resuming where it was left, as the show page's play-on
+    // does.
+    _playlistQueue(pl, items, index, progress) {
+        const entry = (it) => {
+            const p = progress?.get(it.episodeId);
+            return { ...it, startAt: p && !p.isFinished ? p.currentTime || 0 : 0 };
+        };
+        const rest = items.slice(index + 1).filter(it => !progress?.get(it.episodeId)?.isFinished).map(entry);
+        return { playlistId: pl.id, name: pl.name, items: [items[index], ...rest], index: 0 };
     },
 
     // Play a playlist's episodes in order from `index`, queueing the rest.
-    _playFromPlaylist(pl, index) {
+    // `index` null: from the first episode not played yet.
+    async _playFromPlaylist(pl, index, progress) {
         const items = (pl.items || []).filter(i => i.episode);
+        progress = progress || await this._episodeProgress();
+        if (index == null) index = Math.max(0, items.findIndex(it => !progress.get(it.episodeId)?.isFinished));
         if (!items[index]) return;
-        const queue = { playlistId: pl.id, name: pl.name, items, index };
+        const queue = this._playlistQueue(pl, items, index, progress);
         const it = items[index];
         const show = { id: it.libraryItemId, libraryId: it.libraryItem?.libraryId, media: it.libraryItem?.media || {} };
         this.playEpisode(it.libraryItemId, it.episodeId, it.episode, show, { queue });
@@ -3014,7 +3107,11 @@ const App = {
             + `<option value="all"${r.include === 'all' ? ' selected' : ''}>Every episode</option></select>`
             + ' <select id="pl-sort">'
             + `<option value="newest"${r.sort !== 'oldest' ? ' selected' : ''}>Newest first</option>`
-            + `<option value="oldest"${r.sort === 'oldest' ? ' selected' : ''}>Oldest first</option></select></div>`;
+            + `<option value="oldest"${r.sort === 'oldest' ? ' selected' : ''}>Oldest first</option></select>`
+            // How many it holds (ABS_shim caps a smart playlist at 500; 100
+            // is its default, the size every playlist had before 2026-10-12).
+            + ` <select id="pl-limit" aria-label="How many">${[50, 100, 250, 500]
+                .map(n => `<option value="${n}"${n === (r.limit || 100) ? ' selected' : ''}>Up to ${n}</option>`).join('')}</select></div>`;
         html += '<div class="section-title">From these shows</div><div class="playlist-shows">';
         for (const sh of shows.sort((a, b) => (a.media?.metadata?.title || '').localeCompare(b.media?.metadata?.title || ''))) {
             html += `<label class="playlist-show"><input type="checkbox" value="${esc(sh.id)}"${picked.has(sh.id) ? ' checked' : ''}>`
@@ -3039,13 +3136,16 @@ const App = {
             if (isSmart) {
                 const ids = [...content.querySelectorAll('.playlist-show input:checked')].map(i => i.value);
                 if (!ids.length) { status.textContent = 'Pick at least one show'; return; }
-                body.rules = { podcastIds: ids, include: content.querySelector('#pl-include').value, sort: content.querySelector('#pl-sort').value };
+                body.rules = { podcastIds: ids, include: content.querySelector('#pl-include').value, sort: content.querySelector('#pl-sort').value,
+                    limit: Number(content.querySelector('#pl-limit').value) || 100, days: r.days ?? null };
             }
             try {
                 const saved = pl
                     ? await ABS.request(`/api/playlists/${pl.id}`, { method: 'PATCH', body: JSON.stringify(body) })
                     : await ABS.request('/api/playlists', { method: 'POST', body: JSON.stringify({ ...body, libraryId: this.currentLibraryId }) });
                 this._invalidateTabCache('playlists');
+                this._playlistData.set(saved.id, saved);
+                this._playlistSaves++;
                 // Replace the editor level with the playlist itself.
                 this.navStack.pop();
                 if (pl) this.navStack.pop();
@@ -4232,6 +4332,23 @@ const App = {
         } catch { return 'all'; }
     },
 
+    // A show page's order, per show on this phone: newest first unless the
+    // listener picked oldest (catching up on a show from the start). Play-on
+    // follows the list as drawn, so oldest first plays on into newer ones.
+    _podSortMap() {
+        try { return JSON.parse(localStorage.getItem('pholia_pod_sort') || '{}') || {}; } catch { return {}; }
+    },
+    _podSort(showId) { return this._podSortMap()[showId] === 'oldest' ? 'oldest' : 'newest'; },
+    _setPodSort(showId, order) {
+        const map = this._podSortMap();
+        if (order === 'oldest') map[showId] = 'oldest'; else delete map[showId];
+        try { localStorage.setItem('pholia_pod_sort', JSON.stringify(map)); } catch {}
+    },
+    _sortEpisodes(episodes, order) {
+        const dir = order === 'oldest' ? 1 : -1;
+        return episodes.sort((a, b) => dir * (((a.publishedAt || 0) - (b.publishedAt || 0)) || ((a.index || 0) - (b.index || 0))));
+    },
+
     async _reloadPodcast(itemId) {
         try { this.showPodcastDetail(await ABS.getItem(itemId)); }
         catch (e) { this.setContent(`<div class="loading">Error: ${esc(e.message)}</div>`); }
@@ -4239,7 +4356,7 @@ const App = {
 
     async showPodcastDetail(item) {
         const meta = item.media?.metadata || {};
-        const episodes = [...(item.media?.episodes || [])].sort((a, b) => (b.publishedAt || 0) - (a.publishedAt || 0));
+        const episodes = this._sortEpisodes([...(item.media?.episodes || [])], this._podSort(item.id));
         this.setNavTop(meta.title || 'Unknown', () => this._reloadPodcast(item.id));
         const [progress, dl] = await Promise.all([this._episodeProgress(), Offline.fullyDownloadedIds()]);
 
@@ -4295,7 +4412,8 @@ const App = {
         const opt = (v, label) => `<option value="${v}"${filter === v ? ' selected' : ''}>${label}</option>`;
         html += '<div class="section-title episodes-head"><span>Episodes</span>'
             + `<span class="text-muted episodes-count">${counts}</span>`
-            + `<select data-ep-filter aria-label="Show">${opt('all', 'All')}${opt('unplayed', 'Unplayed')}${opt('downloaded', 'On this phone')}${opt('archived', 'On pCloud')}</select></div>`;
+            + `<span class="episodes-pickers"><select data-ep-filter aria-label="Show">${opt('all', 'All')}${opt('unplayed', 'Unplayed')}${opt('downloaded', 'On this phone')}${opt('archived', 'On pCloud')}</select>`
+            + `<select data-ep-sort aria-label="Order"><option value="newest">Newest first</option><option value="oldest"${this._podSort(item.id) === 'oldest' ? ' selected' : ''}>Oldest first</option></select></span></div>`;
         html += episodes.length
             ? `<ul class="tracklist filter-${filter}" data-episode-list>` + episodes.map(ep => this._episodeRowHtml(item.id, ep, progress.get(ep.id), { dl })).join('') + '</ul>'
               + '<div class="empty-state filter-empty hidden"></div>'
@@ -4340,6 +4458,17 @@ const App = {
             const f = e.currentTarget.value;
             try { localStorage.setItem('pholia_pod_filter', f); } catch {}
             applyFilter(f);
+        });
+        // Reorders the rows already drawn: their handlers find their episode
+        // by id, so moving them is enough.
+        content.querySelector('[data-ep-sort]')?.addEventListener('change', (e) => {
+            const order = e.currentTarget.value;
+            this._setPodSort(item.id, order);
+            this._sortEpisodes(episodes, order);
+            const list = content.querySelector('[data-episode-list]');
+            if (!list) return;
+            const rows = new Map([...list.querySelectorAll('.episode-row')].map(li => [li.dataset.episodeId, li]));
+            for (const ep of episodes) { const li = rows.get(ep.id); if (li) list.appendChild(li); }
         });
         content.querySelector('[data-pod-keep]')?.addEventListener('change', async (e) => {
             const n = Number(e.currentTarget.value) || 0;
@@ -4536,6 +4665,7 @@ const App = {
         try {
             const me = await ABS.request('/api/me');
             for (const p of me?.mediaProgress || []) if (p.episodeId) map.set(p.episodeId, p);
+            this._epProgressLast = map;
         } catch {}
         return map;
     },
@@ -4626,7 +4756,7 @@ const App = {
         if (ep.archiveState === 'done') bits.push(`On ${ep.audioFile?.storage?.name || 'pCloud'}`);
         else if (ep.archiveState === 'queued' || ep.archiveState === 'fetching') bits.push('Archiving');
         else if (ep.archiveState === 'error') bits.push('Archive failed');
-        if (opts.feed && ep.inLibrary === false) bits.push(ep.removed ? 'Removed' : 'Not on the show');
+        if (opts.feed && ep.inLibrary === false) bits.push(ep.removed ? 'Hidden' : 'Not on the show');
         // Downloaded: a badge before the title, not just a word in the grey
         // line, so a show's downloads stand out at a glance.
         const isDl = !!opts.dl?.has(`${itemId}~${ep.id}`);
@@ -4929,7 +5059,7 @@ const App = {
         const more = [];
         if (this.isShim && this.shimCanAdd) {
             if (ep.inLibrary === false) more.push('<button class="text-btn" data-ep-add>Add to the show</button>');
-            else more.push('<button class="text-btn" data-ep-remove>Remove from show</button>');
+            else more.push('<button class="text-btn" data-ep-remove>Hide episode</button>');
         }
         if (playlistId) more.push('<button class="text-btn" data-ep-unlist>Remove from playlist</button>');
         if (ep.archiveError) more.push(`<span class="text-muted">Archiving failed: ${esc(ep.archiveError)}</span>`);
@@ -5094,12 +5224,12 @@ const App = {
             } catch (err) { e.currentTarget.disabled = false; alert('Add failed: ' + err.message); }
         });
         page.querySelector('[data-ep-remove]')?.addEventListener('click', async () => {
-            if (!confirm(`Remove "${ep.title}" from the show? It stays in the feed and can be added back.`)) return;
+            if (!confirm(`Hide "${ep.title}"? It leaves the show's list and stays in the feed, where it can be added back.`)) return;
             try {
                 await this._shimCall(`/api/podcasts/${encodeURIComponent(item.id)}/episode/${encodeURIComponent(ep.id)}`, { method: 'DELETE' });
                 this._invalidateTabCache();
                 this.goBack();
-            } catch (err) { alert('Remove failed: ' + err.message); }
+            } catch (err) { alert('Hide failed: ' + err.message); }
         });
         page.querySelector('[data-ep-unlist]')?.addEventListener('click', async () => {
             try {

@@ -1027,6 +1027,9 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
 .playlist-header { padding: 0.5rem 1rem 0; }
 .playlist-header h3 { margin-bottom: 0.2rem; }
 .playlist-play-all { padding: 0.45rem 1rem; }
+/* A smart playlist's Hide played switch and order, on the page itself */
+.playlist-controls { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; padding: 0.15rem 0 0.4rem; }
+.playlist-controls select { font-size: 0.85rem; padding: 0.2rem 0.3rem; border-radius: var(--radius); border: 1px solid var(--border); background: var(--card-bg); color: var(--text); }
 .playlist-editor .editor-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; color: var(--text-muted); font-size: 0.9rem; }
 .playlist-editor .editor-row input[type=text] { flex: 1; min-width: 10rem; font-size: 16px; padding: 0.45rem 0.6rem; border-radius: var(--radius); border: 1px solid var(--border); background: var(--card-bg); color: var(--text); }
 .playlist-editor select { font-size: 16px; padding: 0.35rem; border-radius: var(--radius); border: 1px solid var(--border); background: var(--card-bg); color: var(--text); }
@@ -1038,6 +1041,8 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
 .ep-dl { display: inline-flex; align-items: center; justify-content: center; width: 1.05rem; height: 1.05rem; margin-right: 0.35rem; border-radius: 50%; background: var(--accent); color: #fff; vertical-align: -0.12rem; }
 .episodes-head { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
 .episodes-head .episodes-count { font-weight: 400; flex: 1; }
+/* Filter and order stay together, wrapping as a pair on a narrow phone */
+.episodes-pickers { display: flex; gap: 0.5rem; margin-left: auto; }
 .episodes-head .podcast-toggle { font-weight: 400; text-transform: none; letter-spacing: 0; }
 
 .ep-arch { display: inline-flex; align-items: center; justify-content: center; width: 1.05rem; height: 1.05rem; margin-right: 0.35rem; border-radius: 50%; background: var(--text-muted); color: var(--bg, #000); vertical-align: -0.12rem; }
