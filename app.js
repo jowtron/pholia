@@ -3217,8 +3217,26 @@ const App = {
                 audioFiles: af.ino ? [{ ...af, duration: af.duration || duration }] : [],
                 skip: show.media?.skip || null,
                 transcripts: ep.transcripts || [],
+                // ABS_shim's episode analysis of the file it serves now (ad
+                // ranges for the player, where chapters/transcript come from).
+                analysis: ep.analysis || null,
+                dynamicAds: !!ep.dynamicAds,
             },
         };
+    },
+
+    // An analysis describes one file (one stitch of an ad-inserting host's
+    // episode, by its size). A copy on this phone of another size (the host
+    // restitched after it was downloaded) has its ads and times elsewhere,
+    // so it gets none: the note is shown and nothing is skipped, as before
+    // analyses existed.
+    async _analysisFor(epItem, a) {
+        if (!a) return null;
+        try {
+            const cov = (await Offline.chunkCoverage(epItem))?.[0];
+            if (cov && !cov.legacy && cov.totalSize && cov.totalSize !== a.size) return null;
+        } catch {}
+        return a;
     },
 
     // A show's intro/outro skipping (ABS_shim's media.skip), remembered per
@@ -4426,6 +4444,14 @@ const App = {
             const hasChapters = episodes.some(ep => ep.chapters?.length > 1);
             html += `<label class="podcast-toggle">Skip the start ${this._skipSelect('start', item.media.skip, hasChapters)}</label>`;
             html += `<label class="podcast-toggle">Skip the end ${this._skipSelect('end', item.media.skip, hasChapters)}</label>`;
+            // Ads found by ABS_shim's episode analysis (skip.ads; the
+            // default, inserted, isn't stored). Ranges not skipped by
+            // themselves get a "Skip ad" button while they play.
+            const ads = item.media.skip?.ads || '';
+            html += '<label class="podcast-toggle">Skip ads <select data-pod-skip="ads">'
+                + [['', 'inserted ones'], ['all', 'all of them'], ['off', 'only when I tap']]
+                    .map(([v, l]) => `<option value="${v}"${v === ads ? ' selected' : ''}>${l}</option>`).join('')
+                + '</select></label>';
         }
         html += '<span class="text-muted" data-pod-status></span>';
         html += '</div>';
@@ -4513,6 +4539,8 @@ const App = {
                 return !v ? {} : { [v[0] === 'c' ? chKey : sKey]: Number(v.slice(1)) };
             };
             const want = { ...part('start', 'startChapters', 'startSeconds'), ...part('end', 'endChapters', 'endSeconds') };
+            const ads = content.querySelector('[data-pod-skip="ads"]')?.value || '';
+            if (ads) want.ads = ads;
             const skip = Object.keys(want).length ? want : null;
             try {
                 const r = await this._shimCall(`/api/items/${encodeURIComponent(item.id)}/media`, {
@@ -4527,6 +4555,8 @@ const App = {
                     const el = content.querySelector(`[data-pod-skip="${k}"]`);
                     if (el) el.value = this._skipValue(k, item.media.skip);
                 }
+                const adsEl = content.querySelector('[data-pod-skip="ads"]');
+                if (adsEl) adsEl.value = item.media.skip?.ads || '';
                 status.textContent = 'Change failed: ' + err.message;
             }
         }));
@@ -4592,7 +4622,8 @@ const App = {
             return c ? `the ${word} ${c === 1 ? 'chapter' : c + ' chapters'}` : sec ? `the ${word} ${this._finishLabel(sec)}` : '';
         };
         const parts = [bit('start'), bit('end')].filter(Boolean);
-        return parts.length ? `Skipping ${parts.join(' and ')} of each episode` : 'No skipping';
+        const ads = skip?.ads === 'all' ? 'all ads' : skip?.ads === 'off' ? 'ads only when you tap' : 'inserted ads';
+        return (parts.length ? `Skipping ${parts.join(' and ')} of each episode` : 'No intro or outro skipping') + `; skipping ${ads}`;
     },
 
     // "Played" thresholds: seconds left at which the server marks an
@@ -5009,14 +5040,15 @@ const App = {
         const navTitle = item.media?.metadata?.title || 'Episode';
         if (opts.pushed) this.setNavTop(navTitle, render); else this.pushNav(navTitle, render);
         this._applyNotesMemo(item.id, ep);
-        const [progress, dl] = await Promise.all([
+        const [progress, dl, analysis] = await Promise.all([
             opts.progress || this._episodeProgress().then(m => this._overlayProgress(m, [ep])),
             Offline.fullyDownloadedIds(),
+            this._analysisFor(this._episodeItem(item, ep), ep.analysis),
         ]);
 
         const loaded = this._isLoadedEpisode(item.id, ep.id);
         const chapters = ep.chapters?.length ? ep.chapters : (loaded ? Player.chapters || [] : []);
-        const hasTranscript = !!(this.isShim && ep.transcripts?.length);
+        const hasTranscript = !!(this.isShim && (ep.transcripts?.length || ep.analysis?.transcriptSource === 'whisper'));
         const tabs = [['notes', 'Show notes']];
         if (chapters.length > 1) tabs.push(['chapters', `Chapters <span class="ep-tab-n">${chapters.length}</span>`]);
         if (hasTranscript) tabs.push(['transcript', 'Transcript']);
@@ -5033,7 +5065,7 @@ const App = {
         // A redraw of the same episode keeps the transcript it fetched.
         const prev = this._epPageFor(item.id, ep.id);
         const s = this._epPage = {
-            itemId: item.id, episodeId: ep.id, item, ep, opts, progress, tab, chapters,
+            itemId: item.id, episodeId: ep.id, item, ep, opts, progress, tab, chapters, analysis,
             queue: opts.queue || null, played, idleLabel, transcriptP: prev?.transcriptP || null,
             label: '', chIdx: -2, cueIdx: -2, cueStarts: null, touchedAt: 0, barPct: '',
         };
@@ -5063,13 +5095,14 @@ const App = {
         }
         const notes = this._notesHtml(ep.description || ep.subtitle || '', dur);
         h += `<div class="ep-panel ep-notes${tab === 'notes' ? '' : ' hidden'}" data-ep-panel="notes">${notes || '<div class="text-muted">No show notes</div>'}</div>`;
-        if (chapters.length > 1) h += `<div class="ep-panel${tab === 'chapters' ? '' : ' hidden'}" data-ep-panel="chapters">${this._epChaptersHtml(chapters, ep)}</div>`;
+        if (chapters.length > 1) h += `<div class="ep-panel${tab === 'chapters' ? '' : ' hidden'}" data-ep-panel="chapters">${this._epChaptersHtml(chapters, ep, analysis)}</div>`;
         if (hasTranscript) h += `<div class="ep-panel ep-transcript${tab === 'transcript' ? '' : ' hidden'}" data-ep-panel="transcript"><div class="text-muted">Loading the transcript…</div></div>`;
         h += '</div>';
         this.setContent(h);
         this._bindEpisodePage(s);
         if (tab === 'transcript') this._loadEpisodeTranscript(s);
         this._paintEpisodePage(true);
+        if (this.isShim && this.shimCanAdd) this._loadAnalysisState(s);
         // A snippet (ABS_shim lists): the whole notes replace it when they come.
         if (ep.descriptionTrimmed) {
             this._fullNotes(item.id, ep).then(() => {
@@ -5110,6 +5143,7 @@ const App = {
                 id: episodeId, title: m.metadata?.title || '', description: m.metadata?.description || '',
                 publishedAt: m.metadata?.publishedAt || null, duration: m.duration || 0,
                 chapters: m.chapters || [], audioFile: m.audioFiles?.[0] || null, transcripts: m.transcripts || [],
+                analysis: m.analysis || null, dynamicAds: !!m.dynamicAds,
             },
         };
     },
@@ -5129,6 +5163,74 @@ const App = {
     _rerenderEpisodePage(s) {
         if (!this._epPageShowing(s)) return;
         this.showEpisode(s.item, s.ep, { ...s.opts, pushed: true, progress: s.progress, tab: s.tab });
+    },
+
+    // ── Episode analysis (ABS_shim, run on wharf) ──
+    // The page says where this episode's analysis stands, and "Analyse now"
+    // queues it. While it waits or runs, the state is asked for again every
+    // 15 s; once done, the episode's chapters and ad ranges are fetched and
+    // the page (and the player, if it has this episode) take them.
+    async _loadAnalysisState(s) {
+        try {
+            const st = await this._shimCall(`/api/podcasts/${encodeURIComponent(s.itemId)}/episode/${encodeURIComponent(s.episodeId)}/analysis`);
+            this._paintAnalysisState(s, st);
+            if (st?.state === 'queued' || st?.state === 'running') this._watchAnalysis(s);
+        } catch {}
+    },
+    _analysisText(st) {
+        const c = st?.current;
+        if (!st?.state || !c) return '';
+        if (st.state === 'queued') return 'Analysis waiting' + (c.error ? ` (${c.error})` : '');
+        if (st.state === 'running') return 'Analysing…';
+        if (st.state === 'error') return 'Analysis failed: ' + (c.error || 'unknown error');
+        const a = st.analysis;
+        if (!a) return c.size === st.currentSize ? 'Analysed' : '';
+        const n = a.ads?.length || 0;
+        const bits = [n ? `${n} ad${n === 1 ? '' : 's'} found` : 'no ads found'];
+        if (a.chaptersSource === 'generated') bits.push('chapters written');
+        if (a.transcriptSource === 'whisper') bits.push('transcript made');
+        else if (a.aligned && a.transcriptSource === 'publisher') bits.push('times aligned');
+        return 'Analysed: ' + bits.join(', ');
+    },
+    _paintAnalysisState(s, st) {
+        if (!this._epPageShowing(s)) return;
+        const out = document.querySelector('#content [data-ep-analysis]');
+        if (out) out.textContent = (st ? ' ' + this._analysisText(st) : '');
+        s.analysisState = st?.state || null;
+    },
+    _watchAnalysis(s) {
+        if (s.analysisTimer) return;
+        const started = Date.now();
+        const tick = async () => {
+            s.analysisTimer = null;
+            if (!this._epPageShowing(s) || Date.now() - started > 20 * 60 * 1000) return;
+            let st = null;
+            try {
+                st = await this._shimCall(`/api/podcasts/${encodeURIComponent(s.itemId)}/episode/${encodeURIComponent(s.episodeId)}/analysis`);
+            } catch {}
+            if (st) this._paintAnalysisState(s, st);
+            if (st?.state === 'done') { await this._takeAnalysis(s); return; }
+            if (!st || st.state === 'queued' || st.state === 'running') s.analysisTimer = setTimeout(tick, 15000);
+        };
+        s.analysisTimer = setTimeout(tick, 15000);
+    },
+    // A finished analysis changes the episode's chapters (shifted or
+    // written) and adds ad ranges: fetch the episode again and redraw.
+    async _takeAnalysis(s) {
+        let fresh;
+        try {
+            fresh = await this._shimCall(`/api/podcasts/${encodeURIComponent(s.itemId)}/episode/${encodeURIComponent(s.episodeId)}`);
+        } catch { return; }
+        if (!fresh) return;
+        Object.assign(s.ep, { chapters: fresh.chapters || [], analysis: fresh.analysis || null, dynamicAds: !!fresh.dynamicAds });
+        if (this._isLoadedEpisode(s.itemId, s.episodeId) && Player.item?.media) {
+            Player.item.media.analysis = s.ep.analysis;
+            if (s.ep.chapters.length) { Player.item.media.chapters = s.ep.chapters; Player.chapters = s.ep.chapters; }
+            Player._setAnalysisFor(Player.item);
+        }
+        s.transcriptP = null;
+        this._invalidateTabCache?.();
+        this._rerenderEpisodePage(s);
     },
 
     _episodeActionsHtml(item, ep, { played, downloaded, playlistId }) {
@@ -5155,6 +5257,7 @@ const App = {
         if (this.isShim && this.shimCanAdd) {
             if (ep.inLibrary === false) more.push('<button class="text-btn" data-ep-add>Add to the show</button>');
             else more.push('<button class="text-btn" data-ep-remove>Hide episode</button>');
+            more.push('<button class="text-btn" data-ep-analyse>Analyse now</button><span class="text-muted" data-ep-analysis></span>');
         }
         if (playlistId) more.push('<button class="text-btn" data-ep-unlist>Remove from playlist</button>');
         if (ep.archiveError) more.push(`<span class="text-muted">Archiving failed: ${esc(ep.archiveError)}</span>`);
@@ -5168,11 +5271,18 @@ const App = {
     // from the first ad on those times run early by the ads played so far,
     // and differently for every listener. Nothing here can know by how
     // much; the page says so rather than pretend.
-    _dynamicAdsNote(ep) {
-        return ep?.dynamicAds ? '<div class="text-muted tr-note tr-note-top">This show\'s host adds ads into the audio as it\'s downloaded, so from the first ad on these times run a little early (by the length of the ads played so far).</div>' : '';
+    //
+    // Since 2026-10-13 ABS_shim can know: an episode analysis (whisper on
+    // wharf, of the very file served) maps those times onto it, and then
+    // `analysis.aligned` is true and the note goes. `analysis` here is the
+    // one that applies on this phone (_analysisFor), not merely the server's.
+    _dynamicAdsNote(ep, analysis = ep?.analysis, kind = 'chapters') {
+        if (!ep?.dynamicAds || analysis?.aligned) return '';
+        if (kind === 'chapters' && analysis?.chaptersSource === 'generated') return '';
+        return '<div class="text-muted tr-note tr-note-top">This show\'s host adds ads into the audio as it\'s downloaded, so from the first ad on these times run a little early (by the length of the ads played so far).</div>';
     },
-    _epChaptersHtml(chapters, ep) {
-        return this._dynamicAdsNote(ep) + '<ul class="tracklist ep-chapters">' + chapters.map((c, i) =>
+    _epChaptersHtml(chapters, ep, analysis = ep?.analysis) {
+        return this._dynamicAdsNote(ep, analysis) + '<ul class="tracklist ep-chapters">' + chapters.map((c, i) =>
             `<li class="tracklist-item" data-ch="${i}"><div class="tracklist-progress"></div>`
             + `<button class="tracklist-play"><span class="tracklist-num">${i + 1}</span>`
             + `<span class="tracklist-title">${esc(c.title || `Chapter ${i + 1}`)}<br><span class="text-muted">${formatTime(Math.max(0, (c.end || 0) - (c.start || 0)))}</span></span>`
@@ -5339,6 +5449,18 @@ const App = {
                 this.goBack();
             } catch (err) { alert('Hide failed: ' + err.message); }
         });
+        page.querySelector('[data-ep-analyse]')?.addEventListener('click', async (e) => {
+            const btn = e.currentTarget;
+            btn.disabled = true;
+            try {
+                const st = await this._shimCall(`/api/podcasts/${encodeURIComponent(item.id)}/episode/${encodeURIComponent(ep.id)}/analysis/run`, { method: 'POST', body: '{}' });
+                this._paintAnalysisState(s, st);
+                this._watchAnalysis(s);
+            } catch (err) {
+                const out = page.querySelector('[data-ep-analysis]');
+                if (out) out.textContent = ' ' + err.message;
+            } finally { btn.disabled = false; }
+        });
         page.querySelector('[data-ep-unlist]')?.addEventListener('click', async () => {
             try {
                 await ABS.request(`/api/playlists/${s.opts.playlistId}/item/${item.id}/${ep.id}`, { method: 'DELETE' });
@@ -5431,18 +5553,21 @@ const App = {
         const p = panel();
         if (!p || p.dataset.loaded) return;
         p.dataset.loaded = '1';
-        p.innerHTML = this._transcriptHtml(s.transcript, s.ep);
+        p.innerHTML = this._transcriptHtml(s.transcript, s.ep, s.analysis);
         s.cueStarts = s.transcript.format === 'cues' ? s.transcript.cues.map(c => c.start) : null;
         s.cueIdx = -2;
         this._paintEpisodePage(true);
     },
 
-    _transcriptHtml(t, ep) {
+    _transcriptHtml(t, ep, analysis = ep?.analysis) {
         if (t.format !== 'cues') {
             return '<div class="text-muted tr-note">This transcript has no timings, so it can\'t follow the episode.</div>'
                 + (t.paragraphs || []).map(p => `<p class="tr-para">${esc(p)}</p>`).join('');
         }
-        let h = this._dynamicAdsNote(ep), lastSpeaker = null;
+        // A speech-recognition transcript was made from the file itself:
+        // its times are right whatever the host stitched in.
+        const whisper = t.source === 'whisper';
+        let h = whisper ? '' : this._dynamicAdsNote(ep, analysis, 'transcript'), lastSpeaker = null;
         t.cues.forEach((c, i) => {
             const speaker = c.speaker && c.speaker !== lastSpeaker ? c.speaker : '';
             if (c.speaker) lastSpeaker = c.speaker;
@@ -5451,7 +5576,9 @@ const App = {
                 + `<button class="tr-time" data-t="${c.start}">${formatTime(c.start)}</button></div>`
                 + `<p>${esc(c.text)}</p></div>`;
         });
-        return h + '<div class="text-muted tr-note">Transcript from the publisher\'s feed.</div>';
+        return h + (whisper
+            ? '<div class="text-muted tr-note">Transcript made by speech recognition.</div>'
+            : '<div class="text-muted tr-note">Transcript from the publisher\'s feed.</div>');
     },
 
     // Transcripts come parsed from ABS_shim (GET …/episode/:id/transcript).

@@ -1134,6 +1134,17 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
 .tr-speaker { font-weight: 600; font-size: 0.8rem; }
 .tr-time { background: none; border: none; padding: 0; color: var(--accent); font-size: 0.72rem; font-variant-numeric: tabular-nums; cursor: pointer; }
 .tr-para { margin: 0 0 0.75rem; line-height: 1.55; font-size: 0.95rem; }
+/* "Skip ad" (Player._paintAdPill): above the mini player, and above the
+   fullscreen player too (z-index over .fs-player's 10000). */
+.ad-skip-pill {
+    position: fixed; left: 50%; transform: translateX(-50%); z-index: 10001;
+    bottom: calc(var(--tab-height) + var(--player-height) + var(--safe-bottom) + 12px);
+    max-width: calc(100vw - 32px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    padding: 0.55rem 1.1rem; border-radius: 999px; border: none; cursor: pointer;
+    background: var(--accent); color: #fff; font-size: 0.9rem; font-weight: 600;
+    box-shadow: 0 4px 14px var(--shadow);
+}
+.ad-skip-pill[hidden] { display: none; }
 .tr-note { margin: 0.5rem 0; }
 .tr-note-top { margin: 0 0 0.6rem; padding: 0.5rem 0.7rem; border-left: 3px solid var(--border); font-size: 0.85rem; }
 

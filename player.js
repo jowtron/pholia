@@ -360,6 +360,7 @@ const Player = {
         this.chapters = item.media?.chapters || [];
         this.tracks = item.media?.audioFiles || [];
         this._prewarmedFromTrackIndex = -1;
+        this._setAnalysisFor(item);
 
         // Fetch progress alongside the session (not after it) so a resume
         // adds no extra await between the tap and play() — iOS lets the user
@@ -434,6 +435,7 @@ const Player = {
         this.tracks = item.media?.audioFiles || [];
         this._prewarmedFromTrackIndex = -1;
         this._lastTickGt = null;
+        this._setAnalysisFor(item);
         const local = this._localPos(`${item.id}:${item.episodeId}`);
         let t = startTime;
         if (local && local.t > t) t = local.t;
@@ -499,8 +501,101 @@ const Player = {
         const prev = this._lastTickGt;
         this._lastTickGt = gt;
         if (prev == null || gt - prev > 10 || gt < prev) return;
+        if (this._checkAds(prev, gt)) return;
         const end = this._skipPoints()?.end;
         if (end && prev < end && gt >= end) this._skipOutro();
+    },
+
+    // ── Ad skipping (ABS_shim's episode analysis, media.analysis) ──
+    // The shim lists the ad ranges of the file it serves now (an analysis
+    // made on wharf from that very file; `analysis` is null for any other
+    // stitch). The show's skip.ads picks what goes by itself: 'inserted'
+    // (the default) the inserted ads found with confidence >= 0.8, 'all'
+    // every range of confidence >= 0.5, 'off' none. Every range not skipped
+    // by itself offers a "Skip ad" button while it plays. A downloaded copy
+    // of another size is another stitch: nothing is skipped there
+    // (App._analysisFor), as before the analysis existed.
+    _analysis: null,
+    _pillAd: null,
+    _setAnalysisFor(item) {
+        this._analysis = null;
+        this._paintAdPill(null);
+        const a = item?.episodeId ? item.media?.analysis : null;
+        if (!a?.ads?.length) return;
+        Promise.resolve(App?._analysisFor ? App._analysisFor(item, a) : a)
+            .then(ok => { if (this.item === item) this._analysis = ok || null; })
+            .catch(() => {});
+    },
+    _adPlan() {
+        const a = this._analysis;
+        if (!a?.ads?.length || !this.item?.episodeId) return null;
+        const mode = App?._skipFor?.(this.item)?.ads || 'inserted';
+        const auto = [], offer = [];
+        for (const ad of a.ads) {
+            if (!(ad.end > ad.start)) continue;
+            const c = ad.confidence ?? 0;
+            const byItself = mode === 'all' ? c >= 0.5 : mode === 'inserted' ? ad.kind === 'inserted' && c >= 0.8 : false;
+            (byItself ? auto : offer).push(ad);
+        }
+        return { auto, offer };
+    },
+    // Called from _checkOutro on a normal tick (playing, no jump). Entering
+    // an ad means crossing its start, like the outro; a pre-roll at 0 is
+    // "entered" by the first second of playback. Seeking into one on purpose
+    // (a jump) is left alone, and gets the button instead.
+    _checkAds(prev, gt) {
+        const plan = this._adPlan();
+        if (!plan?.auto.length) return false;
+        for (const ad of plan.auto) {
+            const entering = gt >= ad.start && gt < ad.end - 0.5 && (prev < ad.start || (ad.start < 1.5 && prev < 1.5));
+            if (!entering) continue;
+            // Back-to-back ads (a break of several): land past all of them.
+            let to = ad.end;
+            for (let n = 0; n < 10; n++) {
+                const next = plan.auto.find(a => a.start <= to + 0.5 && to < a.end - 0.5);
+                if (!next) break;
+                to = next.end;
+            }
+            this._lastTickGt = null;
+            this._paintAdPill(null);
+            this.loadTime(to, 'ad-skip', { keepPaused: true });
+            return true;
+        }
+        return false;
+    },
+    _updateAdPill() {
+        const plan = this._adPlan();
+        if (!plan) { this._paintAdPill(null); return; }
+        const gt = this.getGlobalTime();
+        this._paintAdPill([...plan.offer, ...plan.auto].find(a => gt >= a.start && gt < a.end - 1) || null);
+    },
+    _paintAdPill(ad) {
+        let el = document.getElementById('ad-skip-pill');
+        if (!ad) {
+            this._pillAd = null;
+            if (el && !el.hidden) el.hidden = true;
+            return;
+        }
+        if (!el) {
+            el = document.createElement('button');
+            el.id = 'ad-skip-pill';
+            el.className = 'ad-skip-pill';
+            el.type = 'button';
+            el.hidden = true;
+            el.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const a = this._pillAd;
+                if (!a) return;
+                this._paintAdPill(null);
+                this.loadTime(a.end, 'ad-skip-tap', { keepPaused: true });
+            });
+            document.body.appendChild(el);
+        }
+        if (this._pillAd !== ad) {
+            this._pillAd = ad;
+            el.textContent = ad.label ? `Skip ad · ${ad.label}` : 'Skip ad';
+        }
+        if (el.hidden) el.hidden = false;
     },
 
     // The outro counts as the end: marked played, the copy tidied and the
@@ -1072,6 +1167,7 @@ const Player = {
     onTimeUpdate() {
         this.updateUI();
         this._checkOutro();
+        this._updateAdPill();
         // Update media session on chapter change
         if (this.currentChapterIndex !== this._lastChapterIndex) {
             this._lastChapterIndex = this.currentChapterIndex;
