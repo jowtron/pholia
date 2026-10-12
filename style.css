@@ -1013,14 +1013,11 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
 .podcast-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 1rem; padding: 0 1rem 0.5rem; }
 .podcast-toggle { display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; color: var(--text-muted); }
 .episode-main { display: flex; align-items: center; position: relative; z-index: 1; }
-.episode-main .episode-play { flex: 1; min-width: 0; }
+.episode-main .episode-open { flex: 1; min-width: 0; }
 .episode-title { font-weight: 500; }
 .episode-row.is-played .episode-title { color: var(--text-muted); font-weight: 400; }
-.episode-more { background: none; border: none; color: var(--text-muted); font-size: 1.2rem; padding: 0.5rem 0.75rem; cursor: pointer; flex-shrink: 0; }
 .episode-add { padding: 0.3rem 0.7rem; background: var(--accent); color: #fff; border: none; border-radius: var(--radius); font-size: 0.8rem; flex-shrink: 0; }
 .episode-add:disabled { opacity: 0.7; }
-.episode-details { position: relative; z-index: 1; padding: 0 0.75rem 0.75rem 0.75rem; }
-.episode-notes { font-size: 0.85rem; line-height: 1.45; color: var(--text-muted); white-space: pre-line; max-height: 18rem; overflow-y: auto; margin-bottom: 0.5rem; }
 .episode-actions { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; align-items: center; }
 .podcast-add-bar { display: flex; justify-content: flex-end; padding: 0 0.5rem; }
 
@@ -1063,3 +1060,79 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
 @media (prefers-reduced-motion: reduce) { .ep-eq i { animation: none; transform: scaleY(0.7); } }
 .ep-arch-logo { background: none; width: 1.25rem; height: 0.85rem; border-radius: 0; }
 .ep-arch-logo svg { width: 100%; height: 100%; display: block; }
+
+/* A row's round play button (App._toggleEpisode): filled, with a pause
+   icon, while its episode is the one playing (paintPlayingEpisode's
+   is-playing / is-paused classes). */
+.episode-playbtn {
+    flex-shrink: 0; width: 2.1rem; height: 2.1rem; margin: 0 0.45rem 0 0.25rem; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 50%; border: 1.5px solid var(--accent); background: none; color: var(--accent); cursor: pointer;
+}
+.episode-playbtn .i-pause, .ep-play-big .i-pause { display: none; }
+.episode-row.is-playing:not(.is-paused) .episode-playbtn { background: var(--accent); color: #fff; }
+.episode-row.is-playing:not(.is-paused) .episode-playbtn .i-play,
+.ep-play-big.is-playing .i-play { display: none; }
+.episode-row.is-playing:not(.is-paused) .episode-playbtn .i-pause,
+.ep-play-big.is-playing .i-pause { display: block; }
+
+/* ── Episode page (App.showEpisode) ── */
+.episode-page { display: flex; flex-direction: column; gap: 0.75rem; max-width: 40rem; margin: 0 auto; }
+.ep-hero { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 0.35rem; padding-top: 0.25rem; }
+.ep-hero-cover { width: 150px; height: 150px; object-fit: cover; border-radius: var(--radius); background: var(--card-bg); box-shadow: 0 4px 16px var(--shadow); }
+.ep-hero-show { background: none; border: none; color: var(--accent); font-size: 0.85rem; cursor: pointer; padding: 0.2rem 0.4rem; margin-top: 0.35rem; }
+.ep-hero-title { font-size: 1.2rem; line-height: 1.3; margin: 0; overflow-wrap: anywhere; }
+.ep-hero-meta { color: var(--text-muted); font-size: 0.8rem; }
+.ep-hero-bar { width: 100%; max-width: 300px; height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; margin: 0.3rem 0 0.4rem; }
+.ep-hero-bar > div { height: 100%; background: var(--accent); transition: width 0.25s linear; }
+.ep-actions { display: flex; justify-content: center; gap: 0.25rem; width: 100%; margin-top: 0.35rem; }
+.ep-act {
+    flex: 1; max-width: 5.5rem; display: flex; flex-direction: column; align-items: center; gap: 0.25rem;
+    background: none; border: none; color: var(--text-muted); font-size: 0.7rem; padding: 0.4rem 0.2rem;
+    cursor: pointer; border-radius: var(--radius);
+}
+.ep-act.is-on, .ep-act.busy { color: var(--accent); }
+.ep-act:disabled { cursor: default; }
+.ep-act .ep-arch { width: 22px; height: 22px; margin: 0; }
+.ep-act .ep-arch-logo { width: 32px; height: 22px; }
+@media (hover: hover) { .ep-act:hover:not(:disabled) { color: var(--accent); } }
+.ep-more { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.25rem 1rem; align-items: center; }
+.ep-more:empty { display: none; }
+.ep-more .episode-actions { width: 100%; justify-content: center; }
+/* The tabs stay at the top while the notes or transcript scroll under.
+   -1rem: sticky stops at main's padding edge, which left a strip of text
+   showing above the bar. */
+.ep-tabs {
+    position: sticky; top: -1rem; z-index: 3; display: flex; gap: 0.25rem; align-items: center;
+    margin: 0 -1rem; padding: 0 1rem; background: var(--content-bg); border-bottom: 1px solid var(--border);
+}
+.ep-tabs [role=tab] {
+    background: none; border: none; border-bottom: 2px solid transparent; color: var(--text-muted);
+    font-size: 0.9rem; padding: 0.7rem 0.55rem; cursor: pointer; white-space: nowrap;
+}
+.ep-tabs [role=tab][aria-selected=true] { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+.ep-tab-n { font-size: 0.7rem; color: var(--text-muted); font-weight: 400; }
+.ep-now { margin-left: auto; background: var(--accent); color: #fff; border: none; border-radius: 999px; font-size: 0.75rem; padding: 0.25rem 0.75rem; cursor: pointer; }
+.ep-panel { padding: 0 0.25rem 1rem; }
+.ep-notes { font-size: 0.92rem; line-height: 1.55; overflow-wrap: anywhere; }
+.ep-notes p, .ep-notes ul, .ep-notes ol, .ep-notes blockquote { margin: 0 0 0.75rem; }
+.ep-notes ul, .ep-notes ol { padding-left: 1.25rem; }
+.ep-notes a { color: var(--accent); }
+.ep-ts { background: none; border: none; padding: 0; color: var(--accent); font: inherit; font-variant-numeric: tabular-nums; text-decoration: underline dotted; cursor: pointer; }
+.ep-chapters .tracklist-item.is-done:not(.is-active) .tracklist-title { color: var(--text-muted); }
+.ep-chapters .tracklist-duration { font-variant-numeric: tabular-nums; }
+/* Transcript: the paragraph being spoken is tinted (_paintEpisodePage). */
+.tr-cue { padding: 0.45rem 0.5rem; border-radius: var(--radius); scroll-margin: 4rem; transition: background 0.2s; }
+.tr-cue p { margin: 0; line-height: 1.55; font-size: 0.95rem; }
+.tr-cue.is-now { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.tr-meta { display: flex; align-items: baseline; gap: 0.5rem; margin-bottom: 0.1rem; }
+.tr-speaker { font-weight: 600; font-size: 0.8rem; }
+.tr-time { background: none; border: none; padding: 0; color: var(--accent); font-size: 0.72rem; font-variant-numeric: tabular-nums; cursor: pointer; }
+.tr-para { margin: 0 0 0.75rem; line-height: 1.55; font-size: 0.95rem; }
+.tr-note { margin: 0.5rem 0; }
+
+/* Fullscreen player: an episode's title opens its page; Transcript sits
+   beside Chapters. */
+.fs-title.is-link { cursor: pointer; }
+.fs-title.is-link::after { content: ' \203A'; color: var(--text-muted); font-weight: 400; }
+.fs-links { display: flex; gap: 1.5rem; justify-content: center; }

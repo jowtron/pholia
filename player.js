@@ -397,7 +397,9 @@ const Player = {
             if (local && local.at > serverAt + 2000) startTime = local.t;
         }
         startTime = startTime || 0;
-        if (ep) startTime = this._introTarget(startTime);
+        // opts.exact: a start the listener picked on the episode page (a
+        // chapter, a transcript line), which the intro skip must not move.
+        if (ep && !opts.exact) startTime = this._introTarget(startTime);
 
         this.loadTime(startTime);
         this.startSync();
@@ -1218,6 +1220,14 @@ const Player = {
         // Fullscreen player
         setSrc('fs-cover', cover);
         setText('fs-title', title);
+        // An episode's title opens its page, and Transcript shows when the
+        // feed has one (App.openEpisodeById).
+        const epLinks = (this.item.episodeId ? 'ep' : '') + (this.item.episodeId && this.item.media?.transcripts?.length && App?.isShim ? '+tr' : '');
+        if (last['fs-ep-links'] !== epLinks) {
+            last['fs-ep-links'] = epLinks;
+            document.getElementById('fs-title')?.classList.toggle('is-link', !!this.item.episodeId);
+            document.getElementById('fs-open-transcript')?.classList.toggle('hidden', !epLinks.includes('+tr'));
+        }
         // The fullscreen player showed the AUTHOR in the narrator's slot and
         // had no author line of its own. Now: authors on their own line,
         // tappable when the item carries author ids (the item detail does),

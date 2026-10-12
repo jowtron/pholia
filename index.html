@@ -436,7 +436,12 @@
                     <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5.64 17.36A9 9 0 1 1 18.36 17.36"/><path d="M8.46 14.54A5 5 0 1 1 15.54 14.54"/><path d="M12 15l5 6H7z" fill="currentColor" stroke="none"/></svg>
                 </button>
                 </div>
-                <button class="text-btn" id="fs-toggle-chapters">Chapters &rsaquo;</button>
+                <div class="fs-links">
+                    <button class="text-btn" id="fs-toggle-chapters">Chapters &rsaquo;</button>
+                    <!-- A podcast episode whose feed has a transcript: opens the
+                         episode's page on it (Player.updateUI shows it). -->
+                    <button class="text-btn hidden" id="fs-open-transcript">Transcript &rsaquo;</button>
+                </div>
             </div>
             <!-- Chapters as a page to the right of the player: swipe left to
                  open it (two fingers anywhere, one finger on the artwork), or

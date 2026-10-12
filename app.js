@@ -708,6 +708,17 @@ const App = {
             btn.textContent = collapsed ? 'Read more' : 'Show less';
         });
 
+        // A podcast episode: its title opens the episode's page, and
+        // Transcript opens it on the transcript, which follows the playhead.
+        const openPlayingEpisode = (tab) => {
+            const it = Player.item;
+            if (!it?.episodeId) return;
+            this.closeFullscreen();
+            this.openEpisodeById(it.id, it.episodeId, { tab });
+        };
+        document.getElementById('fs-title').addEventListener('click', () => openPlayingEpisode('notes'));
+        document.getElementById('fs-open-transcript').addEventListener('click', () => openPlayingEpisode('transcript'));
+
         // FS chapters (a page to the right — see showFsChapters)
         document.getElementById('fs-toggle-chapters').addEventListener('click', () => {
             this.showFsChapters(!document.getElementById('fs-player').classList.contains('chapters-open'));
@@ -2849,8 +2860,11 @@ const App = {
             // episodes: rows still play, the lookup happens on tap.
             if (!episodes) {
                 content.querySelectorAll('.episode-row').forEach(li => {
-                    li.querySelector('.episode-play')?.addEventListener('click', () => this.playEpisode(li.dataset.itemId, li.dataset.episodeId));
-                    li.querySelector('.episode-more')?.addEventListener('click', () => this.showItem(li.dataset.itemId));
+                    li.querySelector('.episode-open')?.addEventListener('click', () => this.openEpisodeById(li.dataset.itemId, li.dataset.episodeId));
+                    li.querySelector('.episode-playbtn')?.addEventListener('click', () => {
+                        if (this._isLoadedEpisode(li.dataset.itemId, li.dataset.episodeId) && Player.isPlaying) Player.pause();
+                        else this.playEpisode(li.dataset.itemId, li.dataset.episodeId);
+                    });
                 });
                 return;
             }
@@ -2936,7 +2950,7 @@ const App = {
         html += items.length
             ? '<ul class="tracklist">' + items.map(i => this._episodeRowHtml(i.libraryItemId, i.episode, progress.get(i.episodeId),
                 { cover: true, show: i.libraryItem?.media?.metadata?.title || '', dl })).join('') + '</ul>'
-            : `<div class="empty-state">${pl.rules ? 'Nothing matches right now.' : 'Empty. Add episodes from their ⋯ menu.'}</div>`;
+            : `<div class="empty-state">${pl.rules ? 'Nothing matches right now.' : 'Empty. Add episodes with Playlist on their page.'}</div>`;
         html += '</div>';
         this.setContent(html);
         const content = document.getElementById('content');
@@ -2959,12 +2973,10 @@ const App = {
         rows.forEach((li, idx) => {
             const it = items[idx];
             const show = { id: it.libraryItemId, libraryId: it.libraryItem?.libraryId, media: { ...(it.libraryItem?.media || {}), episodes: [it.episode] } };
-            this._bindEpisodeRows(li.parentElement, show, [it.episode], progress, [li]);
-            const play = li.querySelector('.episode-play');
-            const fresh = play.cloneNode(true);   // drop the single-episode handler
-            play.replaceWith(fresh);
-            fresh.addEventListener('click', () => this._playFromPlaylist(pl, idx));
             if (!pl.rules) li.dataset.playlistId = pl.id;
+            this._bindEpisodeRows(li.parentElement, show, [it.episode], progress, [li], {
+                queue: () => ({ playlistId: pl.id, name: pl.name, items, index: idx }),
+            });
         });
     },
 
@@ -3042,7 +3054,7 @@ const App = {
         });
     },
 
-    // The ⋯ menu's "Add to playlist": ordinary playlists only (a smart
+    // An episode page's Playlist: ordinary playlists only (a smart
     // one's contents come from its rules), or a new one named on the spot.
     async _addToPlaylistUi(box, itemId, ep) {
         let lists = [];
@@ -3096,6 +3108,7 @@ const App = {
                 chapters: ep.chapters || [],
                 audioFiles: af.ino ? [{ ...af, duration: af.duration || duration }] : [],
                 skip: show.media?.skip || null,
+                transcripts: ep.transcripts || [],
             },
         };
     },
@@ -3174,7 +3187,8 @@ const App = {
             // Tapping the episode that's already playing resumes it rather
             // than restarting it (the same rule as Continue Listening).
             if (Player.item?.id === itemId && Player.item?.episodeId === episodeId) {
-                if (Player.audio.paused) Player.play();
+                if (opts.startAt != null) Player.loadTime(opts.startAt, 'episode-page');
+                else if (Player.audio.paused) Player.play();
                 return;
             }
             const oid = `${itemId}~${episodeId}`;
@@ -3191,7 +3205,10 @@ const App = {
             }
             // The next of a queue starts without waiting on the network
             // (Player._startItemFast), at the position the queue knew.
+            // `startAt` from the episode page: a chapter, a transcript line or
+            // a time in the notes, which `exact` keeps clear of the intro skip.
             if (opts.auto) await Player.startItem(epItem, opts.startAt || 0, null, { fast: true });
+            else if (opts.startAt != null) await Player.startItem(epItem, opts.startAt, null, { exact: !!opts.exact });
             else await Player.startItem(epItem);
         } catch (e) {
             console.error('Play episode failed', e);
@@ -3209,6 +3226,7 @@ const App = {
         const item = this._episodeItem(show, ep);
         item.downloadedAt = Date.now();
         await Offline.downloadBook(item, (i, n, received, total) => onProgress?.(received, total));
+        if (this.isShim && ep.transcripts?.length) this._fetchTranscript(show.id, ep.id).catch(() => {});
         this._invalidateHomeCache?.();
     },
 
@@ -3684,11 +3702,15 @@ const App = {
             this.bindSearchClicks(resultsEl);
             resultsEl.querySelectorAll('.episode-row').forEach(li => {
                 const hit = episodeHits.find(e => e.libraryItem.recentEpisode.id === li.dataset.episodeId);
-                li.querySelector('.episode-play').addEventListener('click', () => {
+                li.querySelector('.episode-playbtn').addEventListener('click', () => {
                     this.hideSearch();
                     this.playEpisode(li.dataset.itemId, li.dataset.episodeId, hit?.libraryItem.recentEpisode);
                 });
-                li.querySelector('.episode-more').addEventListener('click', () => { this.hideSearch(); this.showItem(li.dataset.itemId); });
+                li.querySelector('.episode-open').addEventListener('click', () => {
+                    this.hideSearch();
+                    if (hit) this.showEpisode(hit.libraryItem, hit.libraryItem.recentEpisode);
+                    else this.openEpisodeById(li.dataset.itemId, li.dataset.episodeId);
+                });
                 li.querySelector('[data-quick-archive]')?.addEventListener('click', async (e) => {
                     const btn = e.currentTarget;
                     btn.disabled = true; btn.classList.add('busy');
@@ -4539,15 +4561,22 @@ const App = {
 
     // Queue one episode for pCloud, then follow it until pCloud has it:
     // the server copies it within a minute or two, and the row turns from
-    // "Archiving" into the pCloud badge without a reload.
-    async _archiveEpisode(item, ep, li, progress) {
+    // "Archiving" into the pCloud badge without a reload. `view` is where
+    // it's shown when that isn't a row (the episode page): alive() while
+    // still on screen, redraw() after a change.
+    async _archiveEpisode(item, ep, li, progress, view = null) {
         await this._shimCall(`/api/podcasts/${encodeURIComponent(item.id)}/archive`, {
             method: 'POST', body: JSON.stringify({ episodeIds: [ep.id] }),
         });
         ep.archiveState = 'queued';
         ep.archiveError = null;
-        let row = await this._redrawEpisodeRow(item, ep, li, progress);
-        for (let i = 0; i < 30 && row?.isConnected; i++) {
+        let row = li;
+        view = view || {
+            alive: () => !!row?.isConnected,
+            redraw: async () => { row = await this._redrawEpisodeRow(item, ep, row, progress); },
+        };
+        await view.redraw();
+        for (let i = 0; i < 30 && view.alive(); i++) {
             await new Promise(r => setTimeout(r, 15000));
             let fresh;
             try { fresh = await ABS.request(`/api/podcasts/${encodeURIComponent(item.id)}/episode/${encodeURIComponent(ep.id)}`); } catch { continue; }
@@ -4558,8 +4587,8 @@ const App = {
                 // The audio now comes from pCloud: the badge names it.
                 ep.audioFile = { ...(ep.audioFile || {}), storage: { provider: 'pcloud_oauth', name: 'pCloud', detail: '' } };
             }
-            if (!row?.isConnected) return;
-            row = await this._redrawEpisodeRow(item, ep, row, progress);
+            if (!view.alive()) return;
+            await view.redraw();
             if (ep.archiveState === 'done' || ep.archiveState === 'error') return;
         }
     },
@@ -4575,7 +4604,7 @@ const App = {
         if (li.dataset.show) row.dataset.show = li.dataset.show;
         if (li.dataset.playlistId) row.dataset.playlistId = li.dataset.playlistId;
         li.replaceWith(row);
-        this._bindEpisodeRows(row.parentElement, item, [ep], progress, [row]);
+        this._bindEpisodeRows(row.parentElement, item, [ep], progress, [row], li._bindOpts);
         return row;
     },
 
@@ -4605,7 +4634,9 @@ const App = {
         let h = `<li class="tracklist-item episode-row${played ? ' is-played' : ''}${isDl ? ' is-downloaded' : ''}${isArch ? ' is-archived' : ''}" data-item-id="${esc(itemId)}" data-episode-id="${esc(ep.id)}"${opts.show ? ` data-show="${esc(opts.show)}"` : ''}>`;
         h += `<div class="tracklist-progress" style="width:${pct}%"></div>`;
         h += '<div class="episode-main">';
-        h += '<button class="tracklist-play episode-play">';
+        // The row opens the episode's page (showEpisode); the round button
+        // on the right plays it, as in Pocket Casts.
+        h += '<button class="tracklist-play episode-open" aria-label="Episode details">';
         if (opts.cover) h += `<img class="ep-cover" src="${ABS.coverUrl(itemId)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
         const dlBadge = isDl ? '<span class="ep-dl" title="Downloaded to this phone" aria-label="Downloaded"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12M6 11l6 6 6-6M5 21h14"/></svg></span>' : '';
         // Archived: the logo of the service holding the copy (the episode's
@@ -4626,9 +4657,10 @@ const App = {
         }
         // Download to this phone, one tap, without opening the ⋯ menu.
         if (!addable && !isDl && ep.audioFile?.ino && opts.dl) h += '<button class="episode-dlbtn" data-quick-dl aria-label="Download to this phone" title="Download to this phone"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12M6 11l6 6 6-6M5 21h14"/></svg></button>';
-        h += '<button class="episode-more" aria-label="Show notes and actions">⋯</button>';
+        // Play, or pause while it's the one playing (CSS swaps the icon on
+        // the row's is-playing / is-paused classes, set by paintPlayingEpisode).
+        h += '<button class="episode-playbtn" aria-label="Play"><svg class="i-play" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg><svg class="i-pause" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg></button>';
         h += '</div>';
-        h += '<div class="episode-details hidden"></div>';
         h += '</li>';
         return h;
     },
@@ -4643,6 +4675,7 @@ const App = {
     paintPlayingEpisode() {
         const content = document.getElementById('content');
         if (!content) return;
+        this._paintEpisodePage();
         const it = Player.item;
         const key = it?.episodeId ? `${it.id}~${it.episodeId}` : '';
         for (const li of content.querySelectorAll('.episode-row.is-playing')) {
@@ -4670,15 +4703,22 @@ const App = {
         }
     },
 
-    // Wire episode rows: tap plays, ⋯ toggles notes and actions. `rows`
-    // limits it to rows just appended (the feed view pages in).
-    _bindEpisodeRows(root, item, episodes, progress, rows) {
+    // Wire episode rows: tapping the row opens the episode's page, the round
+    // button plays it (pauses it while it's the one playing). `rows` limits
+    // it to rows just appended (the feed view pages in). `opts.queue(li, ep)`
+    // says what plays after it (a playlist's rest); by default, the rows
+    // below it on a show's page (_showQueue). The options ride on the row so
+    // a redrawn row (_redrawEpisodeRow) keeps them.
+    _bindEpisodeRows(root, item, episodes, progress, rows, opts = {}) {
         const byId = new Map(episodes.map(ep => [ep.id, ep]));
         for (const li of rows || root.querySelectorAll('.episode-row')) {
             const ep = byId.get(li.dataset.episodeId);
             if (!ep) continue;
-            li.querySelector('.episode-play').addEventListener('click', () =>
-                this.playEpisode(item.id, ep.id, ep, item, { queue: this._showQueue(li, item, ep, progress) }));
+            li._bindOpts = opts;
+            const queue = () => opts.queue ? opts.queue(li, ep) : this._showQueue(li, item, ep, progress);
+            li.querySelector('.episode-open').addEventListener('click', () =>
+                this.showEpisode(item, ep, { queue: queue(), playlistId: li.dataset.playlistId || null, progress }));
+            li.querySelector('.episode-playbtn').addEventListener('click', () => this._toggleEpisode(item, ep, queue));
             li.querySelector('[data-quick-archive]')?.addEventListener('click', async (e) => {
                 const btn = e.currentTarget;
                 if (btn.disabled) return;
@@ -4696,10 +4736,7 @@ const App = {
                     await this.downloadEpisode(item, ep, (received, total) => {
                         if (total) btn.textContent = Math.floor((received / total) * 100) + '%';
                     });
-                    const fresh = document.createElement('ul');
-                    fresh.innerHTML = this._episodeRowHtml(item.id, ep, progress.get(ep.id), { feed: ep.inLibrary !== undefined, dl: await Offline.fullyDownloadedIds() });
-                    const row = fresh.firstElementChild;
-                    if (li.isConnected) { li.replaceWith(row); this._bindEpisodeRows(row.parentElement, item, [ep], progress, [row]); }
+                    await this._redrawEpisodeRow(item, ep, li, progress);
                 } catch (err) {
                     btn.disabled = false; btn.classList.remove('busy');
                     alert('Download failed: ' + err.message);
@@ -4713,108 +4750,502 @@ const App = {
                         method: 'POST', body: JSON.stringify({ episodeIds: [ep.id] }),
                     });
                     btn.textContent = 'Added';
+                    ep.inLibrary = true;
                     this._invalidateTabCache();
                 } catch (err) { btn.disabled = false; alert('Add failed: ' + err.message); }
-            });
-            li.querySelector('.episode-more').addEventListener('click', () => {
-                const box = li.querySelector('.episode-details');
-                if (!box.classList.contains('hidden')) { box.classList.add('hidden'); return; }
-                this._renderEpisodeDetails(box, li, item, ep, progress);
-                box.classList.remove('hidden');
             });
         }
         this.paintPlayingEpisode();
     },
 
-    async _renderEpisodeDetails(box, li, item, ep, progress) {
+    _isLoadedEpisode(itemId, episodeId) {
+        return !!episodeId && Player.item?.id === itemId && Player.item?.episodeId === episodeId;
+    },
+
+    // A row's round button: pause the episode while it's the one playing,
+    // else play it from where it was left. `queue` may be a function, so
+    // the rows below are only read when something actually plays.
+    _toggleEpisode(item, ep, queue) {
+        if (this._isLoadedEpisode(item.id, ep.id) && Player.isPlaying) { Player.pause(); return; }
+        this.playEpisode(item.id, ep.id, ep, item, { queue: typeof queue === 'function' ? queue() : queue || null });
+    },
+
+    // ── Episode page (2026-10-12) ──
+    // Pocket Casts' episode card: artwork, title, a big Play, the actions
+    // that used to sit behind a row's ⋯, then Show notes, Chapters and
+    // Transcript. Opened by tapping a row; the fullscreen player's title and
+    // its Transcript button open the playing episode's (openEpisodeById).
+    // While its episode is in the player the page follows it
+    // (_paintEpisodePage, run by paintPlayingEpisode on every player tick):
+    // the progress, the chapter playing, and the transcript paragraph being
+    // spoken, scrolled into view unless you've scrolled in the last 8 s.
+    //
+    // `opts`: queue (what plays after it, from the list it was opened from),
+    // playlistId (offers "Remove from playlist"), progress (the list's map,
+    // so the first paint costs no round trip), tab, and pushed (the caller
+    // already pushed the nav level).
+    async showEpisode(item, ep, opts = {}) {
+        const render = () => this.showEpisode(item, ep, {
+            ...opts, pushed: false, progress: null,
+            tab: this._epPage?.episodeId === ep.id ? this._epPage.tab : opts.tab,
+        });
+        const navTitle = item.media?.metadata?.title || 'Episode';
+        if (opts.pushed) this.setNavTop(navTitle, render); else this.pushNav(navTitle, render);
+        const [progress, dl] = await Promise.all([
+            opts.progress || this._episodeProgress(),
+            Offline.fullyDownloadedIds(),
+        ]);
+
+        const loaded = this._isLoadedEpisode(item.id, ep.id);
+        const chapters = ep.chapters?.length ? ep.chapters : (loaded ? Player.chapters || [] : []);
+        const hasTranscript = !!(this.isShim && ep.transcripts?.length);
+        const tabs = [['notes', 'Show notes']];
+        if (chapters.length > 1) tabs.push(['chapters', `Chapters <span class="ep-tab-n">${chapters.length}</span>`]);
+        if (hasTranscript) tabs.push(['transcript', 'Transcript']);
+        const tab = tabs.some(t => t[0] === opts.tab) ? opts.tab : 'notes';
+
+        const meta = item.media?.metadata || {};
         const prog = progress.get(ep.id);
         const played = !!prog?.isFinished;
-        const oid = `${item.id}~${ep.id}`;
-        const downloaded = (await Offline.fullyDownloadedIds()).has(oid);
-        const notes = this._plainText(ep.description || ep.subtitle || '');
-        let h = notes ? `<div class="episode-notes">${esc(notes)}</div>` : '';
-        h += '<div class="episode-actions">';
-        h += `<button class="text-btn" data-played>${played ? 'Mark as unplayed' : 'Mark as played'}</button>`;
-        if (ep.audioFile?.ino) h += downloaded ? '<button class="text-btn" data-dl-remove>Remove download</button>' : '<button class="text-btn" data-dl>Download</button>';
-        if (this.isShim && this.shimCanAdd) {
-            if ((ep.canArchive || item.media?.canArchive) && !['done', 'queued', 'fetching'].includes(ep.archiveState)) {
-                h += '<button class="text-btn" data-archive>Archive to pCloud</button>';
-            }
-            if (ep.inLibrary !== false) h += '<button class="text-btn" data-remove>Remove from show</button>';
-        }
-        h += '<button class="text-btn" data-to-playlist>Add to playlist</button>';
-        if (li.dataset.playlistId) h += '<button class="text-btn" data-from-playlist>Remove from playlist</button>';
-        if (ep.archiveError) h += `<div class="text-muted">Archiving failed: ${esc(ep.archiveError)}</div>`;
+        const dur = ep.duration || ep.audioFile?.duration || 0;
+        const at = !played && prog?.currentTime > 0 ? prog.currentTime : 0;
+        const idleLabel = played ? 'Play again'
+            : at && dur ? `Resume · ${formatTime(Math.max(0, dur - at))} left`
+            : 'Play' + (dur ? ` · ${formatTime(dur)}` : '');
+        // A redraw of the same episode keeps the transcript it fetched.
+        const prev = this._epPageFor(item.id, ep.id);
+        const s = this._epPage = {
+            itemId: item.id, episodeId: ep.id, item, ep, opts, progress, tab, chapters,
+            queue: opts.queue || null, played, idleLabel, transcriptP: prev?.transcriptP || null,
+            label: '', chIdx: -2, cueIdx: -2, cueStarts: null, touchedAt: 0, barPct: '',
+        };
+
+        const date = ep.publishedAt ? new Date(ep.publishedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' }) : '';
+        const num = [ep.season ? `Season ${ep.season}` : '', ep.episode ? `Episode ${ep.episode}` : ''].filter(Boolean).join(', ');
+        const metaLine = [date, num, played ? 'Played' : ''].filter(Boolean).join(' · ');
+        const pct = played ? 100 : dur ? Math.min(100, (at / dur) * 100) : 0;
+
+        let h = '<div class="episode-page" data-ep-page>';
+        h += '<div class="ep-hero">';
+        h += `<img class="ep-hero-cover" src="${ABS.coverUrl(item.id)}" alt="" onerror="this.style.visibility='hidden'">`;
+        if (meta.title) h += `<button class="ep-hero-show" data-ep-show>${esc(meta.title)}</button>`;
+        h += `<h2 class="ep-hero-title">${esc(ep.title || 'Untitled')}</h2>`;
+        if (metaLine) h += `<div class="ep-hero-meta">${esc(metaLine)}</div>`;
+        h += `<div class="ep-hero-bar"><div data-ep-bar style="width:${pct}%"></div></div>`;
+        h += '<button class="play-btn-large ep-play-big" data-ep-play>'
+            + '<svg class="i-play" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>'
+            + '<svg class="i-pause" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>'
+            + `<span data-ep-play-label>${esc(idleLabel)}</span></button>`;
+        h += this._episodeActionsHtml(item, ep, { played, downloaded: dl.has(`${item.id}~${ep.id}`), playlistId: opts.playlistId });
         h += '</div>';
-        box.innerHTML = h;
-        box.querySelector('[data-to-playlist]').addEventListener('click', (e) => {
+        if (tabs.length > 1) {
+            h += '<div class="ep-tabs" role="tablist">'
+                + tabs.map(([k, label]) => `<button role="tab" data-ep-tab="${k}" aria-selected="${k === tab}">${label}</button>`).join('')
+                + '<button class="ep-now hidden" data-ep-now>Now</button></div>';
+        }
+        const notes = this._notesHtml(ep.description || ep.subtitle || '', dur);
+        h += `<div class="ep-panel ep-notes${tab === 'notes' ? '' : ' hidden'}" data-ep-panel="notes">${notes || '<div class="text-muted">No show notes</div>'}</div>`;
+        if (chapters.length > 1) h += `<div class="ep-panel${tab === 'chapters' ? '' : ' hidden'}" data-ep-panel="chapters">${this._epChaptersHtml(chapters)}</div>`;
+        if (hasTranscript) h += `<div class="ep-panel ep-transcript${tab === 'transcript' ? '' : ' hidden'}" data-ep-panel="transcript"><div class="text-muted">Loading the transcript…</div></div>`;
+        h += '</div>';
+        this.setContent(h);
+        this._bindEpisodePage(s);
+        if (tab === 'transcript') this._loadEpisodeTranscript(s);
+        this._paintEpisodePage(true);
+    },
+
+    // The fullscreen player and a Latest row painted from last session's
+    // render (no episode objects) only know the ids. Offline, the page is
+    // built from what the phone holds: the episode in the player, or a
+    // downloaded copy.
+    async openEpisodeById(itemId, episodeId, opts = {}) {
+        this.pushNav('Episode', () => this.openEpisodeById(itemId, episodeId, opts));
+        this.showLoading();
+        let show = null, ep = null;
+        try {
+            show = await ABS.getItem(itemId);
+            ep = show?.media?.episodes?.find(e => e.id === episodeId) || null;
+        } catch {}
+        if (!ep) {
+            const local = await this._episodeFromPhone(itemId, episodeId);
+            if (local) ({ show, ep } = local);
+        }
+        if (!ep) { this.setContent('<div class="empty-state">Episode not found</div>'); return; }
+        this.showEpisode(show, ep, { ...opts, pushed: true });
+    },
+
+    async _episodeFromPhone(itemId, episodeId) {
+        const pi = this._isLoadedEpisode(itemId, episodeId) ? Player.item
+            : (await Offline.fullyDownloaded()).find(i => Offline.oid(i) === `${itemId}~${episodeId}`);
+        if (!pi) return null;
+        const m = pi.media || {};
+        return {
+            show: { id: itemId, libraryId: pi.libraryId, media: { metadata: { title: m.metadata?.podcastTitle || m.metadata?.authorName || '' }, skip: m.skip || null } },
+            ep: {
+                id: episodeId, title: m.metadata?.title || '', description: m.metadata?.description || '',
+                publishedAt: m.metadata?.publishedAt || null, duration: m.duration || 0,
+                chapters: m.chapters || [], audioFile: m.audioFiles?.[0] || null, transcripts: m.transcripts || [],
+            },
+        };
+    },
+
+    _epPageShowing(s) {
+        return this._epPage === s && !!document.querySelector('#content [data-ep-page]');
+    },
+    // The page's state when it's showing this episode (each redraw makes a
+    // new one, so long-running work asks by id).
+    _epPageFor(itemId, episodeId) {
+        const s = this._epPage;
+        return s && s.itemId === itemId && s.episodeId === episodeId && this._epPageShowing(s) ? s : null;
+    },
+
+    // Redraw after an action (download, played, archive…) on the same nav
+    // level, keeping the tab.
+    _rerenderEpisodePage(s) {
+        if (!this._epPageShowing(s)) return;
+        this.showEpisode(s.item, s.ep, { ...s.opts, pushed: true, progress: s.progress, tab: s.tab });
+    },
+
+    _episodeActionsHtml(item, ep, { played, downloaded, playlistId }) {
+        const icon = (d) => `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+        const btn = (attr, svg, label, cls = '') => `<button class="ep-act${cls}" ${attr}>${svg}<span>${esc(label)}</span></button>`;
+        let h = '<div class="ep-actions">';
+        if (ep.audioFile?.ino) {
+            h += downloaded
+                ? btn('data-ep-dl-remove', icon('<path d="M12 4v10M7 10l5 5 5-5"/><path d="M5 20h14"/>'), 'Downloaded', ' is-on')
+                : btn('data-ep-dl', icon('<path d="M12 4v10M7 10l5 5 5-5"/><path d="M5 20h14"/>'), 'Download');
+        }
+        if (ep.archiveState === 'done') {
+            h += `<button class="ep-act is-on" disabled>${this._storageBadge(ep.audioFile?.storage)}<span>On ${esc(ep.audioFile?.storage?.name || 'pCloud')}</span></button>`;
+        } else if (ep.archiveState === 'queued' || ep.archiveState === 'fetching') {
+            h += btn('disabled', icon('<path d="M7 18h10a4 4 0 0 0 .6-7.96A6 6 0 0 0 6.1 9.2 4.5 4.5 0 0 0 7 18z"/>'), 'Archiving…', ' busy');
+        } else if (this._canArchiveEp(ep) || (this.isShim && this.shimCanAdd && item.media?.canArchive)) {
+            h += btn('data-ep-archive', icon('<path d="M7 18h10a4 4 0 0 0 .6-7.96A6 6 0 0 0 6.1 9.2 4.5 4.5 0 0 0 7 18z"/><path d="M12 15v-5M9.5 12.5 12 10l2.5 2.5"/>'), 'Archive');
+        }
+        h += btn('data-ep-played', icon('<circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.8 2.8L16.5 9.5"/>'), played ? 'Played' : 'Mark played', played ? ' is-on' : '');
+        h += btn('data-ep-playlist', icon('<path d="M4 6h11M4 12h11M4 18h7M18 15v6M15 18h6"/>'), 'Playlist');
+        h += '</div>';
+        // Less common, and worded too long for an icon: plain text below.
+        const more = [];
+        if (this.isShim && this.shimCanAdd) {
+            if (ep.inLibrary === false) more.push('<button class="text-btn" data-ep-add>Add to the show</button>');
+            else more.push('<button class="text-btn" data-ep-remove>Remove from show</button>');
+        }
+        if (playlistId) more.push('<button class="text-btn" data-ep-unlist>Remove from playlist</button>');
+        if (ep.archiveError) more.push(`<span class="text-muted">Archiving failed: ${esc(ep.archiveError)}</span>`);
+        h += '<div class="ep-more" data-ep-more>' + more.join('') + '</div>';
+        return h;
+    },
+
+    _epChaptersHtml(chapters) {
+        return '<ul class="tracklist ep-chapters">' + chapters.map((c, i) =>
+            `<li class="tracklist-item" data-ch="${i}"><div class="tracklist-progress"></div>`
+            + `<button class="tracklist-play"><span class="tracklist-num">${i + 1}</span>`
+            + `<span class="tracklist-title">${esc(c.title || `Chapter ${i + 1}`)}<br><span class="text-muted">${formatTime(Math.max(0, (c.end || 0) - (c.start || 0)))}</span></span>`
+            + `<span class="tracklist-duration">${formatTime(c.start || 0)}</span></button></li>`).join('') + '</ul>';
+    },
+
+    // Show notes as HTML, rebuilt from an inert DOMParser document keeping
+    // only text, paragraphs, lists, line breaks, emphasis and http(s)/mailto
+    // links (ABS and the shim sanitize too; this doesn't rely on it). Times
+    // written in the notes ("12:34", "1:02:03") become buttons that play
+    // from there, as in Pocket Casts. Notes with no markup keep their lines.
+    _notesHtml(src, dur) {
+        src = String(src || '').trim();
+        if (!src) return '';
+        if (!/<[a-z][^>]*>/i.test(src)) src = esc(src).replace(/\n/g, '<br>');
+        const doc = new DOMParser().parseFromString(src, 'text/html');
+        const TS = /\b(?:(\d{1,2}):)?([0-5]?\d):([0-5]\d)\b/g;
+        const KEEP = { p: 'p', div: 'p', ul: 'ul', ol: 'ol', li: 'li', strong: 'strong', b: 'strong', em: 'em', i: 'em', blockquote: 'blockquote', h1: 'p', h2: 'p', h3: 'p', h4: 'p', h5: 'p', h6: 'p' };
+        const SKIP = new Set(['script', 'style', 'img', 'iframe', 'object', 'video', 'audio', 'svg', 'form', 'button', 'input', 'select', 'textarea', 'template', 'noscript']);
+        const walk = (node, inLink) => {
+            let out = '';
+            for (const n of node.childNodes) {
+                if (n.nodeType === 3) {
+                    const text = n.textContent;
+                    if (inLink) { out += esc(text); continue; }
+                    let last = 0, m;
+                    TS.lastIndex = 0;
+                    while ((m = TS.exec(text))) {
+                        const t = Number(m[1] || 0) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+                        if (dur && t > dur) continue;
+                        out += esc(text.slice(last, m.index)) + `<button class="ep-ts" data-t="${t}">${esc(m[0])}</button>`;
+                        last = m.index + m[0].length;
+                    }
+                    out += esc(text.slice(last));
+                    continue;
+                }
+                if (n.nodeType !== 1) continue;
+                const tag = n.tagName.toLowerCase();
+                if (SKIP.has(tag)) continue;
+                if (tag === 'br') { out += '<br>'; continue; }
+                if (tag === 'a') {
+                    const inner = walk(n, true);
+                    const href = (n.getAttribute('href') || '').trim();
+                    out += /^(https?:|mailto:)/i.test(href) ? `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${inner}</a>` : inner;
+                    continue;
+                }
+                const inner = walk(n, inLink);
+                out += KEEP[tag] ? `<${KEEP[tag]}>${inner}</${KEEP[tag]}>` : inner;
+            }
+            return out;
+        };
+        return walk(doc.body, false).trim();
+    },
+
+    _bindEpisodePage(s) {
+        const page = document.querySelector('#content [data-ep-page]');
+        if (!page) return;
+        const { item, ep } = s;
+        const touched = () => { s.touchedAt = Date.now(); };
+        page.addEventListener('touchmove', touched, { passive: true });
+        page.addEventListener('wheel', touched, { passive: true });
+        page.querySelector('[data-ep-show]')?.addEventListener('click', () => this.showItem(item.id));
+        page.querySelector('[data-ep-play]').addEventListener('click', () => {
+            if (this._isLoadedEpisode(item.id, ep.id)) { Player.toggle(); return; }
+            this.playEpisode(item.id, ep.id, ep, item, { queue: s.queue, startAt: s.played ? 0 : undefined });
+        });
+        page.querySelectorAll('[data-ep-tab]').forEach(b => b.addEventListener('click', () => {
+            s.tab = b.dataset.epTab;
+            page.querySelectorAll('[data-ep-tab]').forEach(x => x.setAttribute('aria-selected', String(x === b)));
+            page.querySelectorAll('[data-ep-panel]').forEach(p => p.classList.toggle('hidden', p.dataset.epPanel !== s.tab));
+            if (s.tab === 'transcript') this._loadEpisodeTranscript(s);
+            s.chIdx = s.cueIdx = -2;   // repaint, and bring "now" into view
+            this._paintEpisodePage(true);
+        }));
+        page.querySelector('[data-ep-now]')?.addEventListener('click', () => {
+            s.touchedAt = 0;
+            page.querySelector('.tr-cue.is-now')?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        });
+        page.querySelector('[data-ep-panel="notes"]').addEventListener('click', (e) => {
+            const ts = e.target.closest('.ep-ts');
+            if (ts) this._epSeek(s, Number(ts.dataset.t));
+        });
+        page.querySelector('[data-ep-panel="chapters"]')?.addEventListener('click', (e) => {
+            const row = e.target.closest('[data-ch]');
+            const ch = row && s.chapters[Number(row.dataset.ch)];
+            if (ch) this._epSeek(s, ch.start || 0);
+        });
+        page.querySelector('[data-ep-panel="transcript"]')?.addEventListener('click', (e) => {
+            const time = e.target.closest('.tr-time');
+            if (time) { this._epSeek(s, Number(time.dataset.t)); return; }
+            // Tapping the words themselves only moves an episode that's
+            // already in the player; starting one takes the time button.
+            const cue = e.target.closest('.tr-cue');
+            if (cue && s.transcript?.cues && this._isLoadedEpisode(item.id, ep.id) && !window.getSelection?.()?.toString()) {
+                this._epSeek(s, s.transcript.cues[Number(cue.dataset.cue)].start);
+            }
+        });
+
+        // Actions.
+        page.querySelector('[data-ep-played]').addEventListener('click', async (e) => {
             e.currentTarget.disabled = true;
-            this._addToPlaylistUi(box, item.id, ep);
-        });
-        box.querySelector('[data-from-playlist]')?.addEventListener('click', async () => {
-            try {
-                await ABS.request(`/api/playlists/${li.dataset.playlistId}/item/${item.id}/${ep.id}`, { method: 'DELETE' });
-                li.remove();
-                this._invalidateTabCache('playlists');
-            } catch (err) { alert('Remove failed: ' + err.message); }
-        });
-        box.querySelector('[data-played]').addEventListener('click', async () => {
-            const body = played
+            const dur = ep.duration || ep.audioFile?.duration || 0;
+            const body = s.played
                 ? { isFinished: false, progress: 0, currentTime: 0 }
-                : { isFinished: true, progress: 1, currentTime: ep.duration || 0, duration: ep.duration || 0 };
+                : { isFinished: true, progress: 1, currentTime: dur, duration: dur };
             try {
                 const p = await ABS.updateProgress(`${item.id}/${ep.id}`, body);
-                progress.set(ep.id, p || { ...body, episodeId: ep.id });
-                const fresh = document.createElement('ul');
-                fresh.innerHTML = this._episodeRowHtml(item.id, ep, progress.get(ep.id), { feed: ep.inLibrary !== undefined });
-                const row = fresh.firstElementChild;
-                li.replaceWith(row);
-                this._bindEpisodeRows(row.parentElement, item, [ep], progress, [row]);
+                s.progress.set(ep.id, p || { ...body, episodeId: ep.id });
                 this._invalidateTabCache();
-            } catch (err) { alert('Failed: ' + err.message); }
+                this._rerenderEpisodePage(s);
+            } catch (err) { alert('Failed: ' + err.message); this._rerenderEpisodePage(s); }
         });
-        const redrawRow = async () => {
-            const fresh = document.createElement('ul');
-            fresh.innerHTML = this._episodeRowHtml(item.id, ep, progress.get(ep.id), { feed: ep.inLibrary !== undefined, dl: await Offline.fullyDownloadedIds() });
-            const row = fresh.firstElementChild;
-            if (!li.isConnected) return;
-            li.replaceWith(row);
-            this._bindEpisodeRows(row.parentElement, item, [ep], progress, [row]);
-        };
-        box.querySelector('[data-dl]')?.addEventListener('click', async (e) => {
+        page.querySelector('[data-ep-dl]')?.addEventListener('click', async (e) => {
             const btn = e.currentTarget;
-            btn.disabled = true; btn.textContent = 'Downloading…';
+            const label = btn.querySelector('span');
+            btn.disabled = true; btn.classList.add('busy'); label.textContent = 'Downloading';
             try {
                 await this.downloadEpisode(item, ep, (received, total) => {
-                    if (total) btn.textContent = `Downloading ${Math.floor((received / total) * 100)}%`;
+                    if (total) label.textContent = Math.floor((received / total) * 100) + '%';
                 });
-                redrawRow();
-            } catch (err) {
-                btn.disabled = false; btn.textContent = 'Download';
-                alert('Download failed: ' + err.message);
-            }
+            } catch (err) { alert('Download failed: ' + err.message); }
+            this._rerenderEpisodePage(s);
         });
-        box.querySelector('[data-dl-remove]')?.addEventListener('click', async () => {
-            const stored = (await Offline.listDownloaded()).find(i => Offline.oid(i) === oid);
+        page.querySelector('[data-ep-dl-remove]')?.addEventListener('click', async () => {
+            if (!confirm('Remove the download from this phone?')) return;
+            const stored = (await Offline.listDownloaded()).find(i => Offline.oid(i) === `${item.id}~${ep.id}`);
             if (stored) await Offline.deleteBook(stored);
             this._invalidateHomeCache();
-            redrawRow();
+            this._rerenderEpisodePage(s);
         });
-        box.querySelector('[data-archive]')?.addEventListener('click', async (e) => {
-            const btn = e.currentTarget;
-            btn.disabled = true;
-            btn.textContent = 'Archiving…';
-            try { await this._archiveEpisode(item, ep, li, progress); }
-            catch (err) { btn.disabled = false; btn.textContent = 'Archive to pCloud'; alert('Archive failed: ' + err.message); }
+        page.querySelector('[data-ep-archive]')?.addEventListener('click', async (e) => {
+            e.currentTarget.disabled = true;
+            try {
+                await this._archiveEpisode(item, ep, null, s.progress, {
+                    alive: () => !!this._epPageFor(item.id, ep.id),
+                    redraw: async () => { const cur = this._epPageFor(item.id, ep.id); if (cur) this._rerenderEpisodePage(cur); },
+                });
+            } catch (err) { alert('Archive failed: ' + err.message); this._rerenderEpisodePage(s); }
         });
-        box.querySelector('[data-remove]')?.addEventListener('click', async () => {
+        page.querySelector('[data-ep-playlist]').addEventListener('click', (e) => {
+            e.currentTarget.disabled = true;
+            this._addToPlaylistUi(page.querySelector('[data-ep-more]'), item.id, ep);
+        });
+        page.querySelector('[data-ep-add]')?.addEventListener('click', async (e) => {
+            e.currentTarget.disabled = true;
+            try {
+                await this._shimCall(`/api/podcasts/${encodeURIComponent(item.id)}/episodes/add`, {
+                    method: 'POST', body: JSON.stringify({ episodeIds: [ep.id] }),
+                });
+                ep.inLibrary = true;
+                this._invalidateTabCache();
+                this._rerenderEpisodePage(s);
+            } catch (err) { e.currentTarget.disabled = false; alert('Add failed: ' + err.message); }
+        });
+        page.querySelector('[data-ep-remove]')?.addEventListener('click', async () => {
             if (!confirm(`Remove "${ep.title}" from the show? It stays in the feed and can be added back.`)) return;
             try {
                 await this._shimCall(`/api/podcasts/${encodeURIComponent(item.id)}/episode/${encodeURIComponent(ep.id)}`, { method: 'DELETE' });
-                li.remove();
                 this._invalidateTabCache();
+                this.goBack();
             } catch (err) { alert('Remove failed: ' + err.message); }
         });
+        page.querySelector('[data-ep-unlist]')?.addEventListener('click', async () => {
+            try {
+                await ABS.request(`/api/playlists/${s.opts.playlistId}/item/${item.id}/${ep.id}`, { method: 'DELETE' });
+                this._invalidateTabCache('playlists');
+                this.goBack();
+            } catch (err) { alert('Remove failed: ' + err.message); }
+        });
+    },
+
+    // Go to `t` in the page's episode: a seek when it's the one in the
+    // player, else play it from there (no intro skip: you asked for here).
+    _epSeek(s, t) {
+        if (!Number.isFinite(t)) return;
+        if (this._isLoadedEpisode(s.itemId, s.episodeId)) { Player.loadTime(t, 'episode-page'); return; }
+        this.playEpisode(s.itemId, s.episodeId, s.ep, s.item, { queue: s.queue, startAt: t, exact: true });
+    },
+
+    // Runs on every player tick while visible (paintPlayingEpisode), and
+    // after the page is drawn. Cheap when nothing changed: each part only
+    // touches the DOM when its value moved.
+    _paintEpisodePage(force = false) {
+        const s = this._epPage;
+        if (!s) return;
+        const page = document.querySelector('#content [data-ep-page]');
+        if (!page) return;
+        const loaded = this._isLoadedEpisode(s.itemId, s.episodeId);
+        const playing = loaded && Player.isPlaying;
+        const gt = loaded ? Player.getGlobalTime() : null;
+        const dur = loaded ? Player.getTotalDuration() : 0;
+
+        const label = !loaded ? s.idleLabel : playing ? 'Pause' : dur ? `Resume · ${formatTime(Math.max(0, dur - gt))} left` : 'Resume';
+        if (label !== s.label || force) {
+            s.label = label;
+            const btn = page.querySelector('[data-ep-play]');
+            btn.querySelector('[data-ep-play-label]').textContent = label;
+            btn.classList.toggle('is-playing', playing);
+        }
+        const nowBtn = page.querySelector('[data-ep-now]');
+        nowBtn?.classList.toggle('hidden', !(loaded && s.tab === 'transcript' && s.cueStarts));
+        if (!loaded) return;
+
+        const pct = dur > 0 ? Math.min(100, Math.max(0, (gt / dur) * 100)).toFixed(2) + '%' : '0%';
+        if (pct !== s.barPct) { s.barPct = pct; page.querySelector('[data-ep-bar]').style.width = pct; }
+
+        if (s.chapters.length > 1) {
+            const i = s.chapters.findIndex(c => gt >= c.start && gt < c.end);
+            const rows = page.querySelectorAll('[data-ch]');
+            if (i !== s.chIdx) {
+                s.chIdx = i;
+                rows.forEach((r, j) => {
+                    r.classList.toggle('is-active', j === i);
+                    r.classList.toggle('is-done', gt >= (s.chapters[j].end || 0));
+                    if (j !== i) r.querySelector('.tracklist-progress').style.width = '0%';
+                });
+            }
+            const c = s.chapters[i];
+            if (c && rows[i]) rows[i].querySelector('.tracklist-progress').style.width = Math.min(100, ((gt - c.start) / Math.max(1, c.end - c.start)) * 100) + '%';
+        }
+
+        if (s.cueStarts) {
+            // The last paragraph starting at or before the playhead.
+            let lo = 0, hi = s.cueStarts.length;
+            while (lo < hi) { const mid = (lo + hi) >> 1; if (s.cueStarts[mid] <= gt) lo = mid + 1; else hi = mid; }
+            const i = lo - 1;
+            if (i !== s.cueIdx) {
+                s.cueIdx = i;
+                page.querySelector('.tr-cue.is-now')?.classList.remove('is-now');
+                const el = i >= 0 ? page.querySelector(`.tr-cue[data-cue="${i}"]`) : null;
+                el?.classList.add('is-now');
+                if (el && s.tab === 'transcript' && (playing || force) && Date.now() - s.touchedAt > 8000) {
+                    el.scrollIntoView({ block: 'center', behavior: force ? 'auto' : 'smooth' });
+                }
+            }
+        }
+    },
+
+    // Fetched once per page (and kept across its redraws); called again by
+    // a second tap on the tab, which then finds it drawn.
+    async _loadEpisodeTranscript(s) {
+        const panel = () => this._epPageShowing(s) ? document.querySelector('#content [data-ep-panel="transcript"]') : null;
+        s.transcriptP = s.transcriptP || this._fetchTranscript(s.itemId, s.episodeId);
+        try {
+            s.transcript = await s.transcriptP;
+        } catch (e) {
+            s.transcriptP = null;
+            const p = panel();
+            if (p) p.innerHTML = `<div class="text-muted">${esc(/transcript/i.test(e.message) ? e.message : "Couldn't load the transcript: " + e.message)}</div>`;
+            return;
+        }
+        const p = panel();
+        if (!p || p.dataset.loaded) return;
+        p.dataset.loaded = '1';
+        p.innerHTML = this._transcriptHtml(s.transcript);
+        s.cueStarts = s.transcript.format === 'cues' ? s.transcript.cues.map(c => c.start) : null;
+        s.cueIdx = -2;
+        this._paintEpisodePage(true);
+    },
+
+    _transcriptHtml(t) {
+        if (t.format !== 'cues') {
+            return '<div class="text-muted tr-note">This transcript has no timings, so it can\'t follow the episode.</div>'
+                + (t.paragraphs || []).map(p => `<p class="tr-para">${esc(p)}</p>`).join('');
+        }
+        let h = '', lastSpeaker = null;
+        t.cues.forEach((c, i) => {
+            const speaker = c.speaker && c.speaker !== lastSpeaker ? c.speaker : '';
+            if (c.speaker) lastSpeaker = c.speaker;
+            h += `<div class="tr-cue" data-cue="${i}"><div class="tr-meta">`
+                + (speaker ? `<span class="tr-speaker">${esc(speaker)}</span>` : '')
+                + `<button class="tr-time" data-t="${c.start}">${formatTime(c.start)}</button></div>`
+                + `<p>${esc(c.text)}</p></div>`;
+        });
+        return h + '<div class="text-muted tr-note">Transcript from the publisher\'s feed.</div>';
+    },
+
+    // Transcripts come parsed from ABS_shim (GET …/episode/:id/transcript).
+    // The last 40 opened are kept on the phone (their own cache, listed in
+    // sw.js KEEP_CACHES), and a downloaded episode's is fetched with it, so
+    // one played offline still has its words.
+    TRANSCRIPT_CACHE: 'pholia-transcripts-v1',
+    _transcriptKey(itemId, epId) {
+        return `https://transcripts.pholia.invalid/${encodeURIComponent(ABS.serverUrl || '')}/${encodeURIComponent(itemId)}/${encodeURIComponent(epId)}`;
+    },
+    async _fetchTranscript(itemId, epId) {
+        const key = this._transcriptKey(itemId, epId);
+        try {
+            const t = await this._shimCall(`/api/podcasts/${encodeURIComponent(itemId)}/episode/${encodeURIComponent(epId)}/transcript`);
+            this._storeTranscript(key, t);
+            return t;
+        } catch (e) {
+            try {
+                const hit = await (await caches.open(this.TRANSCRIPT_CACHE)).match(key);
+                if (hit) return await hit.json();
+            } catch {}
+            throw e;
+        }
+    },
+    async _storeTranscript(key, t) {
+        try {
+            const c = await caches.open(this.TRANSCRIPT_CACHE);
+            await c.delete(key);   // re-added at the end: keys() lists in insertion order
+            await c.put(key, new Response(JSON.stringify(t), { headers: { 'Content-Type': 'application/json' } }));
+            const keys = await c.keys();
+            for (const k of keys.slice(0, Math.max(0, keys.length - 40))) await c.delete(k);
+        } catch {}
     },
 
     // Long-press on a show. Unsubscribing keeps archived episodes on pCloud
@@ -6304,9 +6735,13 @@ const Offline = {
 };
 
 // Utilities
+// Text AND attribute values: it's used inside quoted attributes all over
+// (data-show="${esc(title)}", href), so quotes are escaped too, or a podcast
+// title or a link in show notes could close the attribute and add its own.
 function esc(str) {
     if (!str) return '';
-    const d = document.createElement('div'); d.textContent = str; return d.innerHTML;
+    const d = document.createElement('div'); d.textContent = str;
+    return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 function debounce(fn, ms) {

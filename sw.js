@@ -32,7 +32,10 @@ const APP_SHELL = [
     './icons/icon-512.png',
 ];
 
-const KEEP_CACHES = new Set([CACHE_NAME, OFFLINE_AUDIO_CACHE, OFFLINE_META_CACHE, COVERS_CACHE, CONFIG_CACHE]);
+// Podcast transcripts the page keeps (App.TRANSCRIPT_CACHE); the worker
+// never reads it, it only has to not delete it on activate.
+const TRANSCRIPT_CACHE = 'pholia-transcripts-v1';
+const KEEP_CACHES = new Set([CACHE_NAME, OFFLINE_AUDIO_CACHE, OFFLINE_META_CACHE, COVERS_CACHE, CONFIG_CACHE, TRANSCRIPT_CACHE]);
 
 self.addEventListener('install', e => {
     e.waitUntil(

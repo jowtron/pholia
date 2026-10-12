@@ -34,7 +34,8 @@ Live: [pholia.pages.dev](https://pholia.pages.dev) (older URL `cadence-6re.pages
 - Podcast support: home / latest episodes / library
 
 ### Podcasts (more with ABS_shim)
-- Show page with per-episode progress, a filter (All / Unplayed / On this phone / On pCloud), and one-tap download to the phone
+- Show page with per-episode progress, a filter (All / Unplayed / On this phone / On pCloud), one-tap download to the phone, and a play button on every row
+- Episode page, as in Pocket Casts: big Play, download / mark played / playlist, the show notes (with tappable times), the chapter list (tap to go straight to one) and, where the feed publishes one, the transcript, which follows along as the episode plays (tap a line to go there); the fullscreen player's title and Transcript button open it
 - The episode in the player is highlighted in every list, with its progress bar and time left following the playhead
 - Playing from a show's page carries on to the next unplayed episode below it until the sleep timer stops it (Settings → "Play the next episode automatically")
 - Downloaded episodes play with no signal; a show can keep its newest N on the phone, and played copies are removed unless Settings says keep
