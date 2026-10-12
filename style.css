@@ -1135,6 +1135,7 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
 .tr-time { background: none; border: none; padding: 0; color: var(--accent); font-size: 0.72rem; font-variant-numeric: tabular-nums; cursor: pointer; }
 .tr-para { margin: 0 0 0.75rem; line-height: 1.55; font-size: 0.95rem; }
 .tr-note { margin: 0.5rem 0; }
+.tr-note-top { margin: 0 0 0.6rem; padding: 0.5rem 0.7rem; border-left: 3px solid var(--border); font-size: 0.85rem; }
 
 /* Fullscreen player: an episode's title opens its page; Transcript sits
    beside Chapters. */

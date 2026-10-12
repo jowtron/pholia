@@ -863,10 +863,19 @@ const Player = {
     },
 
     getTotalDuration() {
+        const known = this.session?.duration || this.item?.media?.duration || this.tracks.reduce((s, t) => s + t.duration, 0);
+        const own = Number.isFinite(this.audio?.duration) && this.audio.duration > 0 ? this.audio.duration : 0;
+        // An episode is one file, and the file knows its length better
+        // than the feed: LINUX Unplugged's feed says 1:20:33 for 1:14:00 of
+        // audio, and hosts that stitch ads in serve every listener a
+        // different length. The progress bar, "left", the outro skip and
+        // the "played with N left" rule (synced as `duration`) all follow
+        // the file once it has loaded. Books keep their track sum: their
+        // element only ever holds one part.
+        if (this.item?.episodeId && own && Math.abs(own - known) > 2) return own;
         // Last resort: the element's own duration. A podcast feed that gives
         // no itunes:duration leaves the session's at 0 until the file loads.
-        return this.session?.duration || this.item?.media?.duration || this.tracks.reduce((s, t) => s + t.duration, 0)
-            || (Number.isFinite(this.audio?.duration) ? this.audio.duration : 0);
+        return known || own;
     },
 
     getCurrentChapter() {

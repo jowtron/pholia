@@ -4975,7 +4975,7 @@ const App = {
         }
         const notes = this._notesHtml(ep.description || ep.subtitle || '', dur);
         h += `<div class="ep-panel ep-notes${tab === 'notes' ? '' : ' hidden'}" data-ep-panel="notes">${notes || '<div class="text-muted">No show notes</div>'}</div>`;
-        if (chapters.length > 1) h += `<div class="ep-panel${tab === 'chapters' ? '' : ' hidden'}" data-ep-panel="chapters">${this._epChaptersHtml(chapters)}</div>`;
+        if (chapters.length > 1) h += `<div class="ep-panel${tab === 'chapters' ? '' : ' hidden'}" data-ep-panel="chapters">${this._epChaptersHtml(chapters, ep)}</div>`;
         if (hasTranscript) h += `<div class="ep-panel ep-transcript${tab === 'transcript' ? '' : ' hidden'}" data-ep-panel="transcript"><div class="text-muted">Loading the transcript…</div></div>`;
         h += '</div>';
         this.setContent(h);
@@ -5067,8 +5067,17 @@ const App = {
         return h;
     },
 
-    _epChaptersHtml(chapters) {
-        return '<ul class="tracklist ep-chapters">' + chapters.map((c, i) =>
+    // Chapter and transcript times come from the feed, made from the
+    // show's master file. A host that stitches ads in at download time
+    // (ABS_shim marks the episode `dynamicAds`) serves a longer file, so
+    // from the first ad on those times run early by the ads played so far,
+    // and differently for every listener. Nothing here can know by how
+    // much; the page says so rather than pretend.
+    _dynamicAdsNote(ep) {
+        return ep?.dynamicAds ? '<div class="text-muted tr-note tr-note-top">This show\'s host adds ads into the audio as it\'s downloaded, so from the first ad on these times run a little early (by the length of the ads played so far).</div>' : '';
+    },
+    _epChaptersHtml(chapters, ep) {
+        return this._dynamicAdsNote(ep) + '<ul class="tracklist ep-chapters">' + chapters.map((c, i) =>
             `<li class="tracklist-item" data-ch="${i}"><div class="tracklist-progress"></div>`
             + `<button class="tracklist-play"><span class="tracklist-num">${i + 1}</span>`
             + `<span class="tracklist-title">${esc(c.title || `Chapter ${i + 1}`)}<br><span class="text-muted">${formatTime(Math.max(0, (c.end || 0) - (c.start || 0)))}</span></span>`
@@ -5323,18 +5332,18 @@ const App = {
         const p = panel();
         if (!p || p.dataset.loaded) return;
         p.dataset.loaded = '1';
-        p.innerHTML = this._transcriptHtml(s.transcript);
+        p.innerHTML = this._transcriptHtml(s.transcript, s.ep);
         s.cueStarts = s.transcript.format === 'cues' ? s.transcript.cues.map(c => c.start) : null;
         s.cueIdx = -2;
         this._paintEpisodePage(true);
     },
 
-    _transcriptHtml(t) {
+    _transcriptHtml(t, ep) {
         if (t.format !== 'cues') {
             return '<div class="text-muted tr-note">This transcript has no timings, so it can\'t follow the episode.</div>'
                 + (t.paragraphs || []).map(p => `<p class="tr-para">${esc(p)}</p>`).join('');
         }
-        let h = '', lastSpeaker = null;
+        let h = this._dynamicAdsNote(ep), lastSpeaker = null;
         t.cues.forEach((c, i) => {
             const speaker = c.speaker && c.speaker !== lastSpeaker ? c.speaker : '';
             if (c.speaker) lastSpeaker = c.speaker;
