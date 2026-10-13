@@ -1396,7 +1396,9 @@ const App = {
     isShim: false,     // server answers /api/admin/abb/settings → ABS_shim (enables the rescan setting)
     shimCanDelete: false, // …and says canDelete (tenant owner) → long-press delete-from-pCloud
     abbFolderId: null,
-    shimCanAdd: false, // shim says the caller may add (podcast subscribe, ABB grabs)
+    shimCanAdd: false, // shim says the caller may add (ABB grabs; podcast subscribe on an older shim)
+    shimFollows: false, // shim has personal podcast lists: follow / unfollow, hide per person
+    shimCanSubscribe: false, // the podcast library's "+": canSubscribe, else canGrab
     abbLibraryId: null,
     _abbRoot: null,
 
@@ -1410,20 +1412,29 @@ const App = {
             // shim from before 2026-09-05 keeps working; the shim 403s anyway.
             this.shimCanDelete = !!s && s.canDelete !== false;
             this.shimCanAdd = !!s && s.canGrab !== false;
+            // Personal podcast lists (2026-10-14): each member follows the
+            // shows they want, so any member may subscribe, and the shim says
+            // so with canSubscribe. Its presence is also the sign that
+            // follows and per-person hiding exist; an older shim lacks it,
+            // and there subscribing needs canGrab.
+            this.shimFollows = !!s && typeof s.canSubscribe === 'boolean';
+            this.shimCanSubscribe = this.shimFollows ? s.canSubscribe : this.shimCanAdd;
             // A podcast library's Add screen subscribes to feeds rather than
             // grabbing from AudioBookBay, so it needs no Real-Debrid token.
             if (s && this.currentMediaType === 'podcast') {
-                ok = this.shimCanAdd;
+                ok = this.shimCanSubscribe;
             } else if (s && s.rdTokenSet && s.canGrab !== false) {
                 const st = await ABS.request('/api/admin/storage/status');
                 const folders = (st?.folders || []).filter(f => f.provider === 'pcloud_oauth');
                 const mine = folders.find(f => f.libraryId === this.currentLibraryId) || folders[0];
                 if (mine) { ok = true; this.abbFolderId = mine.id; this.abbLibraryId = mine.libraryId; }
             }
-        } catch { this.isShim = false; /* not a shim, or no access */ }
+        } catch { this.isShim = false; this.shimFollows = false; this.shimCanSubscribe = false; /* not a shim, or no access */ }
         if (this.isShim) this._pushStart();
         this.abbAvailable = ok;
         btn.classList.toggle('hidden', !ok);
+        // The Library tab's "+ Add podcast" goes to the same screen.
+        document.querySelectorAll('#content .podcast-add-bar').forEach(el => el.classList.toggle('hidden', !ok));
         // In a podcast library the same button subscribes to podcasts, so it
         // shouldn't wear AudioBookBay's logo.
         const pod = this.currentMediaType === 'podcast';
@@ -2843,9 +2854,16 @@ const App = {
             // A podcast library's own way in to subscribing, beside the
             // header's + (which is easy to miss).
             const add = '<div class="podcast-add-bar"><button class="text-btn" data-open-add>+ Add podcast</button></div>';
-            return add + (data.results.length ? this.gridHtml(data.results) : '<div class="empty-state">No podcasts yet</div>');
+            // With personal lists the shim answers only the caller's shows, so
+            // empty means "follows nothing yet", not "the server has none".
+            const none = this.shimFollows ? 'You don\'t follow any podcasts yet' : 'No podcasts yet';
+            return add + (data.results.length ? this.gridHtml(data.results) : `<div class="empty-state">${none}</div>`);
         }, () => {
             this.bindCardClicks();
+            // Only where the header's + shows (checkAbbSupport settles both):
+            // stock ABS, or a member who may not subscribe, would get a
+            // screen whose every button fails.
+            document.querySelector('#content .podcast-add-bar')?.classList.toggle('hidden', !this.abbAvailable);
             document.querySelector('#content [data-open-add]')?.addEventListener('click', () => this.toggleAdd());
         });
     },
@@ -3962,13 +3980,21 @@ const App = {
         document.querySelectorAll('.grid-item[data-id], .card[data-id]').forEach(el => {
             const type = el.dataset.type;
             // Long-press a book → "delete from pCloud?" (ABS_shim servers only).
-            if (this.shimCanDelete && !el.dataset.episodeId && type !== 'series' && type !== 'authors') {
+            if (!el.dataset.episodeId && type !== 'series' && type !== 'authors') {
                 const title = () => el.dataset.title || el.querySelector('.card-title, .item-title')?.textContent;
-                // A show isn't a book: long-press unsubscribes, and keeps
-                // any archived episodes unless asked otherwise.
-                this._wireLongPress(el, () => (type === 'podcast' || this.currentMediaType === 'podcast')
-                    ? this.confirmUnsubscribe(el.dataset.id, title() || 'this podcast')
-                    : this.confirmDeleteItem(el.dataset.id, title() || 'this book'));
+                const isShow = type === 'podcast' || this.currentMediaType === 'podcast';
+                // A show isn't a book. With personal lists, long-press takes
+                // it off the caller's own list, for any member (deleting it
+                // for everyone stays in /admin). On an older shim it
+                // unsubscribes the library, keeping archived episodes unless
+                // asked otherwise, for the owner only.
+                if (isShow && this.shimFollows) {
+                    this._wireLongPress(el, () => this.confirmUnfollow(el.dataset.id, title() || 'this podcast'));
+                } else if (this.shimCanDelete) {
+                    this._wireLongPress(el, () => isShow
+                        ? this.confirmUnsubscribe(el.dataset.id, title() || 'this podcast')
+                        : this.confirmDeleteItem(el.dataset.id, title() || 'this book'));
+                }
             }
             el.addEventListener('click', () => {
                 if (el._longPressed) { el._longPressed = false; return; }
@@ -4424,21 +4450,36 @@ const App = {
         const [progress, dl] = await Promise.all([this._episodeProgress(), Offline.fullyDownloadedIds()]);
         this._overlayProgress(progress, item.media?.episodes);
 
-        let html = '<div class="detail-view">';
+        let html = `<div class="detail-view" data-pod-show="${esc(item.id)}">`;
         html += '<div class="detail-header">';
         html += `<img class="detail-cover" src="${ABS.coverUrl(item.id)}" alt="" onerror="this.style.visibility='hidden'">`;
         html += '<div class="detail-meta">';
         html += `<h3>${esc(meta.title || 'Unknown')}</h3>`;
         if (meta.author) html += `<div class="author">${esc(meta.author)}</div>`;
         html += `<div class="duration">${episodes.length} episode${episodes.length !== 1 ? 's' : ''}${item.media?.archive ? ' · archiving to pCloud' : ''}</div>`;
-        // New-episode notifications: filled in by _mountPushBell once the
-        // shim's push status says it can send them.
-        if (this.isShim) html += '<div class="pod-bell-box" data-pod-bell-box></div>';
+        // Personal podcast lists (ABS_shim, 2026-10-14): `following` is the
+        // caller's. A show reached from a link, search or a playlist may not
+        // be on their list, and then Follow is the page's first offer.
+        const follows = this.isShim && typeof item.following === 'boolean';
+        if (this.isShim) {
+            html += '<div class="pod-follow-row">';
+            if (follows) {
+                html += item.following
+                    ? `<button type="button" class="pod-follow is-on" data-pod-follow aria-pressed="true">${this._followSvg(true)}<span>Following</span></button>`
+                    : `<button type="button" class="pod-follow pod-follow-cta" data-pod-follow aria-pressed="false">${this._followSvg(false)}<span>Follow</span></button>`;
+            }
+            // New-episode notifications: filled in by _mountPushBell once the
+            // shim's push status says it can send them. Only for a show on
+            // the caller's list: the shim sends nothing for one they don't follow.
+            if (item.following !== false) html += '<div class="pod-bell-box" data-pod-bell-box></div>';
+            html += '</div>';
+        }
         html += '</div></div>';
         if (meta.description) html += `<div class="author-bio podcast-desc">${esc(this._plainText(meta.description))}</div>`;
         html += '<div class="podcast-actions">';
         if (this.isShim) {
-            html += '<button class="text-btn" data-pod-check>Check for new episodes</button>';
+            // The shim lets only those who may add check a feed.
+            if (this.shimCanAdd) html += '<button class="text-btn" data-pod-check>Check for new episodes</button>';
             html += '<button class="text-btn" data-pod-all>All episodes in the feed</button>';
             if (item.media?.canArchive && this.shimCanAdd) {
                 html += `<label class="podcast-toggle"><input type="checkbox" data-pod-archive${item.media.archive ? ' checked' : ''}> Archive new episodes to pCloud</label>`;
@@ -4515,6 +4556,25 @@ const App = {
         this._mountPushBell(content, item);
         this._paintShowAnalysisRuns(content, item);
         const status = content.querySelector('[data-pod-status]');
+        content.querySelector('[data-pod-follow]')?.addEventListener('click', async (e) => {
+            const btn = e.currentTarget;
+            if (item.following) {
+                // Off the list, so the page it was opened from is redrawn without it.
+                this.confirmUnfollow(item.id, meta.title || 'this podcast', () => this.goBack());
+                return;
+            }
+            btn.disabled = true;
+            try {
+                const r = await this._setFollow(item.id, true);
+                item.following = true;
+                if (typeof r?.followers === 'number') item.followers = r.followers;
+                // Redrawn on the same level: the bell appears with it.
+                if (document.contains(btn)) this.showPodcastDetail(item);
+            } catch (err) {
+                btn.disabled = false;
+                status.textContent = 'Follow failed: ' + err.message;
+            }
+        });
         content.querySelector('[data-pod-check]')?.addEventListener('click', async (e) => {
             const btn = e.currentTarget;
             btn.disabled = true; status.textContent = 'Checking the feed…';
@@ -4934,7 +4994,10 @@ const App = {
         if (ep.archiveState === 'done') bits.push(`On ${ep.audioFile?.storage?.name || 'pCloud'}`);
         else if (ep.archiveState === 'queued' || ep.archiveState === 'fetching') bits.push('Archiving');
         else if (ep.archiveState === 'error') bits.push('Archive failed');
-        if (opts.feed && ep.inLibrary === false) bits.push(ep.removed ? 'Hidden' : 'Not on the show');
+        // `hidden` is the caller's own (ABS_shim's personal lists); `removed`
+        // was the whole show's (an older shim's Hide, now the owner's only).
+        if (opts.feed && ep.hidden) bits.push('Hidden');
+        else if (opts.feed && ep.inLibrary === false) bits.push(ep.removed ? (this.shimFollows ? 'Removed' : 'Hidden') : 'Not on the show');
         // Downloaded: a badge before the title, not just a word in the grey
         // line, so a show's downloads stand out at a glance.
         const isDl = !!opts.dl?.has(`${itemId}~${ep.id}`);
@@ -4955,16 +5018,19 @@ const App = {
         const line = bits.map((b, i) => !b ? '' : i === 2 ? `<span class="ep-time">${esc(b)}</span>` : esc(b)).filter(Boolean).join(' · ');
         h += `<span class="tracklist-title">${dlBadge}${archBadge}<span class="episode-title">${esc(ep.title || 'Untitled')}</span><br><span class="text-muted">${line}</span></span>`;
         h += '</button>';
-        // A feed episode that isn't on the show gets Add instead of Download.
-        const addable = opts.feed && ep.inLibrary === false && this.shimCanAdd;
-        if (addable) h += '<button class="episode-add" data-add>Add</button>';
+        // A feed episode the caller hid gets Show again, and one that isn't
+        // on the show gets Add, instead of Download.
+        const unhidable = !!(opts.feed && ep.hidden && this.isShim && this.shimFollows);
+        const addable = !unhidable && opts.feed && ep.inLibrary === false && this.shimCanAdd;
+        if (unhidable) h += '<button class="episode-add" data-unhide>Show again</button>';
+        else if (addable) h += '<button class="episode-add" data-add>Add</button>';
         // Archive to the library's pCloud, one tap (ABS_shim, when the
         // episode's library can archive and it isn't there or on its way).
         if (this._canArchiveEp(ep) && !['done', 'queued', 'fetching'].includes(ep.archiveState)) {
             h += '<button class="episode-dlbtn" data-quick-archive aria-label="Archive to pCloud" title="Archive to pCloud"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18h10a4 4 0 0 0 .6-7.96A6 6 0 0 0 6.1 9.2 4.5 4.5 0 0 0 7 18z"/><path d="M12 15V10M9.5 12.5 12 10l2.5 2.5"/></svg></button>';
         }
         // Download to this phone, one tap, without opening the ⋯ menu.
-        if (!addable && !isDl && ep.audioFile?.ino && opts.dl) h += '<button class="episode-dlbtn" data-quick-dl aria-label="Download to this phone" title="Download to this phone"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12M6 11l6 6 6-6M5 21h14"/></svg></button>';
+        if (!addable && !unhidable && !isDl && ep.audioFile?.ino && opts.dl) h += '<button class="episode-dlbtn" data-quick-dl aria-label="Download to this phone" title="Download to this phone"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12M6 11l6 6 6-6M5 21h14"/></svg></button>';
         // Play, or pause while it's the one playing (CSS swaps the icon on
         // the row's is-playing / is-paused classes, set by paintPlayingEpisode).
         h += '<button class="episode-playbtn" aria-label="Play"><svg class="i-play" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg><svg class="i-pause" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg></button>';
@@ -5059,11 +5125,31 @@ const App = {
                     });
                     btn.textContent = 'Added';
                     ep.inLibrary = true;
+                    ep.hidden = false;
                     this._invalidateTabCache();
                 } catch (err) { btn.disabled = false; alert('Add failed: ' + err.message); }
             });
+            li.querySelector('[data-unhide]')?.addEventListener('click', async (e) => {
+                const btn = e.currentTarget;
+                btn.disabled = true;
+                try {
+                    await this._unhideEpisode(item, ep);
+                    await this._redrawEpisodeRow(item, ep, li, progress);
+                } catch (err) { btn.disabled = false; alert('Show again failed: ' + err.message); }
+            });
         }
         this.paintPlayingEpisode();
+    },
+
+    // Undo a per-person Hide: ABS_shim's add-to-show also unhides for the
+    // caller (and puts it back on the show if it had left it).
+    async _unhideEpisode(item, ep) {
+        await this._shimCall(`/api/podcasts/${encodeURIComponent(item.id)}/episodes/add`, {
+            method: 'POST', body: JSON.stringify({ episodeIds: [ep.id] }),
+        });
+        ep.hidden = false;
+        ep.inLibrary = true;
+        this._invalidateTabCache();
     },
 
     _isLoadedEpisode(itemId, episodeId) {
@@ -5327,9 +5413,16 @@ const App = {
         h += '</div>';
         // Less common, and worded too long for an icon: plain text below.
         const more = [];
+        // Hide is per person on a shim with personal lists, so any member
+        // may; on an older one it hid the episode for everyone (canAdd).
+        if (this.isShim && this.shimFollows && ep.hidden) {
+            more.push('<span class="text-muted">Hidden for you</span><button class="text-btn" data-ep-unhide>Show again</button>');
+        } else if (this.isShim && ep.inLibrary === false) {
+            if (this.shimCanAdd) more.push('<button class="text-btn" data-ep-add>Add to the show</button>');
+        } else if (this.isShim && (this.shimFollows || this.shimCanAdd)) {
+            more.push('<button class="text-btn" data-ep-remove>Hide episode</button>');
+        }
         if (this.isShim && this.shimCanAdd) {
-            if (ep.inLibrary === false) more.push('<button class="text-btn" data-ep-add>Add to the show</button>');
-            else more.push('<button class="text-btn" data-ep-remove>Hide episode</button>');
             // Hidden while an analysis of the file served now exists (the shim
             // serves `analysis` only then): a re-run of the same file gives
             // the same answer. _paintAnalysisState settles it once the state
@@ -5514,17 +5607,36 @@ const App = {
                     method: 'POST', body: JSON.stringify({ episodeIds: [ep.id] }),
                 });
                 ep.inLibrary = true;
+                ep.hidden = false;
                 this._invalidateTabCache();
                 this._rerenderEpisodePage(s);
             } catch (err) { e.currentTarget.disabled = false; alert('Add failed: ' + err.message); }
         });
-        page.querySelector('[data-ep-remove]')?.addEventListener('click', async () => {
-            if (!confirm(`Hide "${ep.title}"? It leaves the show's list and stays in the feed, where it can be added back.`)) return;
+        page.querySelector('[data-ep-remove]')?.addEventListener('click', async (e) => {
+            const btn = e.currentTarget;
+            // Per person (ABS_shim's personal lists): the page stays, saying
+            // "Hidden for you" with a way back; the lists drop it on their
+            // next draw. An older shim hid it from the whole show.
+            const mine = this.shimFollows;
+            if (!confirm(mine
+                ? `Hide "${ep.title}"? Only for you: it leaves your lists, and "All episodes in the feed" can show it again.`
+                : `Hide "${ep.title}"? It leaves the show's list and stays in the feed, where it can be added back.`)) return;
+            btn.disabled = true;
             try {
                 await this._shimCall(`/api/podcasts/${encodeURIComponent(item.id)}/episode/${encodeURIComponent(ep.id)}`, { method: 'DELETE' });
                 this._invalidateTabCache();
-                this.goBack();
-            } catch (err) { alert('Hide failed: ' + err.message); }
+                if (!mine) { this.goBack(); return; }
+                ep.hidden = true;
+                this._rerenderEpisodePage(s);
+            } catch (err) { btn.disabled = false; alert('Hide failed: ' + err.message); }
+        });
+        page.querySelector('[data-ep-unhide]')?.addEventListener('click', async (e) => {
+            const btn = e.currentTarget;
+            btn.disabled = true;
+            try {
+                await this._unhideEpisode(item, ep);
+                this._rerenderEpisodePage(s);
+            } catch (err) { btn.disabled = false; alert('Show again failed: ' + err.message); }
         });
         page.querySelector('[data-ep-analyse]')?.addEventListener('click', async (e) => {
             const btn = e.currentTarget;
@@ -5690,8 +5802,71 @@ const App = {
         } catch {}
     },
 
-    // Long-press on a show. Unsubscribing keeps archived episodes on pCloud
-    // unless the box is ticked; the publisher's copies are never touched.
+    // ── Personal podcast lists (ABS_shim, 2026-10-14) ──
+    // A show is stored once per library and each member follows the ones
+    // they want: their list, Latest, shelves and search are filtered by the
+    // shim. Following an existing show costs no fetch, download or analysis.
+    // A show nobody follows stays stored but idle (not polled).
+    async _setFollow(itemId, follow) {
+        const r = await this._shimCall(`/api/podcasts/${encodeURIComponent(itemId)}/follow`, {
+            method: 'PUT', body: JSON.stringify({ follow }),
+        });
+        // The shim turns the bell off with an unfollow.
+        if (!follow) this._setPushShows((this._pushStatusCache?.data?.shows || []).filter(id => id !== itemId));
+        this._invalidateTabCache();
+        if (follow) this._catchUpShow(itemId);
+        return r;
+    },
+    // Following makes an idle show's feed due at once, and the shim's next
+    // 2-minute tick catches it up. Whoever may check feeds gets it now, and
+    // the show's page is redrawn if new episodes came.
+    _catchUpShow(itemId) {
+        if (!this.shimCanAdd) return;
+        this._shimCall(`/api/podcasts/${encodeURIComponent(itemId)}/checknew`).then(r => {
+            if (!(r?.episodes || []).length) return;
+            this._invalidateTabCache();
+            if (document.querySelector(`#content [data-pod-show="${CSS.escape(itemId)}"]`)) this._reloadPodcast(itemId);
+        }, () => {});
+    },
+    _followSvg(on) {
+        return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${on ? '<path d="M5 12.5l4.5 4.5L19 7.5"/>' : '<path d="M12 5v14M5 12h14"/>'}</svg>`;
+    },
+
+    // Unfollow (the show page's Following, or long-press on a show): it
+    // leaves the caller's list and nobody else's; progress, archives and the
+    // show itself stay on the server. `after` runs once it's done (the show
+    // page goes back); by default the tab being shown is redrawn.
+    confirmUnfollow(itemId, title, after) {
+        const overlay = document.createElement('div');
+        overlay.className = 'modal confirm-modal';
+        overlay.innerHTML =
+            '<div class="modal-content modal-narrow">' +
+              '<div class="modal-header"><h3>Stop following?</h3></div>' +
+              '<div class="modal-body"><p class="confirm-title"></p><p class="text-muted">It leaves your list; your progress is kept.</p></div>' +
+              '<div class="modal-actions"><button class="text-btn" data-cancel>Cancel</button><button class="danger-btn" data-ok>Unfollow</button></div>' +
+            '</div>';
+        overlay.querySelector('.confirm-title').textContent = title;
+        const close = () => overlay.remove();
+        overlay.querySelector('[data-cancel]').addEventListener('click', close);
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+        overlay.querySelector('[data-ok]').addEventListener('click', async () => {
+            const ok = overlay.querySelector('[data-ok]');
+            ok.disabled = true; ok.textContent = 'Unfollowing…';
+            try {
+                await this._setFollow(itemId, false);
+                close();
+                if (after) after(); else this.switchTab(this.currentTab);
+            } catch (e) {
+                ok.disabled = false; ok.textContent = 'Unfollow';
+                alert('Unfollow failed: ' + e.message);
+            }
+        });
+        document.body.appendChild(overlay);
+    },
+
+    // Long-press on a show (a shim without personal lists). Unsubscribing
+    // keeps archived episodes on pCloud unless the box is ticked; the
+    // publisher's copies are never touched.
     confirmUnsubscribe(itemId, title) {
         const overlay = document.createElement('div');
         overlay.className = 'modal confirm-modal';
@@ -5745,7 +5920,10 @@ const App = {
             root.className = 'abb-root';
             root.innerHTML =
                 '<div class="search-bar abb-search"><span class="search-wrap"><input type="text" id="pod-q" placeholder="Search podcasts, or paste a feed URL" autocomplete="off"></span><button id="pod-go" class="abb-go">Search</button></div>' +
-                '<ul class="tracklist" id="pod-results"></ul>';
+                '<ul class="tracklist" id="pod-results"></ul>' +
+                // Shows already stored that the caller doesn't follow (ABS_shim
+                // with personal lists); empty, and so hidden, everywhere else.
+                '<div class="pod-server" id="pod-server"></div>';
             const go = () => this._podSearch(root.querySelector('#pod-q').value.trim());
             root.querySelector('#pod-go').addEventListener('click', go);
             root.querySelector('#pod-q').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.target.blur(); go(); } });
@@ -5754,6 +5932,56 @@ const App = {
         const content = document.getElementById('content');
         content.innerHTML = '';
         content.appendChild(this._podRoot);
+        this._podLoadServerShows();
+    },
+
+    // "On this server": every show stored in this library that the caller
+    // doesn't follow, one tap to follow (no fetch: the shim already has its
+    // episodes). Asked on every visit, since follows change elsewhere. Also
+    // tells _podSearch which results are already stored. An older shim
+    // (404) or no connection leaves the section empty.
+    _podServerShows: null, // { libraryId, shows } from the last answer
+    async _podLoadServerShows() {
+        const box = this._podRoot?.querySelector('#pod-server');
+        if (!box) return;
+        const libId = this.currentLibraryId;
+        if (!this.isShim || !this.shimFollows) { box.innerHTML = ''; this._podServerShows = null; return; }
+        let r;
+        try { r = await this._shimCall(`/api/podcasts/shows?libraryId=${encodeURIComponent(libId)}`); }
+        catch { box.innerHTML = ''; return; }
+        if (libId !== this.currentLibraryId) return;
+        const all = Array.isArray(r?.shows) ? r.shows : [];
+        this._podServerShows = { libraryId: libId, shows: all };
+        const shows = all.filter(s => !s.following);
+        if (!shows.length) { box.innerHTML = ''; return; }
+        box.innerHTML = '<div class="section-title pod-server-head">On this server</div><ul class="tracklist">'
+            + shows.map(s => {
+                const n = Number(s.numEpisodes) || 0;
+                const sub = [s.author, n ? `${n} episode${n === 1 ? '' : 's'}` : ''].filter(Boolean).join(' · ');
+                return `<li class="tracklist-item abb-item"><div class="abb-main">`
+                    + `<img class="abb-cover pod-server-cover" src="${ABS.coverUrl(s.id)}" alt="" loading="lazy" data-open-show="${esc(s.id)}" onerror="this.style.visibility='hidden'">`
+                    + `<span class="tracklist-title" data-open-show="${esc(s.id)}"><strong>${esc(s.title || 'Untitled')}</strong><span class="text-muted">${esc(sub)}</span></span>`
+                    + `<button class="abb-grab" data-follow-id="${esc(s.id)}">Follow</button>`
+                    + '</div></li>';
+            }).join('') + '</ul>';
+        // The show's page, to look before following (it offers Follow too).
+        box.querySelectorAll('[data-open-show]').forEach(el => el.addEventListener('click', () => this.showItem(el.dataset.openShow)));
+        box.querySelectorAll('[data-follow-id]').forEach(btn => btn.addEventListener('click', async () => {
+            btn.disabled = true; btn.innerHTML = '<span class="abb-spinner"></span>Following';
+            try {
+                await this._setFollow(btn.dataset.followId, true);
+                this._podMarkFollowed(btn.dataset.followId);
+            } catch (e) {
+                btn.disabled = false; btn.textContent = 'Follow';
+                alert('Follow failed: ' + e.message);
+            }
+        }));
+    },
+    _podMarkFollowed(id) {
+        const show = this._podServerShows?.shows.find(s => s.id === id);
+        if (show) show.following = true;
+        const btn = this._podRoot?.querySelector(`[data-follow-id="${CSS.escape(id)}"]`);
+        if (btn) { btn.disabled = true; btn.classList.add('abb-grab-again'); btn.textContent = '✓ Following'; }
     },
 
     // Apple's directory is searched from the phone: Apple rate-limits per IP
@@ -5811,18 +6039,27 @@ const App = {
                 if (p.feedUrl) feeds.add(this._feedKey(p.feedUrl));
             }
         } catch {}
+        // With personal lists, podcast-titles is the caller's list, so
+        // `have` means "you follow it". Subscribing to a feed the server
+        // already stores just follows that show (the shim does it), so the
+        // words are Follow / Following; "On this server" says which are stored.
+        const follows = this.isShim && this.shimFollows;
+        const server = this._podServerShows?.libraryId === this.currentLibraryId ? this._podServerShows.shows : [];
+        const stored = new Set(server.map(s => this._feedKey(s.feedUrl)).filter(Boolean));
         list.innerHTML = results.map((r, i) => {
             const have = feeds.has(this._feedKey(r.feedUrl)) || (!!r.id && ids.has(String(r.id)));
             const sub = [r.artistName, r.trackCount ? `${r.trackCount} episodes` : '', (r.genres || [])[0]].filter(Boolean).join(' · ');
+            const label = have ? (follows ? '✓ Following' : '✓ Subscribed') : (follows ? 'Follow' : 'Subscribe');
             return `<li class="tracklist-item abb-item"><div class="abb-main">`
                 + (r.cover ? `<img class="abb-cover" src="${esc(r.cover)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : '')
                 + `<span class="tracklist-title"><strong>${esc(r.title)}</strong><span class="text-muted">${esc(sub)}</span></span>`
-                + `<button class="abb-grab${have ? ' abb-grab-again' : ''}" data-sub="${i}">${have ? '✓ Subscribed' : 'Subscribe'}</button>`
+                + `<button class="abb-grab${have ? ' abb-grab-again' : ''}" data-sub="${i}">${label}</button>`
                 + '</div></li>';
         }).join('');
         list.querySelectorAll('[data-sub]').forEach(btn => btn.addEventListener('click', async () => {
             const r = results[Number(btn.dataset.sub)];
-            btn.disabled = true; btn.innerHTML = '<span class="abb-spinner"></span>Adding';
+            const wasStored = follows && (stored.has(this._feedKey(r.feedUrl)) || btn.classList.contains('abb-grab-again'));
+            btn.disabled = true; btn.innerHTML = `<span class="abb-spinner"></span>${wasStored ? 'Following' : 'Adding'}`;
             try {
                 const item = await this._shimCall('/api/podcasts', {
                     method: 'POST',
@@ -5838,12 +6075,16 @@ const App = {
                     }),
                 });
                 const n = item?.media?.numEpisodes || 0;
-                btn.textContent = `✓ ${n} episode${n === 1 ? '' : 's'}`;
+                // A show someone else already follows came back as it was:
+                // nothing was added, it's now on this person's list too.
+                const existed = wasStored || (follows && Number(item?.followers) > 1);
+                btn.textContent = existed ? '✓ Following' : `✓ ${n} episode${n === 1 ? '' : 's'}`;
+                if (follows && item?.id) this._podMarkFollowed(item.id);
                 this._invalidateTabCache();
             } catch (e) {
                 btn.disabled = false;
-                btn.textContent = /already exists/i.test(e.message) ? '✓ Subscribed' : 'Subscribe';
-                if (!/already exists/i.test(e.message)) alert('Subscribe failed: ' + e.message);
+                btn.textContent = /already exists/i.test(e.message) ? '✓ Subscribed' : follows ? 'Follow' : 'Subscribe';
+                if (!/already exists/i.test(e.message)) alert((follows ? 'Follow' : 'Subscribe') + ' failed: ' + e.message);
             }
         }));
     },

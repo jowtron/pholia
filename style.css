@@ -890,6 +890,8 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
 
     .detail-header { flex-direction: column; align-items: center; text-align: center; }
     .detail-cover { max-width: 180px; max-height: 180px; }
+    /* A flex row ignores text-align: centre Follow and the bell like the rest. */
+    .pod-follow-row { justify-content: center; }
 
     .fs-scroll {
         padding: 20px 16px 12px;
@@ -1025,6 +1027,22 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
    bell that stays purple after a tap would read as "on". */
 @media (hover: hover) { .pod-bell:hover:not(:disabled) { color: var(--accent); } }
 .pod-bell-note { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.4rem; max-width: 22rem; line-height: 1.4; }
+/* Personal podcast lists: Follow / Following beside the bell. Not
+   following is the page's first offer, so it's filled; Following is a
+   quiet pill like the bell, since tapping it asks before unfollowing. */
+.pod-follow-row { display: flex; flex-wrap: wrap; align-items: flex-start; column-gap: 0.5rem; }
+.pod-follow {
+    display: inline-flex; align-items: center; gap: 0.35rem; margin-top: 0.6rem;
+    padding: 0.35rem 0.85rem; border: 1px solid var(--border); border-radius: 999px;
+    background: none; color: var(--text-muted); font-size: 0.8rem; cursor: pointer;
+}
+.pod-follow.is-on { color: var(--accent); border-color: var(--accent); }
+.pod-follow-cta { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; font-size: 0.9rem; padding: 0.45rem 1.1rem; }
+.pod-follow:disabled { opacity: 0.6; cursor: default; }
+/* The Add screen's "On this server": stored shows the caller doesn't follow. */
+.pod-server:empty { display: none; }
+.pod-server-head { margin: 1.25rem 0 0.5rem; padding: 0 0.25rem; font-size: 1rem; }
+.pod-server-cover { cursor: pointer; }
 .push-test-result { font-size: 0.8rem; color: var(--text-muted); white-space: pre-line; margin-bottom: 0.5rem; }
 .push-perm { font-size: 0.85rem; color: var(--text-muted); }
 .push-subhead { font-size: 0.75rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; margin: 0.75rem 0 0.35rem; }
