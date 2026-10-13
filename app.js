@@ -1459,7 +1459,13 @@ const App = {
         const text = await res.text();
         let data = null;
         try { data = text ? JSON.parse(text) : null; } catch { data = null; }
-        if (!res.ok) throw new Error((data && data.error) || `HTTP ${res.status}`);
+        if (!res.ok) {
+            // The status rides along: a 404 from a route an older shim
+            // doesn't have means "hide this", not an error to show.
+            const err = new Error((data && data.error) || `HTTP ${res.status}`);
+            err.status = res.status;
+            throw err;
+        }
         return data;
     },
 
@@ -4462,6 +4468,19 @@ const App = {
                     .map(([v, l]) => `<option value="${v}"${v === ads ? ' selected' : ''}>${l}</option>`).join('')
                 + '</select></label>';
         }
+        // Whether ABS_shim's episode analysis runs on this show by itself
+        // (media.analyse: null = auto, 'on', 'off'; 'off' also drops what was
+        // queued). "Analyse now" on an episode works whatever this says.
+        // A shim from before analysis doesn't send the field.
+        if (this.isShim && this.shimCanAdd && item.media && 'analyse' in item.media) {
+            const cur = this._analyseValue(item.media.analyse);
+            html += `<label class="podcast-toggle" title="${esc(this._analyseHelp(''))}">Analysis <select data-pod-analyse>`
+                + [['', 'Auto'], ['on', 'On'], ['off', 'Off']]
+                    .map(([v, l]) => `<option value="${v}"${v === cur ? ' selected' : ''}>${l}</option>`).join('')
+                + '</select></label>';
+            html += `<div class="pod-analyse-note" data-pod-analyse-help>${esc(this._analyseHelp(cur))}</div>`;
+            html += '<div class="pod-analyse-note" data-pod-analyse-runs hidden></div>';
+        }
         html += '<span class="text-muted" data-pod-status></span>';
         html += '</div>';
         // "Unplayed only" hides played rows with a class on the list, so
@@ -4488,6 +4507,7 @@ const App = {
         content.querySelector('.podcast-desc')?.addEventListener('click', (e) => e.currentTarget.classList.toggle('open'));
         this._bindEpisodeRows(content, item, episodes, progress);
         this._mountPushBell(content, item);
+        this._paintShowAnalysisRuns(content, item);
         const status = content.querySelector('[data-pod-status]');
         content.querySelector('[data-pod-check]')?.addEventListener('click', async (e) => {
             const btn = e.currentTarget;
@@ -4584,6 +4604,30 @@ const App = {
             } catch (err) {
                 sel.value = finishOwn == null ? '' : String(finishOwn);
                 status.textContent = 'Change failed: ' + err.message;
+            }
+        });
+        content.querySelector('[data-pod-analyse]')?.addEventListener('change', async (e) => {
+            const sel = e.currentTarget;
+            const want = sel.value || null;
+            const help = content.querySelector('[data-pod-analyse-help]');
+            if (help) help.textContent = this._analyseHelp(sel.value);
+            sel.disabled = true;
+            try {
+                const r = await this._shimCall(`/api/items/${encodeURIComponent(item.id)}/media`, {
+                    method: 'PATCH', body: JSON.stringify({ analyse: want }),
+                });
+                // The show item this page (and its nav level) holds follows
+                // the server's answer, so a redraw shows what's stored.
+                const m = r?.libraryItem?.media;
+                item.media.analyse = m && 'analyse' in m ? m.analyse : want;
+                this._invalidateTabCache();
+                status.textContent = { on: 'Analysis on for this show', off: 'Analysis off for this show; anything waiting was dropped' }[item.media.analyse] || 'Analysis on Auto for this show';
+            } catch (err) {
+                status.textContent = 'Change failed: ' + err.message;
+            } finally {
+                sel.disabled = false;
+                sel.value = this._analyseValue(item.media.analyse);
+                if (help) help.textContent = this._analyseHelp(sel.value);
             }
         });
         content.querySelector('[data-pod-archive-all]')?.addEventListener('click', async (e) => {
@@ -6238,6 +6282,272 @@ const App = {
         return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', ...(d.getFullYear() !== now.getFullYear() ? { year: 'numeric' } : {}) });
     },
 
+    // ── Episode analysis: the per-show switch and the run records (ABS_shim) ──
+    // Each finished analysis (done or failed) is a row in the shim's
+    // append-only log, `GET /api/analysis/runs` (canAdd; totals, months,
+    // shows, what's queued or running, and the runs newest first, paged by
+    // `before`). The show page shows its own count and cost under the
+    // Analysis select; Settings shows the lot. A shim without the route
+    // 404s, and then neither says anything.
+    _AN_PAGE: 20,
+    _anSeq: 0,
+    _anState: null, // { runs, nextBefore, open }: Settings' run list
+
+    // The select's value for media.analyse: '' is Auto (null on the server).
+    _analyseValue(v) { return v === 'on' || v === 'off' ? v : ''; },
+    _analyseHelp(v) {
+        if (v === 'on') return 'On: every new episode, and any you play. Shows that insert ads wait until the episode is archived.';
+        if (v === 'off') return 'Off: only when you tap Analyse now on an episode.';
+        return 'Auto: episodes from hosts that insert ads (once archived), and any without chapters or a transcript.';
+    },
+    _anRunsUrl(extra) {
+        return `/api/analysis/runs?${extra}&${ABS._tzQuery()}`;
+    },
+
+    // Under the show page's Analysis select: "N episodes analysed · $X.XX".
+    // Nothing at all when there are no runs, the call fails, or the shim
+    // predates the log.
+    async _paintShowAnalysisRuns(content, item) {
+        const el = content.querySelector('[data-pod-analyse-runs]');
+        if (!el) return;
+        let r;
+        try { r = await this._shimCall(this._anRunsUrl(`showId=${encodeURIComponent(item.id)}&limit=1`)); } catch { return; }
+        const t = r?.totals;
+        if (!el.isConnected || !t || !(Number(t.runs) > 0)) return;
+        el.textContent = this._anShowLine(t);
+        el.hidden = false;
+    },
+    _anShowLine(t) {
+        const done = Number(t.done) || 0, failed = Number(t.failed) || 0;
+        const bits = [`${done} episode${done === 1 ? '' : 's'} analysed`];
+        if (failed) bits.push(`${failed} failed`);
+        bits.push(this._anCost(t));
+        return bits.join(' · ');
+    },
+
+    // Money is what OpenRouter charged, in US dollars: two places, three
+    // under 10 cents (a run is about seven). Whisper costs nothing extra.
+    _usd(v) {
+        const n = Number(v);
+        if (v == null || !isFinite(n)) return null;
+        if (n <= 0) return '$0.00';
+        if (n < 0.001) return 'under $0.001';
+        return '$' + n.toFixed(n < 0.1 ? 3 : 2);
+    },
+    // A total's cost, saying so when some runs (from before the log kept
+    // costs) aren't in it.
+    _anCost(t) {
+        const runs = Number(t.runs) || 0, unknown = Number(t.costUnknownRuns) || 0;
+        if (runs && unknown >= runs) return 'cost not recorded';
+        const s = this._usd(Number(t.costUsd) || 0);
+        return unknown ? `${s} (${unknown} not recorded)` : s;
+    },
+    _anHours(sec) {
+        const s = Math.max(0, Number(sec) || 0);
+        if (s < 3600) return `${Math.round(s / 60)} min`;
+        const h = s / 3600;
+        return `${h < 10 ? h.toFixed(1).replace(/\.0$/, '') : Math.round(h)} h`;
+    },
+    _anDur(sec) {
+        const s = Math.round(Number(sec) || 0);
+        if (s < 60) return `${s} s`;
+        const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+        if (h) return m ? `${h} h ${m} min` : `${h} h`;
+        return r ? `${m} min ${r} s` : `${m} min`;
+    },
+    _anIsland(id) { return id ? ({ mac: 'Mac' }[id] || String(id)) : ''; },
+    _anOn(id) { return id === 'mac' ? 'on the Mac' : id ? 'on ' + id : ''; },
+    _anReason(r) { return { asked: 'asked', played: 'after you played it', new: 'new episode' }[r] || ''; },
+    // "anthropic/claude-sonnet-5.5" → "Claude Sonnet 5.5".
+    _anModel(m) {
+        if (!m) return '';
+        const name = String(m).split('/').pop().replace(/:.*$/, '');
+        return name.split('-').map(w => /^gpt$/i.test(w) ? 'GPT' : /^[a-z]/.test(w) ? w[0].toUpperCase() + w.slice(1) : w).join(' ');
+    },
+    // What the model part of a run came to.
+    _anLlmText(run) {
+        const llm = String(run.llm || '').split(':')[0];
+        const model = this._anModel(run.llmModel);
+        if (llm === 'skipped' || (!llm && !run.llmModel)) return 'no model call';
+        const cost = run.costUsd == null ? 'cost not recorded' : this._usd(run.costUsd);
+        if (llm === 'error') return `${model || 'model'} call failed` + (run.costUsd != null ? ' · ' + cost : '');
+        return [model, cost].filter(Boolean).join(' · ');
+    },
+    // A queued row's reason for waiting, as the shim records it.
+    _anWaitWhy(err) {
+        const code = String(err || '').split(':')[0].trim();
+        return {
+            island_unreachable: 'the computer that does it isn\'t answering',
+            node_busy: 'that computer is busy',
+            project_not_routed: 'no computer is set up for it yet',
+        }[code] || String(err);
+    },
+
+    _anRunHtml(run) {
+        const open = run.episodeId && run.libraryItemId
+            ? ` data-an-ep="${esc(String(run.episodeId))}" data-an-item="${esc(String(run.libraryItemId))}"` : ' disabled';
+        const head = [run.showTitle, run.at ? this._pushWhen(run.at) : '', this._anIsland(run.island), this._anReason(run.reason)].filter(Boolean).join(' · ');
+        const audio = Number(run.audioSeconds) > 0
+            ? `${this._anDur(run.audioSeconds)} of audio` + (Number(run.whisperSeconds) > 0 ? `, transcribed in ${this._anDur(run.whisperSeconds)}` : '')
+            : (Number(run.whisperSeconds) > 0 ? `Transcribed in ${this._anDur(run.whisperSeconds)}` : '');
+        let did, err = false;
+        if (run.outcome === 'error') {
+            did = 'Failed: ' + (run.error || 'no reason given');
+            err = true;
+        } else {
+            const n = Number(run.adsCount) || 0;
+            const bits = [];
+            if (run.aligned) bits.push('times aligned');
+            if (run.transcriptSource === 'whisper') bits.push('transcript made');
+            if (run.chaptersGenerated) bits.push('chapters written');
+            bits.push(n ? `${n} ad${n === 1 ? '' : 's'}` : 'no ads');
+            did = bits.join(', ');
+            did = did[0].toUpperCase() + did.slice(1);
+        }
+        const llm = this._anLlmText(run);
+        return `<button type="button" class="an-run"${open}>`
+            + `<span class="an-title">${esc(run.episodeTitle || 'An episode no longer listed')}</span>`
+            + (head ? `<span class="an-line">${esc(head)}</span>` : '')
+            + (audio ? `<span class="an-line">${esc(audio)}</span>` : '')
+            + `<span class="an-line${err ? ' an-err' : ''}">${esc(did)}</span>`
+            + (err && llm === 'no model call' ? '' : `<span class="an-line">${esc(llm)}</span>`)
+            + '</button>';
+    },
+    _anActiveHtml(a) {
+        let state;
+        if (a.state === 'running') state = 'Running' + (a.island ? ' ' + this._anOn(a.island) : '');
+        else if (a.waitingFor === 'archive') state = 'Waiting for its pCloud copy';
+        else state = 'Waiting' + (a.error ? ': ' + this._anWaitWhy(a.error) : '');
+        const sub = [a.showTitle, this._anReason(a.reason), a.since ? 'since ' + this._pushWhen(a.since).replace(/^today /, '') : ''].filter(Boolean).join(' · ');
+        const open = a.episodeId && a.libraryItemId
+            ? ` data-an-ep="${esc(String(a.episodeId))}" data-an-item="${esc(String(a.libraryItemId))}"` : ' disabled';
+        return `<button type="button" class="an-run"${open}>`
+            + `<span class="an-title">${esc(a.episodeTitle || 'Episode')}</span>`
+            + `<span class="an-line an-state">${esc(state)}</span>`
+            + (sub ? `<span class="an-line">${esc(sub)}</span>` : '')
+            + '</button>';
+    },
+
+    // Settings → Episode analysis (shim, canAdd, a podcast library):
+    // totals, what's waiting or running, each show's switch and cost, and
+    // the runs themselves behind "Show runs".
+    async _renderAnalysisSettings() {
+        const sec = document.getElementById('analysis-section');
+        const body = document.getElementById('analysis-body');
+        if (!sec || !body) return;
+        const seq = ++this._anSeq;
+        const podcasts = (this.libraries || []).some(l => l.mediaType === 'podcast');
+        if (!this.isShim || !this.shimCanAdd || !podcasts) { sec.classList.add('hidden'); return; }
+        if (!this._anWired) {
+            this._anWired = true;
+            body.addEventListener('click', (e) => this._onAnalysisSettingsClick(e));
+        }
+        let r;
+        try { r = await this._shimCall(this._anRunsUrl(`limit=${this._AN_PAGE}`)); }
+        catch (e) {
+            if (seq !== this._anSeq) return;
+            // No log on this shim (or not allowed): nothing to say.
+            if (e.status === 404 || e.status === 403) { sec.classList.add('hidden'); return; }
+            sec.classList.remove('hidden');
+            body.innerHTML = `<div class="downloads-empty">Couldn't load the records: ${esc(e.message)}</div>`;
+            return;
+        }
+        if (seq !== this._anSeq) return;
+        if (!r || !r.totals) { sec.classList.add('hidden'); return; }
+        sec.classList.remove('hidden');
+        const runs = Array.isArray(r.runs) ? r.runs : [];
+        this._anState = { runs, nextBefore: r.nextBefore ?? null, open: false };
+        const t = r.totals;
+        const now = new Date();
+        const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+        const m = (Array.isArray(r.months) ? r.months : []).find(x => x?.month === thisMonth) || { runs: 0, costUsd: 0, audioSeconds: 0 };
+        let h = '';
+        if (!(Number(t.runs) > 0)) {
+            h += '<div class="downloads-empty">Nothing analysed yet.</div>';
+        } else {
+            const row = (k, a, b) => `<span class="an-k">${k}</span><span class="an-v">${esc(a)}</span><span class="an-v">${esc(b)}</span>`;
+            h += '<div class="an-totals"><span></span><span class="an-h">All time</span><span class="an-h">This month</span>'
+                + row('Runs', String(Number(t.runs) || 0), String(Number(m.runs) || 0))
+                + row('Cost', Number(t.costUnknownRuns) >= Number(t.runs) ? 'not recorded' : this._usd(Number(t.costUsd) || 0), this._usd(Number(m.costUsd) || 0))
+                + row('Transcribed', this._anHours(t.audioSeconds), this._anHours(m.audioSeconds))
+                + '</div>';
+            const since = Number(t.since) ? new Date(Number(t.since)).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+            const unknown = Number(t.costUnknownRuns) || 0;
+            const notes = [
+                since ? 'Since ' + since : '',
+                Number(t.failed) ? `${t.failed} failed` : '',
+                `${Number(t.llmRuns) || 0} with a model call`,
+                Number(t.whisperSeconds) > 0 ? `${this._anHours(t.whisperSeconds)} spent transcribing` : '',
+                unknown && unknown < Number(t.runs) ? `cost not recorded for ${unknown} run${unknown === 1 ? '' : 's'}` : '',
+            ].filter(Boolean);
+            h += `<div class="an-note">${esc(notes.join(' · '))}</div>`;
+        }
+        const active = Array.isArray(r.active) ? r.active : [];
+        h += '<div class="push-subhead">Waiting or running</div>';
+        h += active.length
+            ? '<div class="an-list">' + active.map(a => this._anActiveHtml(a)).join('') + '</div>'
+            : '<div class="downloads-empty">Nothing waiting or running.</div>';
+        const shows = Array.isArray(r.shows) ? r.shows : [];
+        if (shows.length) {
+            h += '<div class="push-subhead">Shows</div><div class="an-list">';
+            for (const s of shows) {
+                const label = { on: 'On', off: 'Off' }[s.analyse] || 'Auto';
+                const n = Number(s.runs) || 0;
+                const sub = [`Analysis: ${label}`, n ? `${n} run${n === 1 ? '' : 's'}` : 'nothing analysed yet', n ? this._usd(Number(s.costUsd) || 0) : ''].filter(Boolean).join(' · ');
+                h += `<button type="button" class="an-run an-show"${s.libraryItemId ? ` data-an-show="${esc(String(s.libraryItemId))}"` : ' disabled'}>`
+                    + `<span class="an-title">${esc(s.title || 'Untitled')}</span><span class="an-line">${esc(sub)}</span></button>`;
+            }
+            h += '</div>';
+        }
+        if (runs.length) {
+            h += '<button type="button" class="text-btn an-toggle" data-an-runs-toggle>Show runs</button>';
+            h += '<div class="an-list" data-an-runs hidden></div>';
+        }
+        body.innerHTML = h;
+    },
+    _paintAnalysisRuns() {
+        const st = this._anState;
+        const list = document.querySelector('#analysis-body [data-an-runs]');
+        if (!st || !list) return;
+        list.hidden = !st.open;
+        if (!st.open) return;
+        list.innerHTML = st.runs.map(run => this._anRunHtml(run)).join('')
+            + (st.nextBefore != null ? '<button type="button" class="text-btn an-more" data-an-more>Load more</button>' : '')
+            + '<div class="an-note" data-an-more-note hidden></div>';
+    },
+    async _onAnalysisSettingsClick(e) {
+        const ep = e.target.closest('[data-an-ep]');
+        if (ep) { this.hideSettings(); this.openEpisodeById(ep.dataset.anItem, ep.dataset.anEp); return; }
+        const show = e.target.closest('[data-an-show]');
+        if (show) { this.hideSettings(); this.showItem(show.dataset.anShow); return; }
+        const st = this._anState;
+        const toggle = e.target.closest('[data-an-runs-toggle]');
+        if (toggle && st) {
+            st.open = !st.open;
+            toggle.textContent = st.open ? 'Hide runs' : 'Show runs';
+            this._paintAnalysisRuns();
+            return;
+        }
+        const more = e.target.closest('[data-an-more]');
+        if (!more || !st || st.nextBefore == null) return;
+        more.disabled = true;
+        more.textContent = 'Loading…';
+        try {
+            const r = await this._shimCall(this._anRunsUrl(`limit=${this._AN_PAGE}&before=${encodeURIComponent(st.nextBefore)}`));
+            if (st !== this._anState) return;
+            const seen = new Set(st.runs.map(x => x.id));
+            for (const run of Array.isArray(r?.runs) ? r.runs : []) if (!seen.has(run.id)) st.runs.push(run);
+            st.nextBefore = r?.nextBefore ?? null;
+            this._paintAnalysisRuns();
+        } catch (err) {
+            if (st !== this._anState) return;
+            more.disabled = false;
+            more.textContent = 'Load more';
+            const note = document.querySelector('#analysis-body [data-an-more-note]');
+            if (note) { note.textContent = 'Couldn\'t load more: ' + err.message; note.hidden = false; }
+        }
+    },
+
     // ── Settings ──
     showSettings() {
         document.getElementById('setting-server').textContent = ABS.serverUrl;
@@ -6262,6 +6572,7 @@ const App = {
         }
         this._renderFinishSetting();
         this._renderPushSettings({ fresh: true });
+        this._renderAnalysisSettings();
         document.getElementById('settings-modal').classList.remove('hidden');
         this._renderSwLog();
         this.renderDownloadsList();

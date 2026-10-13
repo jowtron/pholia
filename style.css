@@ -1036,6 +1036,31 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
     font-size: 0.85rem; font-weight: 500; cursor: pointer; padding: 0.2rem 0;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* Episode analysis: the show page's switch notes, and Settings' records. */
+.pod-analyse-note { flex-basis: 100%; font-size: 0.75rem; color: var(--text-muted); line-height: 1.4; margin-top: -0.1rem; }
+.pod-analyse-note[hidden] { display: none; }
+.an-totals {
+    display: grid; grid-template-columns: 1fr auto auto; gap: 0.25rem 0.9rem; align-items: baseline;
+    background: var(--card-bg); border-radius: 6px; padding: 0.5rem 0.6rem; font-size: 0.85rem;
+}
+.an-h { font-size: 0.68rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; text-align: right; }
+.an-k { color: var(--text-muted); }
+.an-v { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.an-note { font-size: 0.72rem; color: var(--text-muted); margin-top: 0.4rem; line-height: 1.4; }
+.an-note[hidden] { display: none; }
+.an-list { display: flex; flex-direction: column; gap: 0.4rem; }
+.an-list[hidden] { display: none; }
+.an-run {
+    display: block; width: 100%; text-align: left; background: var(--card-bg); border: none; border-radius: 6px;
+    padding: 0.45rem 0.55rem; color: var(--text); font: inherit; cursor: pointer;
+}
+.an-run:disabled { cursor: default; color: var(--text); opacity: 1; }
+.an-title { display: block; font-size: 0.85rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.an-line { display: block; font-size: 0.72rem; color: var(--text-muted); line-height: 1.4; }
+.an-line.an-err { color: #e57373; }
+.an-line.an-state { color: var(--accent); }
+.an-toggle { padding-left: 0; margin-top: 0.4rem; }
+.an-more { align-self: center; }
 .episode-main { display: flex; align-items: center; position: relative; z-index: 1; }
 .episode-main .episode-open { flex: 1; min-width: 0; }
 .episode-title { font-weight: 500; }
