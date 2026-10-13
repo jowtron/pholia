@@ -5197,7 +5197,19 @@ const App = {
         if (!this._epPageShowing(s)) return;
         const out = document.querySelector('#content [data-ep-analysis]');
         if (out) out.textContent = (st ? ' ' + this._analysisText(st) : '');
+        const btn = document.querySelector('#content [data-ep-analyse]');
+        if (btn && st) btn.hidden = !this._analysisWanted(st);
         s.analysisState = st?.state || null;
+    },
+    // "Analyse now" is offered only when pressing it would do something:
+    // never analysed, failed, or done for a stitch no longer served (a
+    // streamed copy re-stitched since). Not while one is queued or running
+    // (the shim leaves those alone), nor when the shim has no wharf.
+    _analysisWanted(st) {
+        if (st.configured === false) return false;
+        if (st.state === 'queued' || st.state === 'running') return false;
+        if (st.state === 'done' && (st.analysis || st.current?.size === st.currentSize)) return false;
+        return true;
     },
     _watchAnalysis(s) {
         if (s.analysisTimer) return;
@@ -5258,7 +5270,11 @@ const App = {
         if (this.isShim && this.shimCanAdd) {
             if (ep.inLibrary === false) more.push('<button class="text-btn" data-ep-add>Add to the show</button>');
             else more.push('<button class="text-btn" data-ep-remove>Hide episode</button>');
-            more.push('<button class="text-btn" data-ep-analyse>Analyse now</button><span class="text-muted" data-ep-analysis></span>');
+            // Hidden while an analysis of the file served now exists (the shim
+            // serves `analysis` only then): a re-run of the same file gives
+            // the same answer. _paintAnalysisState settles it once the state
+            // is in.
+            more.push(`<button class="text-btn" data-ep-analyse${ep.analysis ? ' hidden' : ''}>Analyse now</button><span class="text-muted" data-ep-analysis></span>`);
         }
         if (playlistId) more.push('<button class="text-btn" data-ep-unlist>Remove from playlist</button>');
         if (ep.archiveError) more.push(`<span class="text-muted">Archiving failed: ${esc(ep.archiveError)}</span>`);
