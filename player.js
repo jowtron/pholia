@@ -43,6 +43,13 @@ const Player = {
         // Sustained playback clears the recovery budget so transient stalls
         // over a long listening session don't exhaust 3 attempts forever.
         this.audio.addEventListener('playing', () => { this._audioRecoveryAttempts = 0; });
+        // The stuck-seek watchdog (_armSeekWatch): a finished seek, or any
+        // new load of the element, ends the watch.
+        this.audio.addEventListener('seeked', () => this._disarmSeekWatch());
+        this.audio.addEventListener('loadstart', () => this._disarmSeekWatch());
+        // ...and a watch whose deadline passed while hidden is judged when
+        // the page is next visible.
+        document.addEventListener('visibilitychange', () => { if (!document.hidden) this._seekWatchVisible(); });
 
         // Instrumentation: log every diagnostic-relevant audio-element event to
         // the existing SW debug ring buffer. Only renders when the in-Settings
@@ -811,6 +818,9 @@ const Player = {
     // is the lock-screen resume, and it must keep playing.
     async loadTime(globalTime, source = 'loadTime', opts = {}) {
         this._logSeekCall(source, globalTime);
+        // A newer seek supersedes the one being watched (_armSeekWatch).
+        const seekSeq = ++this._seekSeq;
+        this._disarmSeekWatch();
         this._pausedAt = 0;
         const prevTime = this.getGlobalTime();
         let url, offset = 0;
@@ -875,6 +885,9 @@ const Player = {
         } catch {}
         // Sampled before the silent seek below can pause the element.
         const wasPaused = this.audio.paused;
+        // ...and whether that pause is only an earlier silent seek's, still
+        // waiting to resume (a second skip tapped quickly while playing).
+        const silentHeld = this._silentSeek;
         // Re-assign src even when unchanged if the element is in an error
         // state — an errored element ignores play()/currentTime entirely and
         // only re-running the load algorithm clears it (iOS: error 4 after a
@@ -914,10 +927,14 @@ const Player = {
         this.audio.currentTime = offset;
         if (silent) {
             let resumed = false;
+            const gen = this._silentGen;
             const resume = () => {
                 if (resumed) return;
                 resumed = true;
                 this.audio.removeEventListener('seeked', resume);
+                // Dropped by a stuck-seek recovery, which has put a new load
+                // in the element: this resume belongs to the old one.
+                if (gen !== this._silentGen) return;
                 this._silentSeek = false;
                 this._tryPlay(source);
             };
@@ -933,6 +950,19 @@ const Player = {
             // Play immediately; if it fails (slow connection), retry when audio is ready
             this._tryPlay(source);
         }
+        // Same-src seeks only. A new load is not a seek (and an errored
+        // element is a new load); a stuck-seek recovery's own reload is one
+        // of those, so it is never watched again.
+        if (!srcChanged) {
+            this._armSeekWatch({
+                seq: seekSeq, globalTime, offset, url, source,
+                // What the branch above amounts to: everything plays except
+                // a keepPaused seek on a stopped player. An element held
+                // paused by a pending silent seek is not stopped: that
+                // seek's resume plays it once a `seeked` comes.
+                wantPlay: !(opts.keepPaused && wasPaused && !silentHeld),
+            });
+        }
         // Big seek (chapter nav, scrub, jump back/forward) — restart auto-cache
         // so it re-evaluates which chunks fall in the new sliding window. The
         // existing one-shot loop iterates chunks linearly forward and never
@@ -940,6 +970,167 @@ const Player = {
         // section never fetches its chunks.
         if (Math.abs(globalTime - prevTime) > 60) this._restartAutoCache();
         this._updatePositionState();
+    },
+
+    // ── Stuck-seek watchdog ──
+    // iPhone, iOS 18.7, 2026-10-14 (crash log 907827f3): an mp3 episode
+    // fully buffered (buf n:1, 1884 s), network idle, readyState 4. Seeks
+    // with the same src started and never finished: `seeking` fired,
+    // `seeked` never did, and currentTime stayed frozen at the target for
+    // minutes while the element said it was playing and sound carried on
+    // from somewhere else. The scrubber, ad skipping and progress sync all
+    // read currentTime, so all three stopped. After a cold start the same
+    // file seeked in 34 ms. The cause is not known; this is a net under it.
+    //
+    // It acts only on a seek that is demonstrably stuck, and does nothing
+    // at all to one that finishes: a `seeked` (or any new load) ends the
+    // watch. SEEK_STUCK_MS after a same-src seek, it is stuck when all of
+    // these hold: no newer seek, same item and src, no element error, the
+    // target lies inside audio.buffered (a slow seek into audio still to be
+    // fetched is not stuck), the clock is still at the target, and the
+    // element is not fetching anything. Then, unless a recovery ran in the
+    // last SEEK_RECOVER_COOLDOWN_MS, the load is re-run at the target. Only
+    // ever while the page is visible: a deadline that passes while hidden
+    // is judged once the page is next visible (_seekWatchVisible), never in
+    // the background (iOS backgrounds fail differently, see loadTime). One
+    // recovery per seek at most, and the reload is a src change, which is
+    // never watched.
+    SEEK_STUCK_MS: 2000,
+    SEEK_RECOVER_COOLDOWN_MS: 30000,
+    _seekSeq: 0,
+    _seekWatch: null,
+    _lastSeekRecoveryAt: 0,
+    _pauseSeq: 0,
+    _silentGen: 0,
+    _armSeekWatch(w) {
+        this._disarmSeekWatch();
+        w.item = this.item;
+        w.at = Date.now();
+        w.pauseSeq = this._pauseSeq;
+        w.timer = setTimeout(() => this._checkSeekWatch(w), this.SEEK_STUCK_MS);
+        this._seekWatch = w;
+    },
+    _disarmSeekWatch() {
+        if (!this._seekWatch) return;
+        clearTimeout(this._seekWatch.timer);
+        this._seekWatch = null;
+    },
+    // True when t (element time) is buffered with at least a second after
+    // it, or with everything to the end of the file.
+    _timeBuffered(t) {
+        try {
+            const b = this.audio.buffered, d = this.audio.duration;
+            for (let i = 0; i < (b?.length || 0); i++) {
+                const s = b.start(i), e = b.end(i);
+                if (t < s - 0.25) continue;
+                if (t + 1 <= e) return true;
+                if (Number.isFinite(d) && d > 0 && e >= d - 0.5 && t <= e + 0.25) return true;
+            }
+        } catch {}
+        return false;
+    },
+    _checkSeekWatch(w) {
+        if (this._seekWatch !== w) return;
+        const a = this.audio;
+        const t = a.currentTime || 0;
+        const logStuck = (act, why) => {
+            try {
+                App?._pushLog?.('audio', {
+                    ev: 'seek-stuck', source: w.source, to: Number(w.globalTime.toFixed(2)), off: Number(w.offset.toFixed(2)),
+                    t: Number(t.toFixed(2)), buf: this._bufferedSummary(), rdy: a.readyState, net: a.networkState,
+                    seeking: !!a.seeking, paused: a.paused, ms: Date.now() - w.at, act, why,
+                });
+            } catch {}
+        };
+        // Hidden: not judged now (a hidden page is not ours to fix, see
+        // loadTime), but not dropped either. The watch stays armed (a
+        // `seeked`, a new load or a newer seek still end it) and is judged
+        // once the page is next visible (_seekWatchVisible). Why: a
+        // lock-screen resume's auto-rewind seek on a fully cached file
+        // leaves the decoder asleep until the app is opened, and a seek
+        // still stuck then must heal instead of staying frozen.
+        if (document.hidden) {
+            w.timer = null;
+            if (!w.deferred) { w.deferred = true; logStuck('defer', 'hidden'); }
+            return;
+        }
+        this._seekWatch = null;
+        const why =
+            // Moved on, or a failure of another kind (_recoverFromAudioError's).
+            this.item !== w.item || a.src !== w.url ? 'moved-on'
+            : a.error ? 'error'
+            // A seek into audio not buffered yet waits for the network,
+            // which may take longer than this.
+            : !this._timeBuffered(w.offset) ? 'not-buffered'
+            // The clock left the target: the seek finished and only its
+            // event went missing. Nothing is frozen.
+            : Math.abs(t - w.offset) > 1 ? 'clock-moved'
+            // NETWORK_LOADING: still fetching, so not proven stuck.
+            : a.networkState === 2 ? 'loading'
+            : Date.now() - this._lastSeekRecoveryAt < this.SEEK_RECOVER_COOLDOWN_MS ? 'cooldown'
+            : null;
+        // The first four are no sign of a stuck seek and stay out of the
+        // log, unless this is a deferred watch, whose 'defer' line should
+        // say how it ended.
+        if (!why || w.deferred || why === 'loading' || why === 'cooldown') logStuck(why ? 'none' : 'recover', why);
+        if (why) return;
+        this._recoverStuckSeek(w);
+    },
+    // The page is visible again: judge a watch deferred while hidden, once,
+    // after a short grace so a seek the foregrounded decoder finishes by
+    // itself (its `seeked` ends the watch) is left alone.
+    SEEK_VISIBLE_GRACE_MS: 1000,
+    _seekWatchVisible() {
+        const w = this._seekWatch;
+        if (!w?.deferred || w.timer || document.hidden) return;
+        w.timer = setTimeout(() => this._checkSeekWatch(w), this.SEEK_VISIBLE_GRACE_MS);
+    },
+    // Re-run the load at the target: clear src and assign it again, so the
+    // element starts over as on a cold start, where the same file seeked
+    // in 34 ms.
+    async _recoverStuckSeek(w) {
+        this._lastSeekRecoveryAt = Date.now();
+        // Pin the worker's mode first, while the element still holds the
+        // stuck load, then clear and assign in one go. Clearing first and
+        // waiting for the worker (up to 8 s) would leave the element at 0
+        // meanwhile, and a sync or the local position save could record 0.
+        const mode = await App?.pinMediaMode?.(w.url);
+        const log = (data) => {
+            try { App?._pushLog?.('audio', { ev: 'seek-recover', source: w.source, to: Number(w.globalTime.toFixed(2)), ...data }); } catch {}
+        };
+        if (this._seekSeq !== w.seq || this.item !== w.item || this.audio.src !== w.url || document.hidden) {
+            log({ act: 'abandoned', pin: mode ?? null });
+            return;
+        }
+        // Keep the user's intent: playing unless the seek was a keepPaused
+        // skip on a stopped player, or playback was paused since, by the
+        // user (Player.pause) or by the system (a call, another app: the
+        // element's own `pause` event stamps _pausedAt). A deferred watch
+        // can be judged long after its seek, so both matter.
+        const pausedAt = this._pausedAt;
+        const play = w.wantPlay && this._pauseSeq === w.pauseSeq && !(pausedAt > w.at);
+        log({ act: 'reload', play, pin: mode ?? null });
+        // A silent seek (loadTime) still waiting for this seek's `seeked`,
+        // or its 1500 ms fallback, must not act on the load that replaces
+        // it. Dropped here, with nothing awaited between this and the new
+        // src, and not before the checks above: an abandoned recovery
+        // leaves the silent seek to finish as it would have.
+        this._silentGen++;
+        this._silentSeek = false;
+        if (!play && !this.audio.paused) this.audio.pause();
+        try { this.audio.removeAttribute('src'); this.audio.load(); } catch {}
+        this.loadTime(w.globalTime, 'seek-recover', { pinned: true, keepPaused: !play });
+        if (!play) {
+            // A pause pressed while a silent seek held the element paused
+            // fired no `pause` event, so the button may still say playing.
+            if (this.isPlaying) this.setPlaying(false);
+            // And that pause is still one to rewind after, from when it
+            // happened if the element said (loadTime cleared it).
+            if (w.wantPlay) this._pausedAt = pausedAt > w.at ? pausedAt : Date.now();
+        }
+        // Ship the tail once the reload has had time to play or not, so the
+        // next look at crash_logs says whether this worked on the phone.
+        setTimeout(() => { try { App?.shipCrashLog?.('seek-stuck'); } catch {} }, 5000);
     },
 
     _restartAutoCache() {
@@ -1045,6 +1236,9 @@ const Player = {
         return 30;
     },
     pause() {
+        // Counted for the stuck-seek recovery: a pause after the seek wins
+        // over the intent the seek started with.
+        this._pauseSeq++;
         this.audio.pause();
         this._updatePositionState();
         // A pause is the position the user will want back; don't wait for the timer.
@@ -1391,7 +1585,7 @@ const Player = {
         setText('fs-remaining', remTxt);
 
         const bookPct = dur > 0 ? Math.round((gt / dur) * 100) : 0;
-        setText('fs-progress-summary', `${bookPct}% of book \u2022 ${formatTime(gt)} / ${formatTime(dur)}`);
+        setText('fs-progress-summary', `${bookPct}% of ${this.item.episodeId ? 'episode' : 'book'} \u2022 ${formatTime(gt)} / ${formatTime(dur)}`);
 
         const fsSeek = document.getElementById('fs-seek');
         if (!fsSeek.dataset.dragging) fsSeek.value = chp.progress;
