@@ -2921,7 +2921,9 @@ const App = {
                 if (n) html += `<button class="playlist-play" data-play-playlist="${esc(pl.id)}" aria-label="Play">▶</button>`;
                 html += '</div>';
             }
-            if (!lists.length) html += '<div class="empty-state">No playlists yet. A smart playlist gathers the unplayed episodes of the shows you pick, so one tap plays the lot.</div>';
+            if (!lists.length) html += `<div class="empty-state">No playlists yet. ${this.isShim
+                ? 'A smart playlist gathers the unplayed episodes of the shows you pick, so one tap plays the lot.'
+                : 'Make one here, then add episodes to it from their pages.'}</div>`;
             html += '</div>';
             return html;
         }, () => {
@@ -3106,14 +3108,18 @@ const App = {
     async showPlaylistEditor(pl) {
         this.setNavTop(pl ? 'Edit playlist' : 'New playlist', () => this.showPlaylistEditor(pl));
         this.showLoading();
+        // Smart playlists are ABS_shim's: stock ABS stores the playlist and
+        // drops `rules`, so offering one there made an empty playlist that
+        // never filled. Off a shim the editor only names a hand-picked one.
+        const canSmart = !!(pl?.rules || this.isShim);
         let shows = [];
-        try { shows = (await ABS.getLibraryItems(this.currentLibraryId, 0, 500)).results || []; } catch {}
+        if (canSmart) try { shows = (await ABS.getLibraryItems(this.currentLibraryId, 0, 500)).results || []; } catch {}
         const r = pl?.rules || { podcastIds: [], include: 'unplayed', sort: 'newest' };
-        const smart = pl ? !!pl.rules : true;
+        const smart = pl ? !!pl.rules : canSmart;
         const picked = new Set(r.podcastIds || []);
         let html = '<div class="detail-view playlist-editor">';
         html += `<label class="editor-row">Name <input type="text" id="pl-name" value="${esc(pl?.name || '')}" placeholder="e.g. Tech" autocomplete="off"></label>`;
-        if (!pl) {
+        if (!pl && canSmart) {
             html += '<div class="editor-row editor-kind">'
                 + '<label><input type="radio" name="pl-kind" value="smart" checked> Smart: the shows you pick, kept up to date</label>'
                 + '<label><input type="radio" name="pl-kind" value="manual"> Hand-picked episodes</label></div>';
@@ -3149,7 +3155,7 @@ const App = {
             const name = content.querySelector('#pl-name').value.trim();
             const status = content.querySelector('#pl-status');
             if (!name) { status.textContent = 'Give it a name'; return; }
-            const isSmart = pl ? !!pl.rules : content.querySelector('input[name="pl-kind"]:checked').value === 'smart';
+            const isSmart = pl ? !!pl.rules : canSmart && content.querySelector('input[name="pl-kind"]:checked').value === 'smart';
             const body = { name };
             if (isSmart) {
                 const ids = [...content.querySelectorAll('.playlist-show input:checked')].map(i => i.value);
