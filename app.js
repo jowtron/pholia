@@ -5180,6 +5180,7 @@ const App = {
     _analysisText(st) {
         const c = st?.current;
         if (!st?.state || !c) return '';
+        if (st.state === 'queued' && st.waitingFor === 'archive') return 'Archiving first…';
         if (st.state === 'queued') return 'Analysis waiting' + (c.error ? ` (${c.error})` : '');
         if (st.state === 'running') return 'Analysing…';
         if (st.state === 'error') return 'Analysis failed: ' + (c.error || 'unknown error');
