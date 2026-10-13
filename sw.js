@@ -144,6 +144,80 @@ self.addEventListener('message', e => {
     }
 });
 
+// ── New-episode notifications (ABS_shim is the sender) ──
+// Payload: { title, body, tag, libraryItemId, episodeId, kind } with kind
+// 'episode' or 'test' (a test carries no ids). Any field may be missing.
+//
+// EVERY push shows a notification. iOS revokes the subscription of a site
+// whose push shows nothing (Chrome shows its own "updated in the
+// background" instead), so the payload is parsed in try/catch, the title
+// falls back to 'Pholia', nothing returns early, and nothing here decides to
+// stay quiet: TinnyGo lost subscriptions to a "the chat is open" check in
+// its worker. Anything that should not notify must not be sent.
+self.addEventListener('push', e => {
+    e.waitUntil((async () => {
+        let title = 'Pholia', body = '', tag = 'pholia';
+        const data = { libraryItemId: null, episodeId: null, kind: null };
+        const id = (v) => (typeof v === 'string' || typeof v === 'number') && String(v) ? String(v) : null;
+        try {
+            const p = e.data ? e.data.json() : null;
+            if (p && typeof p === 'object') {
+                if (typeof p.title === 'string' && p.title.trim()) title = p.title;
+                if (typeof p.body === 'string') body = p.body;
+                if (typeof p.tag === 'string' && p.tag) tag = p.tag;
+                data.libraryItemId = id(p.libraryItemId);
+                data.episodeId = id(p.episodeId);
+                data.kind = typeof p.kind === 'string' ? p.kind : null;
+            } else if (p != null) {
+                body = String(p);
+            }
+        } catch {
+            try { body = e.data ? String(e.data.text() || '') : ''; } catch {}
+        }
+        try {
+            // renotify: one tag per show, so the next episode replaces the
+            // last one in the tray; without it Chrome replaces it silently.
+            await self.registration.showNotification(title, {
+                body, tag, renotify: true, data,
+                icon: new URL('icons/icon-192.png', self.registration.scope).href,
+            });
+        } catch {
+            // An option this platform refuses must not cost the subscription.
+            try { await self.registration.showNotification(title, body ? { body } : {}); }
+            catch { await self.registration.showNotification('Pholia'); }
+        }
+    })());
+});
+
+// A tap opens the episode's page. An open window is told by message (the
+// page captures it even mid-boot, see the inline script in index.html) and
+// focused; client.navigate() is avoided because it raced the focus and
+// dropped the message in TinnyGo. With no window, one is opened at
+// #open-episode=<show>/<episode>, which the page reads at boot. A test push
+// carries no ids and just brings the app forward.
+self.addEventListener('notificationclick', e => {
+    e.notification.close();
+    const d = e.notification.data || {};
+    const li = typeof d.libraryItemId === 'string' && d.libraryItemId ? d.libraryItemId : null;
+    const ep = typeof d.episodeId === 'string' && d.episodeId ? d.episodeId : null;
+    e.waitUntil((async () => {
+        const scope = self.registration.scope;
+        let wins = [];
+        try { wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true }); } catch {}
+        const mine = wins.filter(c => { try { return new URL(c.url).origin === self.location.origin; } catch { return false; } });
+        const win = mine.find(c => c.focused) || mine.find(c => c.visibilityState === 'visible') || mine[0];
+        if (win) {
+            if (li && ep) win.postMessage({ type: 'open-episode', libraryItemId: li, episodeId: ep });
+            try { await win.focus(); } catch {}
+            return;
+        }
+        const url = li && ep
+            ? new URL('./#open-episode=' + encodeURIComponent(li) + '/' + encodeURIComponent(ep), scope).href
+            : scope;
+        try { await self.clients.openWindow(url); } catch {}
+    })());
+});
+
 // Serve partially cached books from the local cache when the requested Range
 // starts inside a cached chunk. Always on since 2026-09-08 (the Settings
 // toggle was removed: it was found switched off and that alone cost 34 s

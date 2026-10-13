@@ -33,6 +33,7 @@ const App = {
         this.tryAutoLogin();
         this.setupSwUpdate();
         this.setupSwDebugBridge();
+        this.setupPush();
         document.addEventListener('cacheprogress', (e) => this.onCacheProgress(e.detail));
         // Clear phantom downloads (meta entries with no audio) left behind
         // by SW cleanups of legacy oversized cache entries.
@@ -1308,6 +1309,10 @@ const App = {
         document.getElementById('login-screen').classList.remove('active');
         document.getElementById('server-picker').classList.remove('active');
         document.getElementById('main-screen').classList.add('active');
+        // A notification tap waiting for sign-in. Deferred a task: every
+        // caller runs switchTab('home') straight after this, which empties
+        // the nav stack, and the episode page must land on top of it.
+        setTimeout(() => this._maybeOpenPendingEpisode(), 0);
     },
 
     logout() {
@@ -1416,6 +1421,7 @@ const App = {
                 if (mine) { ok = true; this.abbFolderId = mine.id; this.abbLibraryId = mine.libraryId; }
             }
         } catch { this.isShim = false; /* not a shim, or no access */ }
+        if (this.isShim) this._pushStart();
         this.abbAvailable = ok;
         btn.classList.toggle('hidden', !ok);
         // In a podcast library the same button subscribes to podcasts, so it
@@ -4413,6 +4419,9 @@ const App = {
         html += `<h3>${esc(meta.title || 'Unknown')}</h3>`;
         if (meta.author) html += `<div class="author">${esc(meta.author)}</div>`;
         html += `<div class="duration">${episodes.length} episode${episodes.length !== 1 ? 's' : ''}${item.media?.archive ? ' · archiving to pCloud' : ''}</div>`;
+        // New-episode notifications: filled in by _mountPushBell once the
+        // shim's push status says it can send them.
+        if (this.isShim) html += '<div class="pod-bell-box" data-pod-bell-box></div>';
         html += '</div></div>';
         if (meta.description) html += `<div class="author-bio podcast-desc">${esc(this._plainText(meta.description))}</div>`;
         html += '<div class="podcast-actions">';
@@ -4478,6 +4487,7 @@ const App = {
         const content = document.getElementById('content');
         content.querySelector('.podcast-desc')?.addEventListener('click', (e) => e.currentTarget.classList.toggle('open'));
         this._bindEpisodeRows(content, item, episodes, progress);
+        this._mountPushBell(content, item);
         const status = content.querySelector('[data-pod-status]');
         content.querySelector('[data-pod-check]')?.addEventListener('click', async (e) => {
             const btn = e.currentTarget;
@@ -5788,6 +5798,446 @@ const App = {
         }));
     },
 
+    // ── New-episode notifications (ABS_shim) ──
+    // The shim is the sender: it polls the feeds, so it knows when an
+    // episode lands, and it holds the VAPID keys, the subscriptions and each
+    // user's per-show choice (`/api/push/*`, see its CLAUDE.md). Pholia is
+    // the receiver: sw.js shows the notification and routes a tap; this part
+    // subscribes, keeps the shim's copy of the subscription current, and
+    // draws the show page's bell and Settings → Notifications. None of it
+    // shows on stock ABS, or on a shim whose status says configured: false.
+    _pushStatusCache: null, // { key, at, data }: the last /api/push/status
+    _pushStartedFor: null,
+    _pushSubP: null,
+    _pushTitles: new Map(), // show id → title, for Settings' list of shows
+
+    setupPush() {
+        window.addEventListener('pholia-open-episode', () => this._maybeOpenPendingEpisode());
+        if (!('serviceWorker' in navigator)) return;
+        // iOS has been seen to drop a subscription when a new worker takes
+        // over (TinnyGo: pushes silently stopped after deploys), so look
+        // again once the new one has settled. A page that had a worker
+        // reloads on controllerchange anyway (setupSwUpdate), and the launch
+        // check covers it; this is for the first install and a failed reload.
+        navigator.serviceWorker.addEventListener('controllerchange', () => {
+            setTimeout(() => this.ensurePushSubscription(), 2000);
+        });
+    },
+
+    _pushKey(kind) { return `pholia_push_${kind}:${ABS.serverUrl}|${localStorage.getItem('pholia_username') || ''}`; },
+    _pushSupported() {
+        return 'serviceWorker' in navigator && typeof window.PushManager !== 'undefined' && typeof window.Notification !== 'undefined';
+    },
+    _isIOS() {
+        return /iP(hone|ad|od)/.test(navigator.userAgent || '') || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    },
+    // iOS offers push only to an app added to the Home Screen and opened
+    // from there; a Safari tab has no PushManager at all.
+    _pushUnsupportedText() {
+        if (!this._isIOS()) return 'This browser can\'t receive notifications.';
+        const standalone = navigator.standalone === true || !!window.matchMedia?.('(display-mode: standalone)')?.matches;
+        return standalone ? 'Notifications need iOS 16.4 or later.'
+            : 'Add Pholia to your Home Screen, then open it from there, to get notifications.';
+    },
+    // A denied permission can't be asked for again from a page, so say where
+    // it's changed instead of offering a button that can't work.
+    _pushDeniedText() {
+        return this._isIOS()
+            ? 'Notifications are turned off for Pholia. To allow them: Settings → Notifications → Pholia → Allow Notifications.'
+            : 'Notifications are blocked for this site. Allow them in the browser\'s settings for this site.';
+    },
+
+    // The shim's push status, cached five minutes per server and user (the
+    // show page asks on every visit). null when it couldn't be asked
+    // (offline, or a shim from before push, which 404s); callers treat that
+    // as "no notifications here".
+    async _loadPushStatus(fresh = false) {
+        if (!this.isShim || !ABS.token) return null;
+        const key = this._pushKey('status');
+        const c = this._pushStatusCache;
+        if (!fresh && c && c.key === key && Date.now() - c.at < 5 * 60e3) return c.data;
+        let r;
+        try { r = await this._shimCall('/api/push/status'); } catch { return null; }
+        const data = {
+            configured: !!(r && r.configured && r.publicKey),
+            publicKey: (r && r.publicKey) || null,
+            shows: Array.isArray(r?.shows) ? r.shows.map(String) : [],
+            subscriptions: Array.isArray(r?.subscriptions) ? r.subscriptions : [],
+        };
+        this._pushStatusCache = { key, at: Date.now(), data };
+        return data;
+    },
+    _setPushShows(shows) {
+        const d = this._pushStatusCache?.data;
+        if (d && Array.isArray(shows)) d.shows = shows.map(String);
+    },
+
+    // Once per page load per server and user (from checkAbbSupport, which
+    // runs whenever a shim is found): subscriptions go stale unseen (a row
+    // the shim deleted after a 410, a new endpoint, a worker update) and
+    // re-sending is what repairs them.
+    async _pushStart() {
+        const key = this._pushKey('start');
+        if (this._pushStartedFor === key) return;
+        this._pushStartedFor = key;
+        const st = await this._loadPushStatus(true);
+        // Couldn't ask: the next library switch or sign-in tries again.
+        if (!st) { if (this._pushStartedFor === key) this._pushStartedFor = null; return; }
+        if (st.configured) this.ensurePushSubscription(st);
+    },
+
+    // Only where notifications are already allowed: asking needs a tap,
+    // and that's the bell's job. Never throws.
+    async ensurePushSubscription(status) {
+        try {
+            if (!this.isShim || !ABS.token || !this._pushSupported() || Notification.permission !== 'granted') return null;
+            const st = status || await this._loadPushStatus();
+            if (!st?.configured) return null;
+            return await this._pushSubscribe(st.publicKey);
+        } catch (e) {
+            this._pushLog('page', { ev: 'push-ensure-failed', err: String(e?.message || e) });
+            return null;
+        }
+    },
+
+    // One at a time: the launch check and a bell tap can meet.
+    _pushSubscribe(publicKey) {
+        if (this._pushSubP) return this._pushSubP;
+        const p = this._pushSubscribeNow(publicKey);
+        this._pushSubP = p;
+        const clear = () => { if (this._pushSubP === p) this._pushSubP = null; };
+        p.then(clear, clear);
+        return p;
+    },
+    async _pushSubscribeNow(publicKey) {
+        const key = this._b64urlBytes(publicKey);
+        const reg = await this._swReady();
+        let sub = await reg.pushManager.getSubscription();
+        // A subscription is bound to the key it was made with, and a push
+        // signed with another is refused (Apple answers 403, which a sender
+        // keeps as a passing failure), so a phone subscribed under an old or
+        // another shim's key would stay deaf for good; TinnyGo never fixed
+        // that. Start again under this shim's key and drop its row for the
+        // dead endpoint. A browser that doesn't expose the key is left
+        // alone, rather than re-subscribed on every launch.
+        const had = sub?.options?.applicationServerKey;
+        if (sub && had && !this._sameBytes(new Uint8Array(had), key)) {
+            const old = sub.endpoint;
+            try { await sub.unsubscribe(); } catch {}
+            try { await this._shimCall('/api/push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint: old }) }); } catch {}
+            sub = null;
+        }
+        if (!sub) {
+            sub = await reg.pushManager.subscribe({
+                userVisibleOnly: true,
+                applicationServerKey: key.buffer.slice(key.byteOffset, key.byteOffset + key.byteLength),
+            });
+        }
+        // ALWAYS sent, changed or not: the shim deletes a row its push
+        // service answered 404/410 for, and this is what puts it back. It
+        // also moves the phone to whoever is signed in now.
+        const j = typeof sub.toJSON === 'function' ? sub.toJSON() : {};
+        const r = await this._shimCall('/api/push/subscriptions', {
+            method: 'POST',
+            body: JSON.stringify({ endpoint: j.endpoint || sub.endpoint, keys: { p256dh: j.keys?.p256dh, auth: j.keys?.auth } }),
+        });
+        // Remembered so Settings can say which device in the list is this one.
+        if (r?.id != null) { try { localStorage.setItem(this._pushKey('sub'), String(r.id)); } catch {} }
+        this._pushLog('page', { ev: 'push-subscribed', created: !!r?.created });
+        return sub;
+    },
+    // ready never settles without a registered worker; don't hang a tap on it.
+    _swReady() {
+        return new Promise((resolve, reject) => {
+            const t = setTimeout(() => reject(new Error('the service worker isn\'t running')), 10000);
+            navigator.serviceWorker.ready.then((r) => { clearTimeout(t); resolve(r); }, (e) => { clearTimeout(t); reject(e); });
+        });
+    },
+    _b64urlBytes(s) {
+        let b = String(s || '').replace(/-/g, '+').replace(/_/g, '/');
+        while (b.length % 4) b += '=';
+        const bin = atob(b);
+        const out = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+        return out;
+    },
+    _sameBytes(a, b) {
+        if (a.length !== b.length) return false;
+        for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+        return true;
+    },
+
+    _bellSvg(on) {
+        return `<svg width="18" height="18" viewBox="0 0 24 24" fill="${on ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">`
+            + '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>';
+    },
+    _paintBell(btn, on) {
+        btn.classList.toggle('is-on', on);
+        btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+        btn.innerHTML = this._bellSvg(on) + `<span>${on ? 'Notifications on' : 'Notify me of new episodes'}</span>`;
+    },
+
+    // The show page's bell. On: the shim notifies this user of the show's
+    // new episodes on every device they've subscribed. Off leaves the
+    // subscription alone, so other shows carry on.
+    async _mountPushBell(content, item) {
+        const box = content.querySelector('[data-pod-bell-box]');
+        if (!box) return;
+        const st = await this._loadPushStatus();
+        if (!box.isConnected || !st?.configured) return;
+        const title = item.media?.metadata?.title;
+        if (title) this._pushTitles.set(item.id, title);
+        const on = st.shows.includes(item.id);
+        const blocked = this._pushSupported() && Notification.permission === 'denied';
+        // Blocked and off: nothing a tap could do, so only the way to fix it.
+        // Blocked and on: the bell stays, to turn the show off.
+        box.innerHTML = (blocked && !on ? '' : '<button type="button" class="pod-bell" data-pod-bell></button>')
+            + '<div class="pod-bell-note" data-pod-bell-note hidden></div>';
+        const note = box.querySelector('[data-pod-bell-note]');
+        const say = (t) => { note.textContent = t || ''; note.hidden = !t; };
+        if (blocked) say(this._pushDeniedText());
+        const btn = box.querySelector('[data-pod-bell]');
+        if (!btn) return;
+        this._paintBell(btn, on);
+        btn.addEventListener('click', () => this._toggleShowPush(item, st, btn, say));
+    },
+
+    async _toggleShowPush(item, st, btn, say) {
+        const url = `/api/push/shows/${encodeURIComponent(item.id)}`;
+        if (btn.getAttribute('aria-pressed') === 'true') {
+            btn.disabled = true;
+            try {
+                const r = await this._shimCall(url, { method: 'PUT', body: JSON.stringify({ notify: false }) });
+                this._setPushShows(r?.shows || st.shows.filter(id => id !== item.id));
+                this._paintBell(btn, false);
+                say('');
+            } catch (e) { say('Couldn\'t turn notifications off: ' + e.message); }
+            finally { btn.disabled = false; }
+            return;
+        }
+        if (!this._pushSupported()) { say(this._pushUnsupportedText()); return; }
+        if (Notification.permission === 'denied') { say(this._pushDeniedText()); return; }
+        btn.disabled = true;
+        try {
+            // Asked first, before anything else is awaited: iOS shows the
+            // prompt only in answer to a tap.
+            const perm = await this._askNotificationPermission();
+            if (perm !== 'granted') {
+                say(perm === 'denied' ? this._pushDeniedText() : 'Notifications weren\'t allowed, so nothing changed.');
+                return;
+            }
+            say('Turning on…');
+            await this._pushSubscribe(st.publicKey);
+            const r = await this._shimCall(url, { method: 'PUT', body: JSON.stringify({ notify: true }) });
+            this._setPushShows(r?.shows || [...st.shows, item.id]);
+            this._paintBell(btn, true);
+            say('');
+        } catch (e) {
+            say('Couldn\'t turn notifications on: ' + e.message);
+        } finally { btn.disabled = false; }
+    },
+    _askNotificationPermission() {
+        return new Promise((resolve) => {
+            let p;
+            // Old Safari answers through a callback, everything since with a promise.
+            try { p = Notification.requestPermission((v) => resolve(v)); }
+            catch { resolve(Notification.permission); return; }
+            if (p && typeof p.then === 'function') p.then(resolve, () => resolve(Notification.permission));
+        });
+    },
+
+    // A tapped notification (the inline script in index.html holds it):
+    // open that episode's page once signed in, as a level on the nav stack,
+    // so Back returns to wherever the app was.
+    _maybeOpenPendingEpisode() {
+        const t = window.__pholiaOpenEpisode;
+        if (!t || !ABS.token || !this.libraries?.length) return;
+        if (!document.getElementById('main-screen')?.classList.contains('active')) return;
+        window.__pholiaOpenEpisode = null;
+        this._openPushedEpisode(t);
+    },
+    async _openPushedEpisode(t) {
+        const token = ABS.token;
+        let show = null, ep = null, failed = null;
+        try {
+            show = await ABS.getItem(t.libraryItemId);
+            ep = show?.media?.episodes?.find(e => e.id === t.episodeId) || null;
+        } catch (e) { failed = e; }
+        if (failed && (failed.status === 401 || failed.status === 403 || failed.isNetwork)) {
+            // Offline, a copy on the phone will do. Otherwise (offline, or the
+            // token was refused and the login screen is coming) keep the
+            // target for the next sign-in's showMain; if a new token arrived
+            // while this was in flight, that sign-in has already looked.
+            const local = failed.isNetwork ? await this._episodeFromPhone(t.libraryItemId, t.episodeId) : null;
+            if (!local) {
+                if (!window.__pholiaOpenEpisode) window.__pholiaOpenEpisode = t;
+                if (ABS.token && ABS.token !== token) this._maybeOpenPendingEpisode();
+                return;
+            }
+            ({ show, ep } = local);
+        }
+        this.hideSettings();
+        if (!document.getElementById('fs-player')?.classList.contains('hidden')) this.closeFullscreen();
+        // Shows live in a podcast library. A tap while an audiobook library
+        // is showing switches to the show's, so Back lands on its Home and
+        // not on a shelf of books.
+        const lib = show?.libraryId && (this.libraries || []).find(l => l.id === show.libraryId);
+        if (lib && lib.mediaType === 'podcast' && this.currentMediaType !== 'podcast') {
+            this.currentLibraryId = lib.id;
+            try { localStorage.setItem('pholia_library', lib.id); } catch {}
+            const sel = document.getElementById('library-select');
+            if (sel) sel.value = lib.id;
+            this.updateMediaType();
+            this.switchTab('home');
+        }
+        if (show && ep) this.showEpisode(show, ep);
+        else this.openEpisodeById(t.libraryItemId, t.episodeId);
+    },
+
+    // Settings → Notifications (shim, configured): whether this device may
+    // show them, a test that reports what the push services really said,
+    // the devices the shim pushes to, and the shows that are on.
+    async _renderPushSettings({ fresh = false, clearNote = false, titlesTried = false } = {}) {
+        const sec = document.getElementById('push-section');
+        const body = document.getElementById('push-body');
+        if (!sec || !body) return;
+        if (clearNote) this._pushNote('');
+        const st = this.isShim ? await this._loadPushStatus(fresh) : null;
+        if (!st?.configured) { sec.classList.add('hidden'); return; }
+        sec.classList.remove('hidden');
+        if (!this._pushSettingsWired) {
+            this._pushSettingsWired = true;
+            document.getElementById('push-test').addEventListener('click', () => this._sendTestPush());
+            body.addEventListener('click', (e) => this._onPushSettingsClick(e));
+        }
+        const perm = this._pushSupported() ? Notification.permission : 'unsupported';
+        const permText = {
+            granted: 'Allowed on this device.',
+            default: 'Not turned on for this device yet: tap the bell on a show\'s page.',
+            denied: this._pushDeniedText(),
+            unsupported: this._pushUnsupportedText(),
+        }[perm] || String(perm);
+        const mine = (() => { try { return localStorage.getItem(this._pushKey('sub')); } catch { return null; } })();
+        let h = `<div class="push-perm">${esc(permText)}</div>`;
+        h += '<div class="push-subhead">Devices</div>';
+        if (!st.subscriptions.length) h += '<div class="downloads-empty">No devices yet.</div>';
+        else {
+            h += '<div class="downloads-list push-list">';
+            for (const s of st.subscriptions) {
+                const here = mine != null && String(s.id) === mine;
+                const bits = [
+                    s.createdAt ? 'Added ' + this._pushWhen(s.createdAt) : '',
+                    s.lastSuccessAt ? 'Last accepted: ' + this._pushWhen(s.lastSuccessAt) : 'Never pushed to',
+                ];
+                if (s.lastFailureAt && (!s.lastSuccessAt || s.lastFailureAt > s.lastSuccessAt)) {
+                    bits.push('Last refused: ' + this._pushWhen(s.lastFailureAt) + (s.lastFailureStatus ? ` (HTTP ${s.lastFailureStatus})` : ''));
+                }
+                h += '<div class="downloads-row"><div class="downloads-info">'
+                    + `<div class="downloads-title">${esc(String(s.service || 'Unknown'))}${here ? ' <span class="push-here">· this device</span>' : ''}</div>`
+                    + `<div class="downloads-sub push-sub">${esc(bits.filter(Boolean).join(' · '))}</div></div>`
+                    // This device would put itself back at the next launch
+                    // (the always-re-send above), so it gets no Remove.
+                    + (here ? '' : `<button class="text-btn downloads-remove" data-push-remove="${esc(String(s.id))}">Remove</button>`)
+                    + '</div>';
+            }
+            h += '</div>';
+        }
+        h += '<div class="push-subhead">Shows</div>';
+        if (!st.shows.length) h += '<div class="downloads-empty">None yet: tap the bell on a show\'s page.</div>';
+        else {
+            h += '<div class="downloads-list push-list">';
+            for (const id of st.shows) {
+                const title = this._pushTitles.get(id) || (titlesTried ? 'A show no longer in your libraries' : '…');
+                h += `<div class="downloads-row"><button class="push-show" data-push-open="${esc(id)}">${esc(title)}</button>`
+                    + `<button class="text-btn downloads-remove" data-push-off="${esc(id)}">Turn off</button></div>`;
+            }
+            h += '</div>';
+        }
+        body.innerHTML = h;
+        if (!titlesTried && st.shows.some(id => !this._pushTitles.has(id))) {
+            await this._loadPushTitles();
+            if (!document.getElementById('settings-modal')?.classList.contains('hidden')) this._renderPushSettings({ titlesTried: true });
+        }
+    },
+    async _loadPushTitles() {
+        const libs = (this.libraries || []).filter(l => l.mediaType === 'podcast');
+        await Promise.all(libs.map(async (l) => {
+            try {
+                const r = await ABS.getLibraryItems(l.id, 0, 500);
+                for (const it of r?.results || []) {
+                    const t = it?.media?.metadata?.title;
+                    if (it?.id && t) this._pushTitles.set(it.id, t);
+                }
+            } catch {}
+        }));
+    },
+    _pushNote(text) {
+        const el = document.getElementById('push-test-result');
+        if (!el) return;
+        el.textContent = text || '';
+        el.classList.toggle('hidden', !text);
+    },
+    async _onPushSettingsClick(e) {
+        const rm = e.target.closest('[data-push-remove]');
+        const off = e.target.closest('[data-push-off]');
+        const open = e.target.closest('[data-push-open]');
+        if (open) { this.hideSettings(); this.showItem(open.dataset.pushOpen); return; }
+        const btn = rm || off;
+        if (!btn) return;
+        btn.disabled = true;
+        try {
+            if (rm) {
+                await this._shimCall('/api/push/subscriptions/' + encodeURIComponent(rm.dataset.pushRemove), { method: 'DELETE' });
+            } else {
+                const r = await this._shimCall('/api/push/shows/' + encodeURIComponent(off.dataset.pushOff), { method: 'PUT', body: JSON.stringify({ notify: false }) });
+                this._setPushShows(r?.shows);
+            }
+            this._pushNote('');
+        } catch (err) {
+            this._pushNote((rm ? 'Couldn\'t remove the device: ' : 'Couldn\'t turn it off: ') + err.message);
+        }
+        this._renderPushSettings({ fresh: true, titlesTried: true });
+    },
+    // The real outcome, device by device: "sent" only where a push service
+    // took it (TinnyGo's test said success whatever happened, which made it
+    // useless for "I didn't get a notification").
+    async _sendTestPush() {
+        const btn = document.getElementById('push-test');
+        btn.disabled = true;
+        this._pushNote('Sending…');
+        try {
+            const r = await this._shimCall('/api/push/test', { method: 'POST' });
+            this._pushNote(this._pushTestText(r));
+            // Last accepted moved, and expired devices are gone.
+            await this._renderPushSettings({ fresh: true, titlesTried: true });
+        } catch (e) {
+            this._pushNote('Test failed: ' + e.message);
+        } finally { btn.disabled = false; }
+    },
+    _pushTestText(r) {
+        const n = Number(r?.devices) || 0;
+        if (!n) return 'No devices to send to. Tap the bell on a show\'s page on this device first.';
+        const parts = [`Sent to ${Number(r.sent) || 0} of ${n} device${n === 1 ? '' : 's'}`];
+        if (r.failed) parts.push(`${r.failed} failed`);
+        if (r.expired) parts.push(`${r.expired} expired and removed`);
+        const lines = [parts.join(', ') + '.'];
+        for (const x of Array.isArray(r.results) ? r.results : []) {
+            lines.push(`${x?.service || 'Device'}: ${x?.status || '?'}${x?.httpStatus ? ` (HTTP ${x.httpStatus})` : ''}`);
+        }
+        return lines.join('\n');
+    },
+    _pushWhen(ms) {
+        const d = new Date(Number(ms));
+        if (isNaN(d.getTime())) return '?';
+        const now = new Date();
+        const day = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+        const ago = Math.round((day(now) - day(d)) / 86400e3);
+        const time = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+        if (ago === 0) return 'today ' + time;
+        if (ago === 1) return 'yesterday ' + time;
+        return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', ...(d.getFullYear() !== now.getFullYear() ? { year: 'numeric' } : {}) });
+    },
+
     // ── Settings ──
     showSettings() {
         document.getElementById('setting-server').textContent = ABS.serverUrl;
@@ -5811,6 +6261,7 @@ const App = {
             document.getElementById('shim-rescan').addEventListener('click', () => this.shimRescan());
         }
         this._renderFinishSetting();
+        this._renderPushSettings({ fresh: true });
         document.getElementById('settings-modal').classList.remove('hidden');
         this._renderSwLog();
         this.renderDownloadsList();

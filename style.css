@@ -1012,6 +1012,30 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
 .podcast-desc { margin: 0.25rem 1rem 0.5rem; }
 .podcast-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 1rem; padding: 0 1rem 0.5rem; }
 .podcast-toggle { display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; color: var(--text-muted); }
+/* New-episode notifications: the show page's bell, and Settings' section. */
+.pod-bell-box:empty { display: none; }
+.pod-bell {
+    display: inline-flex; align-items: center; gap: 0.4rem; margin-top: 0.6rem;
+    padding: 0.35rem 0.85rem; border: 1px solid var(--border); border-radius: 999px;
+    background: none; color: var(--text-muted); font-size: 0.8rem; cursor: pointer;
+}
+.pod-bell.is-on { color: var(--accent); border-color: var(--accent); }
+.pod-bell:disabled { opacity: 0.6; cursor: default; }
+/* In (hover: hover) only: iOS keeps :hover on the last thing tapped, and a
+   bell that stays purple after a tap would read as "on". */
+@media (hover: hover) { .pod-bell:hover:not(:disabled) { color: var(--accent); } }
+.pod-bell-note { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.4rem; max-width: 22rem; line-height: 1.4; }
+.push-test-result { font-size: 0.8rem; color: var(--text-muted); white-space: pre-line; margin-bottom: 0.5rem; }
+.push-perm { font-size: 0.85rem; color: var(--text-muted); }
+.push-subhead { font-size: 0.75rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; margin: 0.75rem 0 0.35rem; }
+.push-list { max-height: none; }
+.push-sub { white-space: normal; }
+.push-here { color: var(--accent); font-weight: 400; }
+.push-show {
+    flex: 1; min-width: 0; text-align: left; background: none; border: none; color: var(--text);
+    font-size: 0.85rem; font-weight: 500; cursor: pointer; padding: 0.2rem 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .episode-main { display: flex; align-items: center; position: relative; z-index: 1; }
 .episode-main .episode-open { flex: 1; min-width: 0; }
 .episode-title { font-weight: 500; }

@@ -57,6 +57,41 @@
             document.write('<link rel="manifest" href="' + href.replace(/"/g, '&quot;') + '" crossorigin="use-credentials">');
         })();
     </script>
+    <script id="push-tap-capture">
+        // A tapped new-episode notification (sw.js notificationclick) names
+        // its episode one of two ways: a message to a window already open,
+        // or, with none open, a new window at #open-episode=<show>/<episode>.
+        // Both are caught here, before app.js has loaded, because a tap that
+        // wakes a suspended app can deliver the message mid-boot, and a
+        // target that arrives before anything listens is lost (TinnyGo's
+        // lesson). App opens window.__pholiaOpenEpisode once signed in
+        // (_maybeOpenPendingEpisode); the event tells it about a later one.
+        (function () {
+            window.__pholiaOpenEpisode = null;
+            function take(li, ep) {
+                if (!li || !ep) return;
+                window.__pholiaOpenEpisode = { libraryItemId: String(li), episodeId: String(ep) };
+                try { window.dispatchEvent(new CustomEvent('pholia-open-episode')); } catch (e) {}
+            }
+            try {
+                var h = location.hash || '';
+                var m = h.match(/[#&]open-episode=([^&]*)/);
+                if (m) {
+                    var parts = m[1].split('/');
+                    try { take(decodeURIComponent(parts[0] || ''), decodeURIComponent(parts[1] || '')); } catch (e) {}
+                    // Stripped like #connect=, so a reload doesn't open it again.
+                    var rest = h.replace(/^#/, '').split('&').filter(function (p) { return p.indexOf('open-episode=') !== 0; }).join('&');
+                    history.replaceState(null, '', location.pathname + location.search + (rest ? '#' + rest : ''));
+                }
+            } catch (e) {}
+            try {
+                if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', function (e) {
+                    var d = e.data;
+                    if (d && d.type === 'open-episode') take(d.libraryItemId, d.episodeId);
+                });
+            } catch (e) {}
+        })();
+    </script>
     <link rel="icon" href="favicon.ico" sizes="any">
     <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32x32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16x16.png">
@@ -343,6 +378,14 @@
                             <h3>Listening</h3>
                             <button id="stats-open" class="text-btn">Stats &rsaquo;</button>
                         </div>
+                    </div>
+                    <div id="push-section" class="downloads-section hidden">
+                        <div class="downloads-header">
+                            <h3>Notifications</h3>
+                            <button id="push-test" class="text-btn">Send test notification</button>
+                        </div>
+                        <div id="push-test-result" class="push-test-result hidden"></div>
+                        <div id="push-body"></div>
                     </div>
                     <div id="shim-section" class="downloads-section hidden">
                         <div class="downloads-header">
