@@ -1233,14 +1233,19 @@ const App = {
         const errorEl = document.getElementById('login-error');
         errorEl.textContent = '';
         try {
-            await ABS.login(serverUrl, username, password);
-            ABS.saveCredentials(serverUrl, username, ABS.token);
+            const data = await ABS.login(serverUrl, username, password);
+            // Keep the server's own name for the account, not what was typed:
+            // an ABS_shim also signs in with an email address here, and the
+            // saved Face ID login, the install hint and the per-user caches
+            // must all use one name or they split in two.
+            const name = data?.user?.username || username;
+            ABS.saveCredentials(serverUrl, name, ABS.token);
             this.libraries = await this._fetchLibraries();
             this.setupLibrarySelector();
             this.showMain();
             this.switchTab('home');
             // Defer the save-prompt slightly so the main UI is visible behind it.
-            setTimeout(() => this._maybeOfferSaveToAccount({ serverUrl, username, password }), 400);
+            setTimeout(() => this._maybeOfferSaveToAccount({ serverUrl, username: name, password }), 400);
         } catch (e) {
             errorEl.innerHTML = e.message;
             this._offerPasswordReset();
