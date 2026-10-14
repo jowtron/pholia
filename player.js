@@ -44,9 +44,13 @@ const Player = {
         // over a long listening session don't exhaust 3 attempts forever.
         this.audio.addEventListener('playing', () => { this._audioRecoveryAttempts = 0; });
         // The stuck-seek watchdog (_armSeekWatch): a finished seek, or any
-        // new load of the element, ends the watch.
+        // new load of the element, ends the watch (a load's own watch is let
+        // through its own loadstart, _loadWatchStarted). A load's watch
+        // starts its clock once the element plays.
         this.audio.addEventListener('seeked', () => this._disarmSeekWatch());
-        this.audio.addEventListener('loadstart', () => this._disarmSeekWatch());
+        this.audio.addEventListener('loadstart', () => { if (!this._loadWatchStarted()) this._disarmSeekWatch(); });
+        this.audio.addEventListener('playing', () => this._loadWatchTrigger());
+        this.audio.addEventListener('canplay', () => this._loadWatchTrigger());
         // ...and a watch whose deadline passed while hidden is judged when
         // the page is next visible.
         document.addEventListener('visibilitychange', () => { if (!document.hidden) this._seekWatchVisible(); });
@@ -950,18 +954,25 @@ const Player = {
             // Play immediately; if it fails (slow connection), retry when audio is ready
             this._tryPlay(source);
         }
-        // Same-src seeks only. A new load is not a seek (and an errored
-        // element is a new load); a stuck-seek recovery's own reload is one
-        // of those, so it is never watched again.
+        // A same-src seek is watched from now. A new load starting part-way
+        // in is watched too, from when it plays: WebKit seeks to `offset`
+        // once the metadata is in, and that seek can stick the same way
+        // (crash log 875e31d0: `seeking` at 430.72, never `seeked`, then
+        // `playing` with the clock frozen there while the audio played from
+        // somewhere else, most likely the start). A load at 0 has no seek.
+        // A stuck-seek recovery's own reload (opts.recovery) is never
+        // watched, so a recovery can't recover itself.
         if (!srcChanged) {
             this._armSeekWatch({
-                seq: seekSeq, globalTime, offset, url, source,
+                kind: 'seek', seq: seekSeq, globalTime, offset, url, source,
                 // What the branch above amounts to: everything plays except
                 // a keepPaused seek on a stopped player. An element held
                 // paused by a pending silent seek is not stopped: that
                 // seek's resume plays it once a `seeked` comes.
                 wantPlay: !(opts.keepPaused && wasPaused && !silentHeld),
             });
+        } else if (offset > 0 && !opts.recovery) {
+            this._armSeekWatch({ kind: 'load', seq: seekSeq, globalTime, offset, url, source, wantPlay: true });
         }
         // Big seek (chapter nav, scrub, jump back/forward) — restart auto-cache
         // so it re-evaluates which chunks fall in the new sliding window. The
@@ -984,30 +995,43 @@ const Player = {
     //
     // It acts only on a seek that is demonstrably stuck, and does nothing
     // at all to one that finishes: a `seeked` (or any new load) ends the
-    // watch. SEEK_STUCK_MS after a same-src seek, it is stuck when all of
-    // these hold: no newer seek, same item and src, no element error, the
-    // target lies inside audio.buffered (a slow seek into audio still to be
-    // fetched is not stuck), the clock is still at the target, and the
-    // element is not fetching anything. Then, unless a recovery ran in the
-    // last SEEK_RECOVER_COOLDOWN_MS, the load is re-run at the target. Only
-    // ever while the page is visible: a deadline that passes while hidden
-    // is judged once the page is next visible (_seekWatchVisible), never in
+    // watch. Watched: every same-src seek, and the seek a new load makes
+    // when it starts part-way in (crash log 875e31d0, the second sighting:
+    // the UI at the saved position, the audio from the start). SEEK_STUCK_MS
+    // after the seek (for a load, after it starts playing) it is stuck when
+    // all of these hold: no newer seek, same item and src, no element
+    // error, the target lies inside audio.buffered (a slow seek into audio
+    // still to be fetched is not stuck), the clock is still at the target,
+    // and, if the element is still fetching, enough is buffered after the
+    // target that the seek can't be waiting for those bytes (otherwise it
+    // is looked at again later). Then, unless a recovery ran in the last
+    // SEEK_RECOVER_COOLDOWN_MS, the load is re-run at the target. Only ever
+    // while the page is visible: a deadline that passes while hidden is
+    // judged once the page is next visible (_seekWatchVisible), never in
     // the background (iOS backgrounds fail differently, see loadTime). One
-    // recovery per seek at most, and the reload is a src change, which is
-    // never watched.
+    // recovery per seek at most, and the recovery's reload is never
+    // watched (opts.recovery).
     SEEK_STUCK_MS: 2000,
     SEEK_RECOVER_COOLDOWN_MS: 30000,
+    // A seek while the element is still fetching is judged only once at
+    // least this much is buffered after the target (or up to the end of
+    // the file); short of that it may be waiting for the bytes in flight.
+    SEEK_LOADING_MARGIN_S: 30,
     _seekSeq: 0,
     _seekWatch: null,
     _lastSeekRecoveryAt: 0,
     _pauseSeq: 0,
     _silentGen: 0,
+    // kind 'seek' (a same-src seek) starts its clock now; kind 'load' (a
+    // new load starting part-way in) waits for the element to play
+    // (_loadWatchTrigger), which can be much later: in 875e31d0 the tap's
+    // play() was refused and the user pressed play 90 s on.
     _armSeekWatch(w) {
         this._disarmSeekWatch();
         w.item = this.item;
         w.at = Date.now();
         w.pauseSeq = this._pauseSeq;
-        w.timer = setTimeout(() => this._checkSeekWatch(w), this.SEEK_STUCK_MS);
+        w.timer = w.kind === 'load' ? null : setTimeout(() => this._checkSeekWatch(w), this.SEEK_STUCK_MS);
         this._seekWatch = w;
     },
     _disarmSeekWatch() {
@@ -1015,19 +1039,40 @@ const Player = {
         clearTimeout(this._seekWatch.timer);
         this._seekWatch = null;
     },
-    // True when t (element time) is buffered with at least a second after
-    // it, or with everything to the end of the file.
-    _timeBuffered(t) {
+    // A load's watch is armed before its own `loadstart` fires: let that
+    // one through (true), and every later one ends it like any new load.
+    _loadWatchStarted() {
+        const w = this._seekWatch;
+        if (w?.kind !== 'load' || w.loadStarted) return false;
+        w.loadStarted = true;
+        return true;
+    },
+    // `playing`, or `canplay` on an element that isn't paused: a load's
+    // watch starts its clock, and the user's intent from here on is to
+    // play (a pause after this counts against it, as for a seek).
+    _loadWatchTrigger() {
+        const w = this._seekWatch;
+        if (w?.kind !== 'load' || w.timer || w.deferred) return;
+        if (this.audio.paused || this.audio.readyState < 3) return;
+        w.at = Date.now();
+        w.pauseSeq = this._pauseSeq;
+        w.wantPlay = true;
+        w.timer = setTimeout(() => this._checkSeekWatch(w), this.SEEK_STUCK_MS);
+    },
+    // Seconds buffered after t (element time) in the range holding it,
+    // Infinity when that range runs to the end of the file, -1 when t isn't
+    // buffered at all.
+    _bufferedAfter(t) {
         try {
             const b = this.audio.buffered, d = this.audio.duration;
             for (let i = 0; i < (b?.length || 0); i++) {
                 const s = b.start(i), e = b.end(i);
-                if (t < s - 0.25) continue;
-                if (t + 1 <= e) return true;
-                if (Number.isFinite(d) && d > 0 && e >= d - 0.5 && t <= e + 0.25) return true;
+                if (t < s - 0.25 || t > e + 0.25) continue;
+                if (Number.isFinite(d) && d > 0 && e >= d - 0.5) return Infinity;
+                return e - t;
             }
         } catch {}
-        return false;
+        return -1;
     },
     _checkSeekWatch(w) {
         if (this._seekWatch !== w) return;
@@ -1036,7 +1081,7 @@ const Player = {
         const logStuck = (act, why) => {
             try {
                 App?._pushLog?.('audio', {
-                    ev: 'seek-stuck', source: w.source, to: Number(w.globalTime.toFixed(2)), off: Number(w.offset.toFixed(2)),
+                    ev: 'seek-stuck', kind: w.kind, source: w.source, to: Number(w.globalTime.toFixed(2)), off: Number(w.offset.toFixed(2)),
                     t: Number(t.toFixed(2)), buf: this._bufferedSummary(), rdy: a.readyState, net: a.networkState,
                     seeking: !!a.seeking, paused: a.paused, ms: Date.now() - w.at, act, why,
                 });
@@ -1054,25 +1099,42 @@ const Player = {
             if (!w.deferred) { w.deferred = true; logStuck('defer', 'hidden'); }
             return;
         }
-        this._seekWatch = null;
+        // A load's element paused again (the user, or it never got going):
+        // back to waiting for it to play. A paused clock proves nothing.
+        if (w.kind === 'load' && a.paused) { w.timer = null; w.deferred = false; return; }
+        const after = this._bufferedAfter(w.offset);
         const why =
             // Moved on, or a failure of another kind (_recoverFromAudioError's).
             this.item !== w.item || a.src !== w.url ? 'moved-on'
             : a.error ? 'error'
             // A seek into audio not buffered yet waits for the network,
             // which may take longer than this.
-            : !this._timeBuffered(w.offset) ? 'not-buffered'
+            : after < 1 ? 'not-buffered'
             // The clock left the target: the seek finished and only its
-            // event went missing. Nothing is frozen.
-            : Math.abs(t - w.offset) > 1 ? 'clock-moved'
-            // NETWORK_LOADING: still fetching, so not proven stuck.
-            : a.networkState === 2 ? 'loading'
+            // event went missing. Nothing is frozen. (A stuck clock sits
+            // exactly on the target; 0.5 s is what 0.5x speed covers in
+            // the 2 s window.)
+            : Math.abs(t - w.offset) > 0.5 ? 'clock-moved'
+            // NETWORK_LOADING with the target near the end of what's
+            // buffered: the seek may be waiting for the bytes in flight.
+            // Fetching alone is no excuse: in 875e31d0 a request for later
+            // bytes stayed open 26 s while the target sat 1000 s inside
+            // the buffered range, and the seek was stuck all along.
+            : a.networkState === 2 && after < this.SEEK_LOADING_MARGIN_S ? 'loading'
             : Date.now() - this._lastSeekRecoveryAt < this.SEEK_RECOVER_COOLDOWN_MS ? 'cooldown'
             : null;
-        // The first four are no sign of a stuck seek and stay out of the
-        // log, unless this is a deferred watch, whose 'defer' line should
-        // say how it ended.
-        if (!why || w.deferred || why === 'loading' || why === 'cooldown') logStuck(why ? 'none' : 'recover', why);
+        // Not proven stuck yet, nor finished: look again in a while, and
+        // judge it once the fetch is done (a `seeked` still ends it).
+        if (why === 'loading') {
+            if (!w.waited) { w.waited = true; logStuck('wait', why); }
+            w.timer = setTimeout(() => this._checkSeekWatch(w), this.SEEK_STUCK_MS);
+            return;
+        }
+        this._seekWatch = null;
+        // moved-on, error, not-buffered and clock-moved are no sign of a
+        // stuck seek and stay out of the log, unless the watch was deferred
+        // or waited, whose earlier line should say how it ended.
+        if (!why || w.deferred || w.waited || why === 'cooldown') logStuck(why ? 'none' : 'recover', why);
         if (why) return;
         this._recoverStuckSeek(w);
     },
@@ -1096,7 +1158,7 @@ const Player = {
         // meanwhile, and a sync or the local position save could record 0.
         const mode = await App?.pinMediaMode?.(w.url);
         const log = (data) => {
-            try { App?._pushLog?.('audio', { ev: 'seek-recover', source: w.source, to: Number(w.globalTime.toFixed(2)), ...data }); } catch {}
+            try { App?._pushLog?.('audio', { ev: 'seek-recover', kind: w.kind, source: w.source, to: Number(w.globalTime.toFixed(2)), ...data }); } catch {}
         };
         if (this._seekSeq !== w.seq || this.item !== w.item || this.audio.src !== w.url || document.hidden) {
             log({ act: 'abandoned', pin: mode ?? null });
@@ -1119,7 +1181,7 @@ const Player = {
         this._silentSeek = false;
         if (!play && !this.audio.paused) this.audio.pause();
         try { this.audio.removeAttribute('src'); this.audio.load(); } catch {}
-        this.loadTime(w.globalTime, 'seek-recover', { pinned: true, keepPaused: !play });
+        this.loadTime(w.globalTime, 'seek-recover', { pinned: true, keepPaused: !play, recovery: true });
         if (!play) {
             // A pause pressed while a silent seek held the element paused
             // fired no `pause` event, so the button may still say playing.

@@ -2821,7 +2821,17 @@ const App = {
         document.querySelectorAll('.offline-card[data-offline-id]').forEach(el => {
             el.addEventListener('click', async (e) => {
                 if (e.target.closest('.play-overlay')) return;
-                const item = await find(el.dataset.offlineId);
+                // An episode's id says what to do, so the tap goes straight
+                // to playEpisode instead of first reading every downloaded
+                // record (listDownloaded) on a persisted paint: play() must
+                // come soon after the tap or iOS refuses it.
+                const oid = el.dataset.offlineId;
+                if (!byId[oid] && oid.includes('~')) {
+                    const [itemId, episodeId] = oid.split('~');
+                    this.playEpisode(itemId, episodeId);
+                    return;
+                }
+                const item = await find(oid);
                 if (!item) return;
                 // A downloaded episode has no page of its own: a tap plays
                 // it, from the phone.
@@ -3361,6 +3371,13 @@ const App = {
             }
             const oid = `${itemId}~${episodeId}`;
             let epItem = null;
+            // The show and episode from the caller's hints or the network
+            // (ep null when the show doesn't list it).
+            const fromNet = async () => {
+                const show = itemHint || await ABS.getItem(itemId);
+                return { show, ep: show.media?.episodes?.find(e => e.id === episodeId) || episodeHint || null };
+            };
+            let net = null;
             if (opts.auto) {
                 // The next of a queue must reach the player without waiting
                 // on the downloads scan (seconds on an iPhone once its memo
@@ -3368,13 +3385,23 @@ const App = {
                 // time once its audio stops): the last scan's answer will do.
                 const known = Offline.fullyDownloadedKnown();
                 epItem = known?.items.find(i => Offline.oid(i) === oid) || null;
-            } else if ((await Offline.fullyDownloadedIds()).has(oid)) {
-                epItem = (await Offline.fullyDownloaded()).find(i => Offline.oid(i) === oid) || null;
+            } else {
+                // A tap: never behind the downloads scan when the network (or
+                // the caller's hints) can answer (_itemForTap). A network
+                // failure is kept and thrown below if the scan has nothing
+                // either, for the same alert as before. A show that doesn't
+                // list the episode is no answer: a downloaded copy may still
+                // play.
+                let netErr = null, unlisted = null;
+                const netP = fromNet().then(v => (v.ep ? v : (unlisted = v, null)), e => { netErr = e; return null; });
+                const got = await this._itemForTap(oid, netP);
+                if (got?.cached) epItem = got.cached;
+                else if (got?.net || unlisted) net = got?.net || unlisted;
+                else if (netErr) throw netErr;
             }
             if (!epItem) {
-                const show = itemHint || await ABS.getItem(itemId);
+                const { show, ep } = net || await fromNet();
                 this._rememberSkip(show);
-                const ep = show.media?.episodes?.find(e => e.id === episodeId) || episodeHint;
                 if (!ep) { console.warn('Episode not found'); return; }
                 epItem = this._episodeItem(show, ep);
             }
@@ -4043,9 +4070,37 @@ const App = {
         this.showItem(itemId);
     },
 
-    // Cache-first: if the book is fully downloaded locally, play from the
-    // cached META blob (works offline, immune to server-side ino drift after
-    // library rescans). Only hits the network when the book isn't cached.
+    // The item a tap plays, for `oid` (Offline.oid: a book's id, or
+    // show~episode). A tap must never wait on the downloads scan when the
+    // network can answer: the scan can take seconds (6.5 s on a cold launch,
+    // crash log 875e31d0, 2026-10-14), and play() issued after that has lost
+    // the tap's user activation, so iOS rejects it with NotAllowedError and
+    // nothing plays. So: the last completed scan's answer when it already
+    // holds the item; otherwise whichever of the network item (`netP`, which
+    // resolves null on failure and never rejects) and the scan's answer
+    // arrives first with a usable item. A network item plays from the cache
+    // too, since the worker serves cached audio by URL. Only when the
+    // network fails (offline) is the scan waited for. Returns {cached} (the
+    // downloaded copy), {net} (netP's value) or null.
+    async _itemForTap(oid, netP, t0 = Date.now()) {
+        const done = (from, out) => {
+            this._pushLog('page', { ev: 'tap-item', from: out ? from : 'none', ms: Date.now() - t0 });
+            return out;
+        };
+        const known = Offline.fullyDownloadedKnown()?.items.find(i => Offline.oid(i) === oid);
+        if (known) return done('known', { cached: known });
+        const scanP = Offline.fullyDownloaded()
+            .then(items => { const it = items.find(i => Offline.oid(i) === oid); return it ? { cached: it } : null; }, () => null);
+        const nP = Promise.resolve(netP).then(v => (v ? { net: v } : null), () => null);
+        const out = await Promise.race([nP.then(v => v || scanP), scanP.then(v => v || nP)]);
+        return done(out?.cached ? 'scan' : 'net', out || null);
+    },
+
+    // Cache-first when it costs nothing: a book whose download the last scan
+    // already knows plays from the cached META blob (works offline, immune
+    // to server-side ino drift after library rescans). Otherwise the
+    // network item and the scan race (_itemForTap), and offline the scan
+    // decides.
     async quickPlay(itemId, openPlayer = false, eagerSession = openPlayer) {
         const t0 = Date.now();
         Player._logMark('tap', 0);
@@ -4054,18 +4109,9 @@ const App = {
             // Resume taps come from book tiles, so the /play session can be
             // opened right away instead of after the item fetch.
             const sessionP = eagerSession ? ABS.startSession(itemId) : null;
-            // The offline-cache scan and the item fetch don't depend on each
-            // other: run both, prefer the cached copy if the book is fully
-            // downloaded. Waiting for the scan first put its full cost in
-            // front of every tap.
             const netP = ABS.getItem(itemId).catch(() => null);
-            const downloadedIds = await Offline.fullyDownloadedIds();
-            Player._logMark('cache-scan', Date.now() - t0);
-            if (downloadedIds.has(itemId)) {
-                const downloaded = await Offline.fullyDownloaded();
-                item = downloaded.find(i => i.id === itemId) || null;
-            }
-            if (!item) item = await netP;
+            const got = await this._itemForTap(itemId, netP, t0);
+            item = got?.cached || got?.net || null;
             if (!item) throw new Error('item unavailable');
             Player._logMark('item', Date.now() - t0);
             if (item.mediaType === 'podcast') {
