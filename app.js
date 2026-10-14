@@ -445,6 +445,8 @@ const App = {
             e.preventDefault(); this.handleLogin();
         });
         document.getElementById('passkey-login-btn').addEventListener('click', () => this.handlePasskeyLogin());
+        document.getElementById('server-url').addEventListener('change', () => this._offerPasswordReset());
+        document.getElementById('username').addEventListener('change', () => this._offerPasswordReset());
         document.getElementById('save-account-yes').addEventListener('click', () => this._confirmSaveToAccount());
         document.getElementById('save-account-no').addEventListener('click', () => this._dismissSaveToAccount());
         document.getElementById('server-picker-add').addEventListener('click', () => {
@@ -878,6 +880,7 @@ const App = {
                     // The cached shelves may already be up: back to the login screen.
                     document.getElementById('main-screen').classList.remove('active');
                     document.getElementById('login-screen').classList.add('active');
+                    this._offerPasswordReset();
                 } else {
                     // Network error or server down — keep credentials, show main UI
                     this._offlineMode = true;
@@ -1072,6 +1075,7 @@ const App = {
         // user input.
         document.getElementById('login-error').innerHTML = message;
         this.setupPasskeyButton();
+        this._offerPasswordReset();
     },
 
     async setupPasskeyButton() {
@@ -1208,6 +1212,7 @@ const App = {
                 document.getElementById('main-screen').classList.remove('active');
                 document.getElementById('login-screen').classList.add('active');
                 document.getElementById('login-error').textContent = 'Session expired. Please log in again.';
+                this._offerPasswordReset();
             } else {
                 this.setContent(
                     '<div class="loading">' +
@@ -1238,7 +1243,25 @@ const App = {
             setTimeout(() => this._maybeOfferSaveToAccount({ serverUrl, username, password }), 400);
         } catch (e) {
             errorEl.innerHTML = e.message;
+            this._offerPasswordReset();
         }
+    },
+
+    // "Forgot password?" under the login form, when the server in it is an
+    // ABS_shim (its /status names its reset page; stock ABS has none). Opens
+    // the shim's own page in the browser with the username filled in; after a
+    // reset the shim signs every device out, and this form takes the new
+    // password (and updates a saved Face ID entry, _maybeOfferSaveToAccount).
+    async _offerPasswordReset() {
+        const el = document.getElementById('login-forgot');
+        let server = document.getElementById('server-url').value.trim();
+        if (server && !/^https?:\/\//i.test(server)) server = 'https://' + server;
+        const path = server ? await ABS.passwordResetPath(server) : null;
+        if (!path) { el.classList.add('hidden'); return; }
+        const u = document.getElementById('username').value.trim();
+        document.getElementById('login-forgot-link').href =
+            server.replace(/\/+$/, '') + path + (u ? '?u=' + encodeURIComponent(u) : '');
+        el.classList.remove('hidden');
     },
 
     // After a successful manual ABS login, offer to save the credentials to

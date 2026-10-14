@@ -132,12 +132,35 @@ const ABS = {
             );
         }
         if (!res.ok) {
-            throw new Error('Login failed. Check your credentials and server URL.');
+            const err = new Error('Login failed. Check your credentials and server URL.');
+            err.status = res.status;
+            throw err;
         }
         const data = await res.json();
         this.serverUrl = serverUrl.replace(/\/+$/, '');
         this.token = data.user.token;
         return data;
+    },
+
+    // ABS_shim's "Forgot password?" page: its public /status names the path
+    // (`passwordReset`, a shim extra); stock ABS has none, so null. Remembered
+    // per server for the page's life once the server has answered (an
+    // unreachable server is asked again next time).
+    _resetPaths: {},
+    async passwordResetPath(serverUrl) {
+        const clean = serverUrl.replace(/\/+$/, '');
+        if (clean in this._resetPaths) return this._resetPaths[clean];
+        let path = null;
+        try {
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 4000);
+            const res = await fetch(this._proxyUrl(`${clean}/status`), { credentials: 'omit', signal: ctrl.signal });
+            clearTimeout(timer);
+            const d = res.ok ? await res.json() : null;
+            if (typeof d?.passwordReset === 'string' && d.passwordReset.startsWith('/')) path = d.passwordReset;
+            this._resetPaths[clean] = path;
+        } catch {}
+        return path;
     },
 
     // Sign in with an existing ABS access token instead of a password —
