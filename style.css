@@ -1043,6 +1043,13 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
 .pod-follow:disabled { opacity: 0.6; cursor: default; }
 /* The Add screen's "On this server": stored shows the caller doesn't follow. */
 .pod-server:empty { display: none; }
+/* Search in a podcast library (2026-10-18): directory results and stored
+   shows open their show page; the button only follows. */
+.pod-find-row { cursor: pointer; }
+.pod-find-row.no-open { cursor: default; }
+.pod-find-row.is-opening { opacity: 0.7; }
+.pod-find-status { padding: 0.75rem 0.25rem; font-size: 0.9rem; }
+.pod-dir .empty-state { padding-top: 1.5rem; }
 .pod-server-head { margin: 1.25rem 0 0.5rem; padding: 0 0.25rem; font-size: 1rem; }
 .pod-server-cover { cursor: pointer; }
 .push-test-result { font-size: 0.8rem; color: var(--text-muted); white-space: pre-line; margin-bottom: 0.5rem; }

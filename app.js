@@ -490,6 +490,12 @@ const App = {
         // Search
         document.getElementById('search-cancel').addEventListener('click', () => this.hideSearch());
         document.getElementById('search-input').addEventListener('input', debounce(e => this.doSearch(e.target.value), 300));
+        // Enter: put the keyboard away and search now, directory included.
+        document.getElementById('search-input').addEventListener('keydown', (e) => {
+            if (e.key !== 'Enter') return;
+            e.target.blur();
+            this.doSearch(e.target.value, null, { now: true });
+        });
         this._wireSearchClear(document.getElementById('search-input'), document.getElementById('search-clear'), () => this.doSearch(''));
 
         // Settings
@@ -1426,7 +1432,8 @@ const App = {
     abbFolderId: null,
     shimCanAdd: false, // shim says the caller may add (ABB grabs; podcast subscribe on an older shim)
     shimFollows: false, // shim has personal podcast lists: follow / unfollow, hide per person
-    shimCanSubscribe: false, // the podcast library's "+": canSubscribe, else canGrab
+    shimCanSubscribe: false, // may follow podcasts: canSubscribe, else canGrab
+    shimPreview: false, // shim stores a show without following it (canPreview): directory results open
     abbLibraryId: null,
     _abbRoot: null,
 
@@ -1447,33 +1454,24 @@ const App = {
             // and there subscribing needs canGrab.
             this.shimFollows = !!s && typeof s.canSubscribe === 'boolean';
             this.shimCanSubscribe = this.shimFollows ? s.canSubscribe : this.shimCanAdd;
-            // A podcast library's Add screen subscribes to feeds rather than
-            // grabbing from AudioBookBay, so it needs no Real-Debrid token.
+            this.shimPreview = !!s && s.canPreview === true;
+            // A podcast library has no Add screen: its search finds podcasts
+            // (_dirSearchOn). The header icon is AudioBookBay's alone.
             if (s && this.currentMediaType === 'podcast') {
-                ok = this.shimCanSubscribe;
+                ok = false;
             } else if (s && s.rdTokenSet && s.canGrab !== false) {
                 const st = await ABS.request('/api/admin/storage/status');
                 const folders = (st?.folders || []).filter(f => f.provider === 'pcloud_oauth');
                 const mine = folders.find(f => f.libraryId === this.currentLibraryId) || folders[0];
                 if (mine) { ok = true; this.abbFolderId = mine.id; this.abbLibraryId = mine.libraryId; }
             }
-        } catch { this.isShim = false; this.shimFollows = false; this.shimCanSubscribe = false; /* not a shim, or no access */ }
+        } catch { this.isShim = false; this.shimFollows = false; this.shimCanSubscribe = false; this.shimPreview = false; /* not a shim, or no access */ }
         if (this.isShim) this._pushStart();
         this.abbAvailable = ok;
         btn.classList.toggle('hidden', !ok);
-        // The Library tab's "+ Add podcast" goes to the same screen.
-        document.querySelectorAll('#content .podcast-add-bar').forEach(el => el.classList.toggle('hidden', !ok));
-        // In a podcast library the same button subscribes to podcasts, so it
-        // shouldn't wear AudioBookBay's logo.
-        const pod = this.currentMediaType === 'podcast';
-        if (btn.dataset.kind !== (pod ? 'podcast' : 'abb')) {
-            btn.dataset.kind = pod ? 'podcast' : 'abb';
-            btn.innerHTML = pod
-                ? '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>'
-                : '<img src="icons/abb.svg" alt="" width="22" height="22">';
-            btn.title = pod ? 'Add podcast' : 'Add from AudioBookBay';
-            btn.setAttribute('aria-label', btn.title);
-        }
+        // A podcast library's empty Library offers the search once the shim
+        // says the caller may follow.
+        document.querySelectorAll('#content [data-find-podcasts]').forEach(el => el.classList.toggle('hidden', !this._dirSearchOn()));
         if (!ok && this.currentTab === 'add') this.switchTab('home');
     },
 
@@ -1509,7 +1507,9 @@ const App = {
     },
 
     showAdd() {
-        if (this.currentMediaType === 'podcast') return this.showPodcastAdd();
+        // Unreachable since 2026-10-18 (the icon is hidden there); a podcast
+        // library finds podcasts through its search.
+        if (this.currentMediaType === 'podcast') { this.switchTab(this._addReturnTab); this.showSearch(); return; }
         document.getElementById('header-title').textContent = 'Add audiobook';
         document.getElementById('back-btn').classList.remove('hidden');
         if (!this._abbRoot) {
@@ -2389,6 +2389,7 @@ const App = {
         this.checkForSwUpdate();
         this.currentTab = tab;
         this.navStack = [];
+        this._searchReopen = null;
         document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
         document.getElementById('abb-btn').classList.toggle('active', tab === 'add');
         document.getElementById('back-btn').classList.add('hidden');
@@ -2441,16 +2442,24 @@ const App = {
 
     goBack() {
         if (this.navStack.length) {
+            const reopen = this._searchReopen;
             this.navStack.pop();
             const top = this.navStack[this.navStack.length - 1];
             if (top && top.render) {
                 document.getElementById('header-title').textContent = top.title;
                 this._navRestoring = true;
                 try { top.render(); } finally { this._navRestoring = false; }
-                return;
+            } else {
+                // Nothing below it: switchTab redraws the tab and clears the stack.
+                this.switchTab(this.currentTab);
             }
-            // Nothing below it: switchTab redraws the tab and clears the stack.
-            this.switchTab(this.currentTab);
+            // Back out of what a search opened: the search again, as it was.
+            if (reopen && this.navStack.length <= reopen.depth) {
+                this._searchReopen = null;
+                this.showSearch(reopen.query);
+            } else if (reopen) {
+                this._searchReopen = reopen;
+            }
         } else if (this.currentTab === 'add') {
             this.switchTab(this._addReturnTab);
         }
@@ -2889,20 +2898,17 @@ const App = {
         return this._renderTab('library', async () => {
             const data = await ABS.getLibraryItems(this.currentLibraryId, 0, 200);
             if (this.currentMediaType !== 'podcast') return this.gridHtml(data.results);
-            // A podcast library's own way in to subscribing, beside the
-            // header's + (which is easy to miss).
-            const add = '<div class="podcast-add-bar"><button class="text-btn" data-open-add>+ Add podcast</button></div>';
+            if (data.results.length) return this.gridHtml(data.results);
             // With personal lists the shim answers only the caller's shows, so
             // empty means "follows nothing yet", not "the server has none".
+            // Podcasts are found with the search (the "+" Add screen went
+            // 2026-10-18); the button shows where that search can follow.
             const none = this.shimFollows ? 'You don\'t follow any podcasts yet' : 'No podcasts yet';
-            return add + (data.results.length ? this.gridHtml(data.results) : `<div class="empty-state">${none}</div>`);
+            return `<div class="empty-state">${none}<div><button class="text-btn${this._dirSearchOn() ? '' : ' hidden'}" data-find-podcasts>Find podcasts</button></div></div>`;
         }, () => {
             this.bindCardClicks();
-            // Only where the header's + shows (checkAbbSupport settles both):
-            // stock ABS, or a member who may not subscribe, would get a
-            // screen whose every button fails.
-            document.querySelector('#content .podcast-add-bar')?.classList.toggle('hidden', !this.abbAvailable);
-            document.querySelector('#content [data-open-add]')?.addEventListener('click', () => this.toggleAdd());
+            document.querySelector('#content [data-find-podcasts]')?.classList.toggle('hidden', !this._dirSearchOn());
+            document.querySelector('#content [data-find-podcasts]')?.addEventListener('click', () => this.showSearch());
         });
     },
 
@@ -3849,9 +3855,20 @@ const App = {
     },
 
     // ── Search ──
-    showSearch() {
+    // query: reopening a search (Back from something it found), drawn at
+    // once and without the keyboard.
+    showSearch(query) {
         document.getElementById('search-overlay').classList.remove('hidden');
-        document.getElementById('search-input').focus();
+        const input = document.getElementById('search-input');
+        input.placeholder = this._dirSearchOn() ? 'Search podcasts, or paste a feed URL' : 'Search...';
+        if (query) {
+            input.value = query;
+            input.parentElement.classList.toggle('has-value', true);
+            this.doSearch(query, null, { now: true });
+            return;
+        }
+        input.focus();
+        if (!input.value && this._dirSearchOn()) this._renderServerBrowse(document.getElementById('search-results'));
     },
 
     hideSearch() {
@@ -3876,11 +3893,23 @@ const App = {
         sync();
     },
 
-    async doSearch(query, target) {
+    // opts.now: Enter, or a reopened search: the podcast directory is asked
+    // without waiting for more typing.
+    async doSearch(query, target, opts = {}) {
         const resultsEl = target || document.getElementById('search-results');
-        if (!query || query.length < 2) { resultsEl.innerHTML = ''; return; }
+        query = (query || '').trim();
+        const dir = this._dirSearchOn();
+        // Each search on an element gets a number; an answer for an older
+        // one (slow network, or still typing) draws nothing.
+        const token = resultsEl._searchToken = (resultsEl._searchToken || 0) + 1;
+        if (!query || query.length < 2) {
+            if (dir && !target && !query && !document.getElementById('search-overlay').classList.contains('hidden')) this._renderServerBrowse(resultsEl);
+            else resultsEl.innerHTML = '';
+            return;
+        }
         try {
             const data = await ABS.searchLibrary(this.currentLibraryId, query);
+            if (resultsEl._searchToken !== token) return;
             let html = '';
             const books = data.book || data.libraryItems || [];
             if (books.length) {
@@ -3933,9 +3962,13 @@ const App = {
                 }
                 html += '</div>';
             }
-            if (!html) html = '<div class="empty-state">No results</div>';
+            // In a podcast library the directory's answer goes below (it
+            // says "No results" itself when there's nothing anywhere).
+            if (dir) html += '<div class="pod-dir" data-pod-dir></div>';
+            else if (!html) html = '<div class="empty-state">No results</div>';
             resultsEl.innerHTML = html;
             this.bindSearchClicks(resultsEl);
+            if (dir) this._podFindSection(query, resultsEl, token, data, opts);
             resultsEl.querySelectorAll('.episode-row').forEach(li => {
                 const hit = episodeHits.find(e => e.libraryItem.recentEpisode.id === li.dataset.episodeId);
                 li.querySelector('.episode-playbtn').addEventListener('click', () => {
@@ -3943,9 +3976,10 @@ const App = {
                     this.playEpisode(li.dataset.itemId, li.dataset.episodeId, hit?.libraryItem.recentEpisode);
                 });
                 li.querySelector('.episode-open').addEventListener('click', () => {
-                    this.hideSearch();
-                    if (hit) this.showEpisode(hit.libraryItem, hit.libraryItem.recentEpisode);
-                    else this.openEpisodeById(li.dataset.itemId, li.dataset.episodeId);
+                    this._openFromSearch(() => {
+                        if (hit) this.showEpisode(hit.libraryItem, hit.libraryItem.recentEpisode);
+                        else this.openEpisodeById(li.dataset.itemId, li.dataset.episodeId);
+                    });
                 });
                 li.querySelector('[data-quick-archive]')?.addEventListener('click', async (e) => {
                     const btn = e.currentTarget;
@@ -3956,13 +3990,13 @@ const App = {
                 });
             });
         } catch (e) {
-            resultsEl.innerHTML = `<div class="loading">Error: ${esc(e.message)}</div>`;
+            if (resultsEl._searchToken === token) resultsEl.innerHTML = `<div class="loading">Error: ${esc(e.message)}</div>`;
         }
     },
 
     bindSearchClicks(container) {
         container.querySelectorAll('.grid-item').forEach(el => {
-            el.addEventListener('click', () => { this.hideSearch(); this.showItem(el.dataset.id); });
+            el.addEventListener('click', () => this._openFromSearch(() => this.showItem(el.dataset.id)));
         });
         container.querySelectorAll('.play-overlay').forEach(btn => {
             btn.addEventListener('click', (e) => {
@@ -3972,10 +4006,10 @@ const App = {
             });
         });
         container.querySelectorAll('.list-item[data-author-id]').forEach(el => {
-            el.addEventListener('click', () => { this.hideSearch(); this.showAuthorDetail(el.dataset.authorId, el.dataset.authorName); });
+            el.addEventListener('click', () => this._openFromSearch(() => this.showAuthorDetail(el.dataset.authorId, el.dataset.authorName)));
         });
         container.querySelectorAll('.list-item[data-series-id]').forEach(el => {
-            el.addEventListener('click', () => { this.hideSearch(); this.showSeriesDetail(el.dataset.seriesId, el.dataset.seriesName); });
+            el.addEventListener('click', () => this._openFromSearch(() => this.showSeriesDetail(el.dataset.seriesId, el.dataset.seriesName)));
         });
     },
 
@@ -5888,6 +5922,7 @@ const App = {
         // The shim turns the bell off with an unfollow.
         if (!follow) this._setPushShows((this._pushStatusCache?.data?.shows || []).filter(id => id !== itemId));
         this._invalidateTabCache();
+        this._podServerShows = null;
         if (follow) this._catchUpShow(itemId);
         return r;
     },
@@ -5981,81 +6016,44 @@ const App = {
         document.body.appendChild(overlay);
     },
 
-    // The Add screen in a podcast library (ABS_shim): search Apple's
-    // directory, or paste a feed URL, and subscribe. Mirrors the
-    // AudioBookBay screen's layout and is kept detached between visits the
-    // same way, so a search survives switching tabs.
-    _podRoot: null,
-    showPodcastAdd() {
-        document.getElementById('header-title').textContent = 'Add podcast';
-        document.getElementById('back-btn').classList.remove('hidden');
-        if (!this._podRoot) {
-            const root = document.createElement('div');
-            root.className = 'abb-root';
-            root.innerHTML =
-                '<div class="search-bar abb-search"><span class="search-wrap"><input type="text" id="pod-q" placeholder="Search podcasts, or paste a feed URL" autocomplete="off"></span><button id="pod-go" class="abb-go">Search</button></div>' +
-                '<ul class="tracklist" id="pod-results"></ul>' +
-                // Shows already stored that the caller doesn't follow (ABS_shim
-                // with personal lists); empty, and so hidden, everywhere else.
-                '<div class="pod-server" id="pod-server"></div>';
-            const go = () => this._podSearch(root.querySelector('#pod-q').value.trim());
-            root.querySelector('#pod-go').addEventListener('click', go);
-            root.querySelector('#pod-q').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.target.blur(); go(); } });
-            this._podRoot = root;
-        }
-        const content = document.getElementById('content');
-        content.innerHTML = '';
-        content.appendChild(this._podRoot);
-        this._podLoadServerShows();
-    },
+    // ── Finding podcasts (ABS_shim) ──
+    // In a podcast library the ordinary search (the header's magnifier, and
+    // the pull-down bar) also searches Apple's podcast directory, below your
+    // own shows and episodes. A result opens as an ordinary show page: the
+    // shim stores the show without following it (`POST /api/podcasts`
+    // `follow: false`, its `canPreview`), so its episodes play, its notes and
+    // chapters show, and Follow is on the page. With the search empty, the
+    // overlay lists the shows stored here that you don't follow ("On this
+    // server"). This replaced the podcast library's "+" Add screen
+    // (2026-10-18, Joseph: "It should automatically search podcasts").
+    _dirSearchOn() { return this.isShim && this.shimCanSubscribe && this.currentMediaType === 'podcast'; },
 
-    // "On this server": every show stored in this library that the caller
-    // doesn't follow, one tap to follow (no fetch: the shim already has its
-    // episodes). Asked on every visit, since follows change elsewhere. Also
-    // tells _podSearch which results are already stored. An older shim
-    // (404) or no connection leaves the section empty.
-    _podServerShows: null, // { libraryId, shows } from the last answer
-    async _podLoadServerShows() {
-        const box = this._podRoot?.querySelector('#pod-server');
-        if (!box) return;
-        const libId = this.currentLibraryId;
-        if (!this.isShim || !this.shimFollows) { box.innerHTML = ''; this._podServerShows = null; return; }
-        let r;
-        try { r = await this._shimCall(`/api/podcasts/shows?libraryId=${encodeURIComponent(libId)}`); }
-        catch { box.innerHTML = ''; return; }
-        if (libId !== this.currentLibraryId) return;
-        const all = Array.isArray(r?.shows) ? r.shows : [];
-        this._podServerShows = { libraryId: libId, shows: all };
-        const shows = all.filter(s => !s.following);
-        if (!shows.length) { box.innerHTML = ''; return; }
-        box.innerHTML = '<div class="section-title pod-server-head">On this server</div><ul class="tracklist">'
-            + shows.map(s => {
-                const n = Number(s.numEpisodes) || 0;
-                const sub = [s.author, n ? `${n} episode${n === 1 ? '' : 's'}` : ''].filter(Boolean).join(' · ');
-                return `<li class="tracklist-item abb-item"><div class="abb-main">`
-                    + `<img class="abb-cover pod-server-cover" src="${ABS.coverUrl(s.id)}" alt="" loading="lazy" data-open-show="${esc(s.id)}" onerror="this.style.visibility='hidden'">`
-                    + `<span class="tracklist-title" data-open-show="${esc(s.id)}"><strong>${esc(s.title || 'Untitled')}</strong><span class="text-muted">${esc(sub)}</span></span>`
-                    + `<button class="abb-grab" data-follow-id="${esc(s.id)}">Follow</button>`
-                    + '</div></li>';
-            }).join('') + '</ul>';
-        // The show's page, to look before following (it offers Follow too).
-        box.querySelectorAll('[data-open-show]').forEach(el => el.addEventListener('click', () => this.showItem(el.dataset.openShow)));
-        box.querySelectorAll('[data-follow-id]').forEach(btn => btn.addEventListener('click', async () => {
-            btn.disabled = true; btn.innerHTML = '<span class="abb-spinner"></span>Following';
-            try {
-                await this._setFollow(btn.dataset.followId, true);
-                this._podMarkFollowed(btn.dataset.followId);
-            } catch (e) {
-                btn.disabled = false; btn.textContent = 'Follow';
-                alert('Follow failed: ' + e.message);
-            }
-        }));
+    // Apple rate-limits per IP (about 20 calls a minute), so a term's answer
+    // is kept for ten minutes: going back to the search, or typing the same
+    // word again, asks nobody.
+    _dirMemo: new Map(),
+    _dirCountry() { return (navigator.language || 'en-US').split('-')[1]?.toLowerCase() || 'us'; },
+    _dirMemoGet(term) {
+        const k = this._dirCountry() + '|' + term.toLowerCase();
+        const m = this._dirMemo.get(k);
+        return m && Date.now() - m.at < 600000 ? m.results : null;
     },
-    _podMarkFollowed(id) {
-        const show = this._podServerShows?.shows.find(s => s.id === id);
-        if (show) show.following = true;
-        const btn = this._podRoot?.querySelector(`[data-follow-id="${CSS.escape(id)}"]`);
-        if (btn) { btn.disabled = true; btn.classList.add('abb-grab-again'); btn.textContent = '✓ Following'; }
+    // One question per term at a time: Enter right after typing starts a
+    // search, and the typing's own (300 ms behind) would ask again.
+    _dirInFlight: new Map(),
+    _dirSearch(term) {
+        const hit = this._dirMemoGet(term);
+        if (hit) return Promise.resolve(hit);
+        const k = this._dirCountry() + '|' + term.toLowerCase();
+        if (this._dirInFlight.has(k)) return this._dirInFlight.get(k);
+        const p = this._podDirectorySearch(term, this._dirCountry()).then(results => {
+            this._dirMemo.delete(k);
+            this._dirMemo.set(k, { at: Date.now(), results: Array.isArray(results) ? results : [] });
+            while (this._dirMemo.size > 30) this._dirMemo.delete(this._dirMemo.keys().next().value);
+            return this._dirMemo.get(k).results;
+        }).finally(() => this._dirInFlight.delete(k));
+        this._dirInFlight.set(k, p);
+        return p;
     },
 
     // Apple's directory is searched from the phone: Apple rate-limits per IP
@@ -6090,77 +6088,217 @@ const App = {
 
     _feedKey(u) { return String(u || '').trim().toLowerCase().replace(/^https?:\/\/(www\.)?/, '').replace(/\/+$/, ''); },
 
-    async _podSearch(term) {
-        const list = this._podRoot.querySelector('#pod-results');
-        if (!term) return;
-        list.innerHTML = '<div class="loading">Searching</div>';
-        let results;
+    // Every show stored in this library, followed or not (`GET
+    // /api/podcasts/shows`; the shim leaves out shows someone only looked
+    // at). Kept a minute, dropped by any follow. null: an older shim (404)
+    // or no connection.
+    _podServerShows: null, // { libraryId, at, shows }
+    async _loadServerShows() {
+        if (!this.isShim || !this.shimFollows) return null;
+        const libId = this.currentLibraryId;
+        const c = this._podServerShows;
+        if (c && c.libraryId === libId && Date.now() - c.at < 60000) return c.shows;
         try {
-            const country = (navigator.language || 'en-US').split('-')[1]?.toLowerCase() || 'us';
-            results = await this._podDirectorySearch(term, country);
-        } catch (e) {
-            list.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`;
-            return;
-        }
-        if (!results.length) { list.innerHTML = '<div class="empty-state">Nothing found</div>'; return; }
-        // Already subscribed? By feed URL (ABS_shim sends it), else by iTunes
-        // id. Never by title alone: "This American Life" has imitators.
-        let ids = new Set(), feeds = new Set();
-        try {
-            const t = await ABS.request(`/api/libraries/${this.currentLibraryId}/podcast-titles`);
-            for (const p of t?.podcasts || []) {
-                if (p.itunesId) ids.add(String(p.itunesId));
-                if (p.feedUrl) feeds.add(this._feedKey(p.feedUrl));
+            const r = await this._shimCall(`/api/podcasts/shows?libraryId=${encodeURIComponent(libId)}`);
+            const shows = Array.isArray(r?.shows) ? r.shows : [];
+            this._podServerShows = { libraryId: libId, at: Date.now(), shows };
+            return shows;
+        } catch { return null; }
+    },
+
+    // One row, for a directory result or a stored show: cover, title, line
+    // under it, and Follow. The row opens the show; the button only follows.
+    _podFindRowHtml(kind, i, { title, sub, cover, following }) {
+        return `<li class="tracklist-item abb-item pod-find-row" data-find="${kind}" data-i="${i}"><div class="abb-main">`
+            + (cover ? `<img class="abb-cover pod-server-cover" src="${esc(cover)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : '<span class="abb-cover"></span>')
+            + `<span class="tracklist-title"><strong>${esc(title || 'Untitled')}</strong><span class="text-muted">${esc(sub)}</span></span>`
+            + `<button class="abb-grab${following ? ' abb-grab-again' : ''}" data-find-follow ${following ? 'disabled' : ''}>${following ? '✓ Following' : 'Follow'}</button>`
+            + '</div></li>';
+    },
+    _serverShowRow(s, i) {
+        const n = Number(s.numEpisodes) || 0;
+        return this._podFindRowHtml('server', i, {
+            title: s.title, sub: [s.author, n ? `${n} episode${n === 1 ? '' : 's'}` : ''].filter(Boolean).join(' · '),
+            cover: ABS.coverUrl(s.id), following: !!s.following,
+        });
+    },
+    _dirResultRow(r, i, following) {
+        return this._podFindRowHtml('dir', i, {
+            title: r.title, sub: [r.artistName, r.trackCount ? `${r.trackCount} episodes` : '', (r.genres || [])[0]].filter(Boolean).join(' · '),
+            cover: r.cover, following,
+        });
+    },
+
+    // The directory half of doSearch: after the library's own results are
+    // drawn, wait for the typing to stop (doSearch is already 300 ms behind
+    // the keys; Enter skips the wait), then ask Apple and the shim's stored
+    // shows together and draw below. `token` is the results element's
+    // search: a newer one makes this one draw nothing.
+    async _podFindSection(term, el, token, libData, opts = {}) {
+        const box = el.querySelector('[data-pod-dir]');
+        if (!box || term.length < 3) { if (box && !box.previousElementSibling) box.innerHTML = '<div class="empty-state">No results</div>'; return; }
+        const memo = this._dirMemoGet(term);
+        if (!memo) {
+            box.innerHTML = '<div class="pod-find-status text-muted">Searching the podcast directory…</div>';
+            if (!opts.now) {
+                await new Promise(r => setTimeout(r, 450));
+                if (el._searchToken !== token) return;
             }
-        } catch {}
-        // With personal lists, podcast-titles is the caller's list, so
-        // `have` means "you follow it". Subscribing to a feed the server
-        // already stores just follows that show (the shim does it), so the
-        // words are Follow / Following; "On this server" says which are stored.
-        const follows = this.isShim && this.shimFollows;
-        const server = this._podServerShows?.libraryId === this.currentLibraryId ? this._podServerShows.shows : [];
-        const stored = new Set(server.map(s => this._feedKey(s.feedUrl)).filter(Boolean));
-        list.innerHTML = results.map((r, i) => {
-            const have = feeds.has(this._feedKey(r.feedUrl)) || (!!r.id && ids.has(String(r.id)));
-            const sub = [r.artistName, r.trackCount ? `${r.trackCount} episodes` : '', (r.genres || [])[0]].filter(Boolean).join(' · ');
-            const label = have ? (follows ? '✓ Following' : '✓ Subscribed') : (follows ? 'Follow' : 'Subscribe');
-            return `<li class="tracklist-item abb-item"><div class="abb-main">`
-                + (r.cover ? `<img class="abb-cover" src="${esc(r.cover)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : '')
-                + `<span class="tracklist-title"><strong>${esc(r.title)}</strong><span class="text-muted">${esc(sub)}</span></span>`
-                + `<button class="abb-grab${have ? ' abb-grab-again' : ''}" data-sub="${i}">${label}</button>`
-                + '</div></li>';
-        }).join('');
-        list.querySelectorAll('[data-sub]').forEach(btn => btn.addEventListener('click', async () => {
-            const r = results[Number(btn.dataset.sub)];
-            const wasStored = follows && (stored.has(this._feedKey(r.feedUrl)) || btn.classList.contains('abb-grab-again'));
-            btn.disabled = true; btn.innerHTML = `<span class="abb-spinner"></span>${wasStored ? 'Following' : 'Adding'}`;
+        }
+        let results = [], error = null;
+        const [dir, server] = await Promise.all([
+            this._dirSearch(term).catch(e => { error = e; return []; }),
+            this._loadServerShows(),
+        ]);
+        if (el._searchToken !== token) return;
+        results = dir;
+        // Your own shows are already above, as the library search found them.
+        const mine = new Set((libData?.podcast || []).map(p => this._feedKey((p.libraryItem || p).media?.metadata?.feedUrl)).filter(Boolean));
+        let followed = null;
+        if (server) followed = new Set(server.filter(s => s.following).map(s => this._feedKey(s.feedUrl)));
+        else {
+            // An older shim without the stored-shows list: the caller's own
+            // list says what they follow.
             try {
+                const t = await ABS.request(`/api/libraries/${this.currentLibraryId}/podcast-titles`);
+                followed = new Set((t?.podcasts || []).map(p => this._feedKey(p.feedUrl)).filter(Boolean));
+            } catch { followed = new Set(); }
+            if (el._searchToken !== token) return;
+        }
+        const dirRows = results.filter(r => !mine.has(this._feedKey(r.feedUrl)));
+        const dirFeeds = new Set(results.map(r => this._feedKey(r.feedUrl)));
+        // Stored here, not followed, matching every word, and not already a
+        // directory row (that row opens the stored show anyway).
+        const words = term.toLowerCase().split(/\s+/).filter(Boolean);
+        const onServer = /^https?:\/\//i.test(term) ? [] : (server || []).filter(s => {
+            if (s.following || dirFeeds.has(this._feedKey(s.feedUrl))) return false;
+            const hay = `${s.title || ''} ${s.author || ''}`.toLowerCase();
+            return words.every(w => hay.includes(w));
+        });
+        let html = '';
+        if (onServer.length) html += '<div class="section-title">On this server</div><ul class="tracklist">' + onServer.map((s, i) => this._serverShowRow(s, i)).join('') + '</ul>';
+        if (dirRows.length) html += '<div class="section-title">Podcast directory</div><ul class="tracklist">' + dirRows.map((r, i) => this._dirResultRow(r, i, followed.has(this._feedKey(r.feedUrl)))).join('') + '</ul>';
+        if (!html) {
+            const nothingAbove = !box.previousElementSibling;
+            html = error ? `<div class="empty-state">Couldn't search the podcast directory: ${esc(error.message)}</div>`
+                : nothingAbove ? '<div class="empty-state">No results</div>' : '';
+        }
+        box.innerHTML = html;
+        this._bindFindRows(box, { dir: dirRows, server: onServer });
+    },
+
+    // The search overlay with nothing typed: what's stored here that you
+    // don't follow, one tap to look, one to follow.
+    async _renderServerBrowse(el) {
+        const token = el._searchToken = (el._searchToken || 0) + 1;
+        el.innerHTML = '<div class="pod-find-status text-muted">Search your podcasts and the podcast directory, or paste a feed URL.</div>';
+        const server = await this._loadServerShows();
+        if (el._searchToken !== token) return;
+        const shows = (server || []).filter(s => !s.following);
+        if (!shows.length) return;
+        el.insertAdjacentHTML('beforeend', '<div class="section-title">On this server</div><ul class="tracklist">' + shows.map((s, i) => this._serverShowRow(s, i)).join('') + '</ul>');
+        this._bindFindRows(el, { server: shows });
+    },
+
+    _bindFindRows(root, lists) {
+        root.querySelectorAll('.pod-find-row').forEach(li => {
+            const kind = li.dataset.find;
+            const entry = (lists[kind] || [])[Number(li.dataset.i)];
+            if (!entry) return;
+            const btn = li.querySelector('[data-find-follow]');
+            btn.addEventListener('click', (e) => { e.stopPropagation(); this._findFollow(kind, entry, btn); });
+            if (kind === 'server') {
+                li.addEventListener('click', () => this._openFromSearch(() => this.showItem(entry.id)));
+            } else if (this.shimPreview) {
+                li.addEventListener('click', () => this._openDirShow(entry, li));
+            } else {
+                // A shim from before canPreview can't store a show without
+                // following it, so a directory row only follows.
+                li.classList.add('no-open');
+            }
+        });
+    },
+
+    async _findFollow(kind, entry, btn) {
+        btn.disabled = true; btn.innerHTML = '<span class="abb-spinner"></span>Following';
+        try {
+            if (kind === 'server') {
+                await this._setFollow(entry.id, true);
+                entry.following = true;
+                btn.textContent = '✓ Following';
+            } else {
+                // Subscribing to a feed the server already stores just follows
+                // that show (the shim answers the stored item); a new feed is
+                // fetched and stored.
                 const item = await this._shimCall('/api/podcasts', {
-                    method: 'POST',
-                    body: JSON.stringify({
-                        libraryId: this.currentLibraryId,
-                        media: {
-                            metadata: {
-                                feedUrl: r.feedUrl, title: r.title, author: r.artistName, imageUrl: r.cover || null, genres: r.genres || [],
-                                itunesId: r.id ? String(r.id) : null, itunesArtistId: r.artistId ? String(r.artistId) : null, itunesPageUrl: r.pageUrl || null,
-                            },
-                            autoDownloadEpisodes: true,
-                        },
-                    }),
+                    method: 'POST', body: JSON.stringify(this._podCreateBody(entry, true)),
                 });
                 const n = item?.media?.numEpisodes || 0;
-                // A show someone else already follows came back as it was:
-                // nothing was added, it's now on this person's list too.
-                const existed = wasStored || (follows && Number(item?.followers) > 1);
-                btn.textContent = existed ? '✓ Following' : `✓ ${n} episode${n === 1 ? '' : 's'}`;
-                if (follows && item?.id) this._podMarkFollowed(item.id);
+                btn.textContent = item?.followedExisting || Number(item?.followers) > 1 || !n ? '✓ Following' : `✓ ${n} episode${n === 1 ? '' : 's'}`;
                 this._invalidateTabCache();
-            } catch (e) {
-                btn.disabled = false;
-                btn.textContent = /already exists/i.test(e.message) ? '✓ Subscribed' : follows ? 'Follow' : 'Subscribe';
-                if (!/already exists/i.test(e.message)) alert((follows ? 'Follow' : 'Subscribe') + ' failed: ' + e.message);
             }
-        }));
+            btn.classList.add('abb-grab-again');
+            this._podServerShows = null;
+        } catch (e) {
+            // A shim from before personal lists answers 409 for a feed it has.
+            if (/already exists/i.test(e.message)) { btn.textContent = '✓ Following'; btn.classList.add('abb-grab-again'); return; }
+            btn.disabled = false; btn.textContent = 'Follow';
+            alert('Follow failed: ' + e.message);
+        }
+    },
+
+    _podCreateBody(r, follow) {
+        return {
+            libraryId: this.currentLibraryId,
+            ...(follow ? {} : { follow: false }),
+            media: {
+                metadata: {
+                    feedUrl: r.feedUrl, title: r.title, author: r.artistName, imageUrl: r.cover || null, genres: r.genres || [],
+                    itunesId: r.id ? String(r.id) : null, itunesArtistId: r.artistId ? String(r.artistId) : null, itunesPageUrl: r.pageUrl || null,
+                },
+                autoDownloadEpisodes: true,
+            },
+        };
+    },
+
+    // A directory result opens as its show page. A feed the server doesn't
+    // have is fetched and stored first, unfollowed (a few seconds for a big
+    // feed), so the row says so while it waits.
+    async _openDirShow(r, li) {
+        if (li.classList.contains('is-opening')) return;
+        li.classList.add('is-opening');
+        const sub = li.querySelector('.text-muted');
+        const was = sub?.textContent;
+        if (sub) sub.innerHTML = '<span class="abb-spinner"></span>Opening…';
+        try {
+            const item = await this._shimCall('/api/podcasts', { method: 'POST', body: JSON.stringify(this._podCreateBody(r, false)) });
+            if (!item?.id) throw new Error('the server sent no show back');
+            // Typed something else meanwhile, or closed the search: stay.
+            if (!li.isConnected) return;
+            this._openFromSearch(() => this.showItem(item.id));
+        } catch (e) {
+            if (li.isConnected) alert(`Couldn't open ${r.title || 'the show'}: ${e.message}`);
+        } finally {
+            li.classList.remove('is-opening');
+            if (sub && sub.isConnected) sub.textContent = was;
+        }
+    },
+
+    // Opening something found by a search: Back from it returns to the
+    // search, with the same words (goBack reopens the overlay once the
+    // stack is back to where it was; the directory's answer is memoised, so
+    // that asks Apple nothing). Any tab switch forgets it.
+    _searchReopen: null, // { query, depth }
+    _openFromSearch(open) {
+        const overlay = !document.getElementById('search-overlay').classList.contains('hidden');
+        const q = (overlay ? document.getElementById('search-input') : document.getElementById('inline-search-input'))?.value.trim() || '';
+        // The depth before the page opens: not every page pushes its level
+        // before its first await. Set after open(), which may switch tabs
+        // (an episode of another library), and a switch would clear it.
+        const depth = this.navStack.length;
+        this.hideSearch();
+        open();
+        this._searchReopen = q ? { query: q, depth } : null;
     },
 
     // ── New-episode notifications (ABS_shim) ──
