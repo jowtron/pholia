@@ -3295,7 +3295,10 @@ const App = {
                 duration,
                 chapters: ep.chapters || [],
                 audioFiles: af.ino ? [{ ...af, duration: af.duration || duration }] : [],
-                skip: show.media?.skip || null,
+                // Unknown stays unknown: a show object without `skip` (until
+                // 2026-10-21 the shim's Latest list sent none) said nothing,
+                // and `null` here read as "skip nothing".
+                ...(show.media?.skip !== undefined ? { skip: show.media.skip } : {}),
                 transcripts: ep.transcripts || [],
                 // ABS_shim's episode analysis of the file it serves now (ad
                 // ranges for the player, where chapters/transcript come from).
@@ -3334,12 +3337,18 @@ const App = {
     },
     _skipFor(item) {
         if (!item?.id) return null;
-        // The server's setting wins when the item carries it (a change made
-        // on another device); the map covers items that don't (an episode
-        // played offline from its downloaded copy).
-        if (item.media?.skip !== undefined) return item.media.skip;
+        // The newest setting this phone has seen for the show wins: the map
+        // is written from the server's answers (_rememberSkip: the show
+        // page, a change made there, and every episode playEpisode fetches,
+        // Latest's included), never from a copy on the phone, so it is never
+        // older than the copy inside an item. An item's own copy can be: a
+        // download keeps the setting of the day it was downloaded. Until 2026-10-21 the item's copy won, and a
+        // missing one counted as "skip nothing", so LNL 408 started from
+        // Latest played its intro and only offered to skip a promo the show
+        // was set to skip (all ads).
         const map = this._skipMap();
-        return item.id in map ? map[item.id] : null;
+        if (item.id in map) return map[item.id];
+        return item.media?.skip ?? null;
     },
     _rememberSkip(show) {
         if (!show?.id || show.media?.skip === undefined) return;
@@ -5392,7 +5401,7 @@ const App = {
         if (!pi) return null;
         const m = pi.media || {};
         return {
-            show: { id: itemId, libraryId: pi.libraryId, media: { metadata: { title: m.metadata?.podcastTitle || m.metadata?.authorName || '' }, skip: m.skip || null } },
+            show: { id: itemId, libraryId: pi.libraryId, media: { metadata: { title: m.metadata?.podcastTitle || m.metadata?.authorName || '' }, ...(m.skip !== undefined ? { skip: m.skip } : {}) } },
             ep: {
                 id: episodeId, title: m.metadata?.title || '', description: m.metadata?.description || '',
                 publishedAt: m.metadata?.publishedAt || null, duration: m.duration || 0,
