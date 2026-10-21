@@ -3917,7 +3917,12 @@ const App = {
             return;
         }
         try {
-            const data = await ABS.searchLibrary(this.currentLibraryId, query);
+            // A pasted feed URL is a show to open, not words to find: the
+            // directory half answers it with that feed. Searching the library
+            // for it found nothing at best, and on a shim from before
+            // 2026-10-21 failed with a 500 (D1's 50-byte LIKE limit) that
+            // replaced the whole answer, so the feed never appeared.
+            const data = /^https?:\/\//i.test(query) ? {} : await ABS.searchLibrary(this.currentLibraryId, query);
             if (resultsEl._searchToken !== token) return;
             let html = '';
             const books = data.book || data.libraryItems || [];
