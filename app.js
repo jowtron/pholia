@@ -4608,6 +4608,13 @@ const App = {
                 html += '<button class="text-btn" data-pod-archive-all>Archive all to pCloud</button>';
                 html += '<div class="pod-archive-progress" data-archive-progress hidden></div>';
             }
+            // Private (ABS_shim, 2026-10-21): only the show's followers see
+            // it in their lists ("On this server" included), for a paid feed
+            // whose address is the subscriber's key. Followers and the owner
+            // may change it; an older shim doesn't send the field.
+            if (typeof item.media?.private === 'boolean' && (item.following || this.shimCanDelete)) {
+                html += `<label class="podcast-toggle" title="Other people on this server won't see it in their lists. Anyone with the feed address can still add it."><input type="checkbox" data-pod-private${item.media.private ? ' checked' : ''}> Private: only followers see it</label>`;
+            }
         }
         // Per phone: the newest N unplayed episodes stay downloaded here.
         const keep = this._keepCount(item.id);
@@ -4697,6 +4704,20 @@ const App = {
                 btn.disabled = false;
                 status.textContent = 'Follow failed: ' + err.message;
             }
+        });
+        content.querySelector('[data-pod-private]')?.addEventListener('change', async (e) => {
+            const box = e.currentTarget;
+            box.disabled = true;
+            try {
+                const r = await this._shimCall(`/api/podcasts/${encodeURIComponent(item.id)}/private`, {
+                    method: 'PUT', body: JSON.stringify({ private: box.checked }),
+                });
+                item.media.private = !!r.private;
+                status.textContent = r.private ? 'Private: only followers see it' : 'Everyone on this server can see it';
+            } catch (err) {
+                box.checked = !box.checked;
+                status.textContent = 'Change failed: ' + err.message;
+            } finally { box.disabled = false; }
         });
         content.querySelector('[data-pod-check]')?.addEventListener('click', async (e) => {
             const btn = e.currentTarget;
@@ -5656,14 +5677,14 @@ const App = {
         h += '</div>';
         // Less common, and worded too long for an icon: plain text below.
         const more = [];
-        // Hide is per person on a shim with personal lists, so any member
-        // may; on an older one it hid the episode for everyone (canAdd).
+        // No "Hide episode" button since 2026-10-21: Joseph never used it
+        // and it sat where a stray tap would hit it. The shim still hides
+        // per person (ABS's DELETE, for other ABS apps), so an episode hidden
+        // that way keeps its way back here.
         if (this.isShim && this.shimFollows && ep.hidden) {
             more.push('<span class="text-muted">Hidden for you</span><button class="text-btn" data-ep-unhide>Show again</button>');
         } else if (this.isShim && ep.inLibrary === false) {
             if (this.shimCanAdd) more.push('<button class="text-btn" data-ep-add>Add to the show</button>');
-        } else if (this.isShim && (this.shimFollows || this.shimCanAdd)) {
-            more.push('<button class="text-btn" data-ep-remove>Hide episode</button>');
         }
         if (this.isShim && this.shimCanAdd) {
             // Hidden while an analysis of the file served now exists (the shim
@@ -5854,24 +5875,6 @@ const App = {
                 this._invalidateTabCache();
                 this._rerenderEpisodePage(s);
             } catch (err) { e.currentTarget.disabled = false; alert('Add failed: ' + err.message); }
-        });
-        page.querySelector('[data-ep-remove]')?.addEventListener('click', async (e) => {
-            const btn = e.currentTarget;
-            // Per person (ABS_shim's personal lists): the page stays, saying
-            // "Hidden for you" with a way back; the lists drop it on their
-            // next draw. An older shim hid it from the whole show.
-            const mine = this.shimFollows;
-            if (!confirm(mine
-                ? `Hide "${ep.title}"? Only for you: it leaves your lists, and "All episodes in the feed" can show it again.`
-                : `Hide "${ep.title}"? It leaves the show's list and stays in the feed, where it can be added back.`)) return;
-            btn.disabled = true;
-            try {
-                await this._shimCall(`/api/podcasts/${encodeURIComponent(item.id)}/episode/${encodeURIComponent(ep.id)}`, { method: 'DELETE' });
-                this._invalidateTabCache();
-                if (!mine) { this.goBack(); return; }
-                ep.hidden = true;
-                this._rerenderEpisodePage(s);
-            } catch (err) { btn.disabled = false; alert('Hide failed: ' + err.message); }
         });
         page.querySelector('[data-ep-unhide]')?.addEventListener('click', async (e) => {
             const btn = e.currentTarget;
