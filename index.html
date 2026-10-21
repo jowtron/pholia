@@ -68,9 +68,10 @@
         // (_maybeOpenPendingEpisode); the event tells it about a later one.
         (function () {
             window.__pholiaOpenEpisode = null;
+            // An empty episode is a show ("Archive all" is done).
             function take(li, ep) {
-                if (!li || !ep) return;
-                window.__pholiaOpenEpisode = { libraryItemId: String(li), episodeId: String(ep) };
+                if (!li) return;
+                window.__pholiaOpenEpisode = { libraryItemId: String(li), episodeId: ep ? String(ep) : '' };
                 try { window.dispatchEvent(new CustomEvent('pholia-open-episode')); } catch (e) {}
             }
             try {

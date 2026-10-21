@@ -1065,6 +1065,16 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
 }
 /* Episode analysis: the show page's switch notes, and Settings' records. */
 .pod-analyse-note { flex-basis: 100%; font-size: 0.75rem; color: var(--text-muted); line-height: 1.4; margin-top: -0.1rem; }
+/* "Archive all to pCloud" under way (_archiveWatch): a line, a bar, a note. */
+.pod-archive-progress { flex-basis: 100%; background: var(--card-bg); border-radius: 6px; padding: 0.5rem 0.65rem; font-size: 0.85rem; }
+.pod-archive-progress[hidden] { display: none; }
+.pod-archive-progress .abb-bar { height: 4px; margin: 0.35rem 0; }
+.pod-archive-note { font-size: 0.75rem; color: var(--text-muted); line-height: 1.4; }
+.pod-archive-fails { margin-top: 0.4rem; font-size: 0.8rem; }
+.pod-archive-fails summary { cursor: pointer; color: #f5a524; }
+.pod-archive-fails ul { list-style: none; margin: 0.3rem 0 0; padding: 0; }
+.pod-archive-fails li { display: flex; flex-direction: column; padding: 0.2rem 0; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+.pod-archive-progress [data-archive-retry] { margin-top: 0.3rem; padding-left: 0; }
 .pod-analyse-note[hidden] { display: none; }
 .an-totals {
     display: grid; grid-template-columns: 1fr auto auto; gap: 0.25rem 0.9rem; align-items: baseline;

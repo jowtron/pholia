@@ -206,13 +206,17 @@ self.addEventListener('notificationclick', e => {
         try { wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true }); } catch {}
         const mine = wins.filter(c => { try { return new URL(c.url).origin === self.location.origin; } catch { return false; } });
         const win = mine.find(c => c.focused) || mine.find(c => c.visibilityState === 'visible') || mine[0];
+        // An "Archive all is done" notification (kind 'archive') names only
+        // its show, which opens as a show (an empty episode part).
+        const show = li && !ep && d.kind === 'archive';
         if (win) {
             if (li && ep) win.postMessage({ type: 'open-episode', libraryItemId: li, episodeId: ep });
+            else if (show) win.postMessage({ type: 'open-episode', libraryItemId: li, episodeId: '' });
             try { await win.focus(); } catch {}
             return;
         }
-        const url = li && ep
-            ? new URL('./#open-episode=' + encodeURIComponent(li) + '/' + encodeURIComponent(ep), scope).href
+        const url = li && (ep || show)
+            ? new URL('./#open-episode=' + encodeURIComponent(li) + '/' + encodeURIComponent(ep || ''), scope).href
             : scope;
         try { await self.clients.openWindow(url); } catch {}
     })());

@@ -4606,6 +4606,7 @@ const App = {
             if (item.media?.canArchive && this.shimCanAdd) {
                 html += `<label class="podcast-toggle"><input type="checkbox" data-pod-archive${item.media.archive ? ' checked' : ''}> Archive new episodes to pCloud</label>`;
                 html += '<button class="text-btn" data-pod-archive-all>Archive all to pCloud</button>';
+                html += '<div class="pod-archive-progress" data-archive-progress hidden></div>';
             }
         }
         // Per phone: the newest N unplayed episodes stay downloaded here.
@@ -4820,15 +4821,43 @@ const App = {
         });
         content.querySelector('[data-pod-archive-all]')?.addEventListener('click', async (e) => {
             const btn = e.currentTarget;
-            const left = episodes.filter(ep => !['done', 'queued', 'fetching'].includes(ep.archiveState)).length;
-            if (!left) { status.textContent = 'Everything on the show is already archived or on its way'; return; }
-            if (!confirm(`Copy ${left} episode${left === 1 ? '' : 's'} of this show into pCloud? It runs on the server, a few at a time.`)) return;
+            // Since 2026-10-21 "all" is every episode in the feed, on the
+            // show or not; the shim's archive status says how many that is.
+            // A shim without it (404) still means the show's own.
+            let st = null;
+            try { st = await this._shimCall(`/api/podcasts/${encodeURIComponent(item.id)}/archive`); } catch { st = null; }
+            const left = st ? st.toCopy : episodes.filter(ep => !['done', 'queued', 'fetching'].includes(ep.archiveState)).length;
+            if (!left) {
+                // All on its way already (pressed before, or by someone
+                // else): pressing still asks to be told when it's over.
+                if (st && (st.queued || st.fetching) && !st.requested) {
+                    try { await this._shimCall(`/api/podcasts/${encodeURIComponent(item.id)}/archive`, { method: 'POST', body: '{}' }); } catch {}
+                    this._archiveWatch(item, content, episodes, progress, { started: true });
+                }
+                status.textContent = st && (st.queued || st.fetching) ? 'Everything is on pCloud or on its way'
+                    : st ? 'Every episode in the feed is already on pCloud' : 'Everything on the show is already archived or on its way';
+                return;
+            }
+            const n = `${left} episode${left === 1 ? '' : 's'}`;
+            let ask;
+            if (st) {
+                const off = st.toCopyNotOnShow ? `, including ${st.toCopyNotOnShow} not on this page` : '';
+                const eta = this._archiveEta(Math.ceil((st.queueAhead + left) / 3) * 120 + 240);
+                const told = localStorage.getItem(this._pushKey('sub')) ? ' You\'ll get a notification when it\'s done.' : '';
+                ask = `Copy ${n} into pCloud? That's every episode in the feed that isn't there yet${off}. The server copies 3 every 2 minutes, so about ${eta}, and carries on with Pholia closed.${told}`;
+            } else {
+                ask = `Copy ${n} of this show into pCloud? It runs on the server, a few at a time.`;
+            }
+            if (!confirm(ask)) return;
             btn.disabled = true;
             try {
                 const r = await this._shimCall(`/api/podcasts/${encodeURIComponent(item.id)}/archive`, { method: 'POST', body: '{}' });
-                status.textContent = `${r.queued} queued for pCloud. The server copies them a few at a time.`;
-            } catch (err) { btn.disabled = false; status.textContent = 'Archive failed: ' + err.message; }
+                if (st) { status.textContent = ''; this._archiveWatch(item, content, episodes, progress, { started: true }); }
+                else status.textContent = `${r.queued} queued for pCloud. The server copies them a few at a time.`;
+            } catch (err) { status.textContent = 'Archive failed: ' + err.message; }
+            finally { btn.disabled = false; }
         });
+        if (item.media?.canArchive && this.shimCanAdd) this._archiveWatch(item, content, episodes, progress);
         content.querySelector('[data-pod-archive]')?.addEventListener('change', async (e) => {
             const box = e.currentTarget;
             try {
@@ -5081,6 +5110,98 @@ const App = {
             await view.redraw();
             if (ep.archiveState === 'done' || ep.archiveState === 'error') return;
         }
+    },
+
+    // "Archive all to pCloud" under way (ABS_shim's GET /podcasts/:id/archive,
+    // 2026-10-21): a bar under the button, "37 of 140 on pCloud · 3 copying
+    // · about 1 h left", asked again every 20 s while the show page is open
+    // and the app is in front, redrawing the episode rows whose state moved
+    // (`since`). It goes when the copying ends, leaving the result, or a
+    // list of failures with "Try again". The copying is the server's: this
+    // only watches it. A shim without the route (404) shows nothing.
+    async _archiveWatch(item, content, episodes, progress, { started = false } = {}) {
+        const box = content.querySelector('[data-archive-progress]');
+        if (!box) return;
+        if (box._watching) { box._kick?.(); return; }
+        box._watching = true;
+        const byId = new Map(episodes.map(ep => [ep.id, ep]));
+        let since = null, sawWork = started;
+        const url = () => `/api/podcasts/${encodeURIComponent(item.id)}/archive${since ? '?since=' + since : ''}`;
+        try {
+            while (box.isConnected) {
+                let st = null;
+                try { st = await this._shimCall(url()); }
+                catch (err) { if (err.status === 404 || err.status === 403) { box.hidden = true; return; } }
+                if (!box.isConnected) return;
+                if (st) {
+                    since = st.now;
+                    for (const ch of st.changed || []) {
+                        const ep = byId.get(ch.id);
+                        if (!ep || ep.archiveState === ch.archiveState) continue;
+                        ep.archiveState = ch.archiveState;
+                        ep.archiveError = ch.archiveError;
+                        if (ep.archiveState === 'done') ep.audioFile = { ...(ep.audioFile || {}), storage: { provider: 'pcloud_oauth', name: 'pCloud', detail: '' } };
+                        const li = content.querySelector(`.episode-row[data-item-id="${CSS.escape(item.id)}"][data-episode-id="${CSS.escape(ep.id)}"]`);
+                        if (li) await this._redrawEpisodeRow(item, ep, li, progress);
+                    }
+                    const busy = st.queued + st.fetching > 0;
+                    if (busy) sawWork = true;
+                    this._paintArchiveProgress(box, item, content, episodes, progress, st, sawWork);
+                    if (!busy) return;
+                }
+                // 20 s, or straight away when the button queues more; and
+                // nothing while the app is in the background.
+                await new Promise(resolve => {
+                    const t = setTimeout(done, 20000);
+                    function done() { clearTimeout(t); box._kick = null; resolve(); }
+                    box._kick = done;
+                });
+                while (box.isConnected && document.visibilityState === 'hidden') {
+                    await new Promise(r => document.addEventListener('visibilitychange', r, { once: true }));
+                }
+            }
+        } finally { box._watching = false; box._kick = null; }
+    },
+
+    _archiveEta(sec) {
+        if (sec < 90) return 'a minute or two';
+        const min = Math.round(sec / 60);
+        if (min < 60) return `${min} min`;
+        const h = Math.floor(min / 60), m = Math.round((min % 60) / 5) * 5;
+        return m ? `${h} h ${m} min` : `${h} h`;
+    },
+
+    _paintArchiveProgress(box, item, content, episodes, progress, st, sawWork) {
+        const busy = st.queued + st.fetching > 0;
+        const failures = st.errors?.length
+            ? `<details class="pod-archive-fails"><summary>${st.error} couldn't be copied</summary><ul>`
+              + st.errors.map(e => `<li><span>${esc(e.title || 'Episode')}</span><span class="text-muted">${esc(e.error || '')}</span></li>`).join('')
+              + (st.error > st.errors.length ? `<li class="text-muted">and ${st.error - st.errors.length} more</li>` : '')
+              + '</ul></details><button class="text-btn" data-archive-retry>Try those again</button>'
+            : '';
+        let html = '';
+        if (busy) {
+            const pct = st.total ? Math.round(st.done / st.total * 100) : 0;
+            const bits = [st.fetching ? `${st.fetching} copying` : '', st.queued ? `${st.queued} waiting` : ''].filter(Boolean).join(' · ');
+            html = `<div class="pod-archive-line">Copying to pCloud: <strong>${st.done}</strong> of ${st.total} there${bits ? ' · ' + bits : ''}</div>`
+                + `<div class="abb-bar"><span style="width:${pct}%"></span></div>`
+                + `<div class="pod-archive-note">About ${this._archiveEta(st.etaSeconds)} left. It carries on with Pholia closed${st.requested ? ', and you\'ll get a notification when it\'s done' : ''}.</div>`
+                + failures;
+        } else if (st.error) {
+            html = `<div class="pod-archive-line">${st.done} of ${st.total} episodes on pCloud.</div>` + failures;
+        } else if (sawWork) {
+            html = `<div class="pod-archive-line">${st.done === st.total ? `All ${st.total} episodes are on pCloud.` : `${st.done} of ${st.total} episodes on pCloud.`}</div>`;
+        }
+        box.innerHTML = html;
+        box.hidden = !html;
+        box.querySelector('[data-archive-retry]')?.addEventListener('click', async (e) => {
+            const b = e.currentTarget;
+            b.disabled = true;
+            try {
+                await this._shimCall(`/api/podcasts/${encodeURIComponent(item.id)}/archive`, { method: 'POST', body: JSON.stringify({ retryFailed: true }) });
+                this._archiveWatch(item, content, episodes, progress, { started: true });
+            } catch (err) { b.disabled = false; b.textContent = 'Try again failed: ' + err.message; }
+        });
     },
 
     async _redrawEpisodeRow(item, ep, li, progress) {
@@ -6578,14 +6699,14 @@ const App = {
         let show = null, ep = null, failed = null;
         try {
             show = await ABS.getItem(t.libraryItemId);
-            ep = show?.media?.episodes?.find(e => e.id === t.episodeId) || null;
+            ep = t.episodeId ? show?.media?.episodes?.find(e => e.id === t.episodeId) || null : null;
         } catch (e) { failed = e; }
         if (failed && (failed.status === 401 || failed.status === 403 || failed.isNetwork)) {
             // Offline, a copy on the phone will do. Otherwise (offline, or the
             // token was refused and the login screen is coming) keep the
             // target for the next sign-in's showMain; if a new token arrived
             // while this was in flight, that sign-in has already looked.
-            const local = failed.isNetwork ? await this._episodeFromPhone(t.libraryItemId, t.episodeId) : null;
+            const local = failed.isNetwork && t.episodeId ? await this._episodeFromPhone(t.libraryItemId, t.episodeId) : null;
             if (!local) {
                 if (!window.__pholiaOpenEpisode) window.__pholiaOpenEpisode = t;
                 if (ABS.token && ABS.token !== token) this._maybeOpenPendingEpisode();
@@ -6607,7 +6728,9 @@ const App = {
             this.updateMediaType();
             this.switchTab('home');
         }
-        if (show && ep) this.showEpisode(show, ep);
+        // No episode: "Archive all" is done, and the show is what to see.
+        if (!t.episodeId) this.showItem(t.libraryItemId);
+        else if (show && ep) this.showEpisode(show, ep);
         else this.openEpisodeById(t.libraryItemId, t.episodeId);
     },
 
