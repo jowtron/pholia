@@ -291,6 +291,7 @@ function ensureKeys() {
     return keysLoading;
 }
 const AUDIO_PATH_RE = /\/api\/items\/[^/]+\/file\/[^/]+$/;
+const VIDEO_PATH_RE = /\/api\/podcasts\/[^/]+\/episode\/[^/]+\/video\/[^/]+$/;
 
 function baseKeyFromMarker(url, marker) {
     const q = url.indexOf('?' + marker);
@@ -358,6 +359,14 @@ self.addEventListener('fetch', e => {
     // worker mid-handler ("Service Worker context closed"), and on iOS
     // takes the whole page down with it. Pass HEAD straight to network.
     if (e.request.method === 'HEAD') return;
+
+    // Video (Watch, ABS_shim's /api/podcasts/:id/episode/:ep/video/:n):
+    // files of gigabytes, played by a <video> element. Always native: never
+    // the chunk cache, never the audio path's pins or bridge, never a byte
+    // pumped through this worker (iOS adds latency to every intercepted
+    // Range request). Nothing downloads them, so nothing here could serve
+    // them anyway; this says so before any other branch can claim them.
+    if (VIDEO_PATH_RE.test(url.pathname)) return;
 
     if (url.origin === self.location.origin) {
         // Never intercept account/Pages-Functions API calls: responses carry

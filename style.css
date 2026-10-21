@@ -1190,6 +1190,45 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
 .ep-more { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.25rem 1rem; align-items: center; }
 .ep-more:empty { display: none; }
 .ep-more .episode-actions { width: 100%; justify-content: center; }
+/* Watch beside Play on an episode with video (App._openWatch). Play keeps
+   the room, and its label stays on one line ("Resume · 1:02:33 left"). */
+.ep-play-row { display: flex; gap: 0.5rem; width: 100%; max-width: 340px; }
+.ep-play-row .ep-play-big { flex: 1; min-width: 0; width: auto; max-width: none; padding-left: 0.9rem; padding-right: 0.9rem; }
+.ep-play-row .ep-play-big span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ep-watch-btn {
+    flex-shrink: 0; display: flex; align-items: center; justify-content: center; gap: 0.4rem;
+    padding: 0.75rem 0.9rem; border-radius: var(--radius); border: 1.5px solid var(--accent);
+    background: none; color: var(--accent); font-weight: 600; font-size: 1rem; cursor: pointer;
+}
+@media (hover: hover) { .ep-watch-btn:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); } }
+
+/* ── Watch (App._openWatch): over everything, the fullscreen player too.
+   The video's box is black in both themes; the rest follows the theme. ── */
+.watch-view {
+    position: fixed; inset: 0; z-index: 10010; background: var(--bg); color: var(--text);
+    display: flex; flex-direction: column;
+    padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+    animation: fs-fade-in 0.2s ease;
+}
+.watch-head { display: flex; align-items: center; gap: 0.5rem; padding: 0.6rem 0.25rem 0.6rem 1rem; flex-shrink: 0; }
+.watch-titles { flex: 1; min-width: 0; }
+.watch-title { font-weight: 600; font-size: 0.95rem; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.watch-show { color: var(--text-muted); font-size: 0.8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.watch-close { flex-shrink: 0; font-size: 28px; line-height: 1; color: var(--text-muted); padding: 4px 12px; }
+@media (hover: hover) { .watch-close:hover { color: var(--text); } }
+.watch-stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; }
+.watch-stage video { display: block; width: 100%; max-height: 100%; aspect-ratio: 16 / 9; background: #000; }
+.watch-foot { flex-shrink: 0; display: flex; flex-direction: column; align-items: center; gap: 0.5rem; padding: 0.75rem 1rem 1.25rem; text-align: center; }
+.watch-what { font-size: 0.85rem; font-weight: 600; }
+.watch-note { color: var(--text-muted); font-size: 0.8rem; line-height: 1.4; max-width: 28rem; }
+.watch-msg { color: var(--danger); font-size: 0.85rem; }
+.watch-pick { font-size: 16px; padding: 0.35rem; border-radius: var(--radius); border: 1px solid var(--border); background: var(--card-bg); color: var(--text); max-width: 100%; }
+/* A phone on its side: the video gets the height, the words go. */
+@media (orientation: landscape) and (max-height: 500px) {
+    .watch-head { padding-top: 0.25rem; padding-bottom: 0.25rem; }
+    .watch-foot { display: none; }
+    .watch-stage video { width: auto; height: 100%; max-width: 100%; }
+}
 /* The tabs stay at the top while the notes or transcript scroll under.
    -1rem: sticky stops at main's padding edge, which left a strip of text
    showing above the bar. */

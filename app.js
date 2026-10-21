@@ -1183,7 +1183,10 @@ const App = {
     // refreshes the detail view if we're looking at the same item.
     async _refreshCurrentItemProgress() {
         const item = Player.item || this._currentDetailItem;
-        if (!item || Player.isPlaying) return;
+        // Not while Watch is open: an episode whose own file is the video
+        // has its position written by the watching, ahead of the paused
+        // player, and reseating here would start the audio under the video.
+        if (!item || Player.isPlaying || this._watch) return;
         let progress;
         // An episode's progress is its own (the item id is the show's).
         try { progress = await ABS.getProgress(item.episodeId ? `${item.id}/${item.episodeId}` : item.id); } catch { return; }
@@ -5478,6 +5481,9 @@ const App = {
             itemId: item.id, episodeId: ep.id, item, ep, opts, progress, tab, chapters, analysis,
             queue: opts.queue || null, played, idleLabel, transcriptP: prev?.transcriptP || null,
             label: '', chIdx: -2, cueIdx: -2, cueStarts: null, touchedAt: 0, barPct: '',
+            // Where the caller is in the episode's alternate video, asked
+            // for now so Watch can start inside the tap (see _openWatch).
+            videoP: prev?.videoP || (this._episodeVideos(ep).some(v => !v.sameAsAudio) ? this._videoProgressFor(item.id, ep.id) : null),
         };
 
         const date = ep.publishedAt ? new Date(ep.publishedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' }) : '';
@@ -5492,10 +5498,18 @@ const App = {
         h += `<h2 class="ep-hero-title">${esc(ep.title || 'Untitled')}</h2>`;
         if (metaLine) h += `<div class="ep-hero-meta">${esc(metaLine)}</div>`;
         h += `<div class="ep-hero-bar"><div data-ep-bar style="width:${pct}%"></div></div>`;
-        h += '<button class="play-btn-large ep-play-big" data-ep-play>'
+        // An episode with video (ABS_shim's `videos`) gets Watch beside
+        // Play, which stays the default and is unchanged.
+        const videos = this._episodeVideos(ep);
+        const playBtn = '<button class="play-btn-large ep-play-big" data-ep-play>'
             + '<svg class="i-play" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>'
             + '<svg class="i-pause" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>'
             + `<span data-ep-play-label>${esc(idleLabel)}</span></button>`;
+        h += videos.length
+            ? `<div class="ep-play-row">${playBtn}<button class="ep-watch-btn" data-ep-watch aria-label="Watch the video">`
+                + '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="5" width="19" height="14" rx="2.5"/><path d="M10 9.2v5.6l4.6-2.8z" fill="currentColor"/></svg>'
+                + '<span>Watch</span></button></div>'
+            : playBtn;
         h += this._episodeActionsHtml(item, ep, { played, downloaded: dl.has(`${item.id}~${ep.id}`), playlistId: opts.playlistId });
         h += '</div>';
         if (tabs.length > 1) {
@@ -5573,6 +5587,350 @@ const App = {
     _rerenderEpisodePage(s) {
         if (!this._epPageShowing(s)) return;
         this.showEpisode(s.item, s.ep, { ...s.opts, pushed: true, progress: s.progress, tab: s.tab });
+    },
+
+    // ── Watch: episodes with video (ABS_shim, 2026-10-22) ──
+    // ABS_shim lists an episode's videos (`videos`, [] for most). Two kinds:
+    // `sameAsAudio`, the episode's own file being a video (Incognito Mode's
+    // 3.2 GB mp4, labelled audio/mpeg), and a feed's alternate (LINUX
+    // Unplugged's "Full HD Video"), which is ANOTHER EDIT, minutes longer or
+    // shorter than the mp3. So an alternate keeps its own place
+    // (`videoProgress`, PUT …/video-progress; Joseph chose that over mapping
+    // one timeline onto the other), while the episode's own file writes the
+    // ordinary listening position, so Listen carries on where Watch stopped.
+    // "Played" is shared: reaching the end of either marks the episode
+    // played the ordinary way.
+    //
+    // The view is an overlay over everything holding a plain <video
+    // playsinline controls>, streamed natively from the shim (never through
+    // the worker; sw.js says so). Opening it pauses the audio player with its
+    // own pause(); the video pauses when the player starts again (lock
+    // screen, headphones) and when the app goes to the background, which iOS
+    // would do anyway. No hand-off to the audio.
+    _videoPos: new Map(),   // `item~episode` → {position, duration, at}
+    _watch: null,
+
+    _episodeVideos(ep) {
+        return Array.isArray(ep?.videos) ? ep.videos.filter(v => v && typeof v.url === 'string' && v.url) : [];
+    },
+    _videoLabel(v) {
+        const q = v.height ? `${v.height}p` : '';
+        return [v.sameAsAudio ? 'The episode itself' : v.title || 'Video', q].filter(Boolean).join(' · ');
+    },
+    // Seconds left at which the episode counts as played: the show's own
+    // setting, else the library's (default 10).
+    _finishWindowFor(item) {
+        const own = item?.media?.markAsFinishedTimeRemaining;
+        return typeof own === 'number' ? own : this._libFinishRemaining(item?.libraryId);
+    },
+
+    // The caller's place in the episode's alternate video (the episode route
+    // carries it). A save made while the answer was on its way is newer than
+    // the answer and wins.
+    async _videoProgressFor(itemId, episodeId) {
+        const key = `${itemId}~${episodeId}`;
+        const asked = Date.now();
+        try {
+            const r = await ABS.request(`/api/podcasts/${encodeURIComponent(itemId)}/episode/${encodeURIComponent(episodeId)}`);
+            const vp = r?.videoProgress;
+            const mine = this._videoPos.get(key);
+            if (!(mine && mine.at >= asked)) this._rememberVideoPos(key, Number(vp?.position) || 0, Number(vp?.duration) || null, asked);
+        } catch {}
+        return this._videoPos.get(key) || null;
+    },
+    _rememberVideoPos(key, position, duration, at = Date.now()) {
+        this._videoPos.delete(key);
+        this._videoPos.set(key, { position, duration, at });
+        while (this._videoPos.size > 50) this._videoPos.delete(this._videoPos.keys().next().value);
+    },
+
+    // Where Watch starts, when that's known without waiting: the listening
+    // position for the episode's own file (the player's, when it holds the
+    // episode; else the server's, or a newer local one, as startItem
+    // decides), the remembered place for an alternate. null: an alternate
+    // whose place hasn't come back yet.
+    _watchStartNow(s, v) {
+        if (!v.sameAsAudio) {
+            const m = this._videoPos.get(`${s.itemId}~${s.episodeId}`);
+            return m ? m.position || 0 : null;
+        }
+        // (Only once its file is loaded: a start still on its way reads 0.)
+        if (this._isLoadedEpisode(s.itemId, s.episodeId) && Player.audio.readyState >= 1) return Player.getGlobalTime() || 0;
+        const prog = s.progress?.get(s.episodeId) || null;
+        if (prog?.isFinished) return 0;
+        let t = prog?.currentTime || 0;
+        try {
+            const local = JSON.parse(localStorage.getItem(`pholia_pos_${s.itemId}:${s.episodeId}`));
+            if (local && typeof local.t === 'number' && typeof local.at === 'number' && local.at > (prog?.lastUpdate || 0) + 2000) t = local.t;
+        } catch {}
+        return t;
+    },
+
+    async _openWatch(s, idx = 0) {
+        const videos = this._episodeVideos(s.ep);
+        const v = videos[idx];
+        if (!v) return;
+        this._closeWatch({ redraw: false });
+        // One thing at a time: the player's own pause (it syncs as usual).
+        const pausedPlayer = Player.isPlaying;
+        if (pausedPlayer) Player.pause();
+        const { item, ep } = s;
+        const key = `${item.id}~${ep.id}`;
+        // The episode's own file, already in the player: while it's watched,
+        // the paused player's 30 s sync would keep writing back where the
+        // listening stopped, over where the watching is. Stopped here,
+        // started again on close (or as soon as the player plays).
+        const held = !!v.sameAsAudio && this._isLoadedEpisode(item.id, ep.id);
+        const stoppedSync = held && !!Player.syncInterval;
+        if (stoppedSync) Player.stopSync();
+
+        const showTitle = item.media?.metadata?.title || '';
+        const note = v.sameAsAudio
+            ? 'The same recording as the audio, so watching moves your listening position too.'
+            : 'A separate edit from the audio, so it keeps its own place. Reaching the end marks the episode played.';
+        const el = document.createElement('div');
+        el.className = 'watch-view';
+        el.setAttribute('role', 'dialog');
+        el.setAttribute('aria-label', 'Watch');
+        el.innerHTML = '<div class="watch-head"><div class="watch-titles">'
+            + `<div class="watch-title">${esc(ep.title || 'Untitled')}</div>`
+            + (showTitle ? `<div class="watch-show">${esc(showTitle)}</div>` : '')
+            + '</div><button class="watch-close" data-watch-close aria-label="Close">&times;</button></div>'
+            + `<div class="watch-stage"><video playsinline webkit-playsinline controls preload="metadata" poster="${ABS.coverUrl(item.id)}"></video></div>`
+            + '<div class="watch-foot">'
+            + (videos.length > 1
+                ? '<select class="watch-pick" data-watch-pick aria-label="Which video">'
+                    + videos.map((x, i) => `<option value="${i}"${i === idx ? ' selected' : ''}>${esc(this._videoLabel(x))}</option>`).join('')
+                    + '</select>'
+                : `<div class="watch-what">${esc(this._videoLabel(v))}</div>`)
+            + `<div class="watch-note">${esc(note)}</div><div class="watch-msg" data-watch-msg hidden></div></div>`;
+        document.body.appendChild(el);
+        const video = el.querySelector('video');
+        const w = this._watch = {
+            s, item, ep, itemId: item.id, episodeId: ep.id, key, v, el, video, held, stoppedSync,
+            pausedPlayer, openedAt: Date.now(), yielded: false,
+            win: this._finishWindowFor(item), ready: false, start: 0, lastSaved: null, lastTick: null,
+            savedOnce: false, finished: false, timer: null, offs: [],
+        };
+        const on = (target, type, fn, opts) => {
+            target.addEventListener(type, fn, opts);
+            w.offs.push(() => target.removeEventListener(type, fn, opts));
+        };
+        const msg = (text) => {
+            const m = el.querySelector('[data-watch-msg]');
+            m.textContent = text || '';
+            m.hidden = !text;
+        };
+        on(el.querySelector('[data-watch-close]'), 'click', () => this._closeWatch());
+        on(document, 'keydown', (e) => { if (e.key === 'Escape') this._closeWatch(); });
+        const pick = el.querySelector('[data-watch-pick]');
+        if (pick) on(pick, 'change', () => this._openWatch(s, Number(pick.value)));
+        on(video, 'timeupdate', () => this._watchTick(w));
+        on(video, 'pause', () => {
+            if (video.ended) return;
+            // Paused for the player playing this same file: the player's
+            // position is the one that counts now, not the video's.
+            if (w.yielded) { w.yielded = false; w.lastSaved = video.currentTime; return; }
+            this._saveWatch(w);
+        });
+        on(video, 'ended', () => this._watchFinished(w));
+        on(video, 'playing', () => msg(''));
+        // Played from the video's own controls while the player was going
+        // (it started after Watch opened): the player's pause again.
+        on(video, 'play', () => { if (Player.isPlaying) Player.pause(); });
+        on(video, 'error', () => {
+            const code = video.error?.code;
+            msg(code === 4 ? "This video can't be played here." : "Couldn't load the video. Check the connection and try again.");
+        });
+        // The app going to the background: pause and save now, keepalive so
+        // the save outlives a suspended page. An episode held by the player
+        // says its place even unmoved, and again on coming back, because the
+        // player's own hidden-page sync (an older position) goes out at the
+        // same moment, just before this one.
+        on(document, 'visibilitychange', () => {
+            if (document.visibilityState === 'hidden') {
+                video.pause();
+                this._saveWatch(w, { keepalive: true, force: w.held });
+            } else if (w.held) {
+                this._saveWatch(w, { force: true });
+            }
+        });
+        on(window, 'pagehide', () => this._saveWatch(w, { keepalive: true, force: w.held }));
+        // The player started (lock screen, headphones, Control Center): the
+        // video gives way, and the player is the player again. Except the
+        // start Watch interrupted: the player retries at canplay a play()
+        // that a pause refused mid-load, so a Watch tapped while the audio
+        // was still loading would otherwise lose to it. Paused again, once.
+        on(Player.audio, 'playing', () => {
+            if (w.pausedPlayer && Date.now() - w.openedAt < 8000) {
+                w.pausedPlayer = false;
+                Player.pause();
+                return;
+            }
+            w.pausedPlayer = false;
+            if (!video.paused) {
+                w.yielded = !!w.v.sameAsAudio && this._isLoadedEpisode(w.itemId, w.episodeId);
+                video.pause();
+            }
+            if (w.held) {
+                w.held = false;
+                if (w.stoppedSync && !Player.syncInterval) Player.startSync();
+                w.stoppedSync = false;
+            }
+        });
+        w.timer = setInterval(() => { if (!video.paused) this._saveWatch(w); }, 15000);
+
+        video.src = v.url.startsWith('http') ? v.url : `${ABS.serverUrl}${v.url}${v.url.includes('?') ? '&' : '?'}token=${ABS.token}`;
+        let start = this._watchStartNow(s, v);
+        if (start === null) {
+            // The page asked for the alternate's place when it opened, so
+            // this has normally long answered. Wait a little, then start
+            // anyway; a play() refused for the wait leaves the video's own
+            // controls, already at the right place.
+            await Promise.race([s.videoP || this._videoProgressFor(item.id, ep.id), new Promise(r => setTimeout(r, 2500))]);
+            if (this._watch !== w) return;
+            start = this._watchStartNow(s, v) ?? 0;
+        }
+        w.start = start;
+        // Not saved until the start is applied, or closing before the
+        // metadata arrives would write 0 over the real place.
+        const applyStart = () => {
+            if (this._watch !== w) return;
+            const d = video.duration;
+            let t = w.start || 0;
+            // At (or within the played window of) the end: from the top,
+            // as Play again does.
+            if (Number.isFinite(d) && d > 0 && t >= d - Math.max(w.win, 1)) t = 0;
+            const ready = (at) => { w.ready = true; w.lastSaved = w.lastTick = at; };
+            if (t <= 0) { ready(0); return; }
+            // Ready only once the start seek has landed there. Chrome was
+            // seen finishing one at 0 (paused while its range request was
+            // out), and a save then would have written 0 over the place. A
+            // seek that lands elsewhere is tried once more; a `seeking` to
+            // somewhere else is the viewer's own, and theirs to keep.
+            let tries = 0;
+            on(video, 'seeking', () => {
+                if (!w.ready && Math.abs(video.currentTime - t) > 2) ready(video.currentTime);
+            });
+            on(video, 'seeked', () => {
+                if (w.ready) return;
+                if (Math.abs(video.currentTime - t) <= 2) { ready(t); return; }
+                if (++tries < 2) { video.currentTime = t; return; }
+                ready(video.currentTime);
+            });
+            video.currentTime = t;
+        };
+        if (video.readyState >= 1) applyStart();
+        else on(video, 'loadedmetadata', applyStart, { once: true });
+        const p = video.play();
+        if (p?.catch) p.catch(() => {});
+    },
+
+    _watchTick(w) {
+        const video = w.video;
+        const t = video.currentTime, d = video.duration, prev = w.lastTick;
+        if (!w.ready) return;
+        w.lastTick = t;
+        if (w.finished || video.paused || video.seeking || !(d > 0)) return;
+        // Reached by playing, not by a jump (more than 10 s between ticks
+        // is a seek), as the outro skip judges it.
+        if (prev != null && t >= prev && t - prev < 10 && d - t <= w.win) this._watchFinished(w);
+    },
+
+    // Same Map the page draws from, the list's copy of the episode and the
+    // last-known progress: a redraw overlays all three (see Mark played).
+    _watchProgress(w, patch) {
+        const prev = w.s.progress?.get(w.episodeId) || w.ep.mediaProgress || {};
+        const p = { ...prev, episodeId: w.episodeId, ...patch, lastUpdate: Date.now() };
+        w.s.progress?.set(w.episodeId, p);
+        w.ep.mediaProgress = p;
+        this._epProgressLast?.set(w.episodeId, p);
+    },
+
+    // Every ~15 s while playing, on pause, on close, on hidden and pagehide.
+    // `force` says a place already written again (the hidden-page race in
+    // _openWatch); the untouched start is never written, so opening Watch
+    // on a played episode and closing it again un-marks nothing.
+    _saveWatch(w, { keepalive = false, force = false } = {}) {
+        if (!w.ready) return;
+        const pos = w.video.currentTime, d = w.video.duration;
+        if (!Number.isFinite(pos)) return;
+        if (Math.abs(pos - w.lastSaved) < 1 && !(force && w.savedOnce)) return;
+        w.lastSaved = pos;
+        w.savedOnce = true;
+        const dur = Number.isFinite(d) && d > 0 ? d : 0;
+        const opts = keepalive ? { keepalive: true } : {};
+        if (w.v.sameAsAudio) {
+            // One timeline with the audio: this IS the listening position.
+            // No isFinished, as the player's own sync for an episode: false
+            // would be "Mark unplayed" to the shim, which instead un-marks
+            // a played episode watched again from well before the end (its
+            // replay rule); the page's copy follows suit.
+            const body = { currentTime: pos, duration: dur, progress: dur ? pos / dur : 0 };
+            const replay = !w.finished && dur && pos < dur - w.win - 60 && (w.s.progress?.get(w.episodeId) || w.ep.mediaProgress)?.isFinished;
+            this._watchProgress(w, replay ? { ...body, isFinished: false } : body);
+            // The player's local resume slot (startItem prefers it when the
+            // server's copy is older), except once played: a slot at the end
+            // would start the next listen there.
+            if (!w.finished) {
+                try { localStorage.setItem(`pholia_pos_${w.itemId}:${w.episodeId}`, JSON.stringify({ t: pos, at: Date.now() })); } catch {}
+            }
+            ABS.updateProgress(`${w.itemId}/${w.episodeId}`, body, opts).catch(e => console.warn('Watch save failed', e));
+        } else {
+            this._rememberVideoPos(w.key, pos, dur || null);
+            ABS.request(`/api/podcasts/${encodeURIComponent(w.itemId)}/episode/${encodeURIComponent(w.episodeId)}/video-progress`, {
+                method: 'PUT', body: JSON.stringify({ position: pos, ...(dur ? { duration: dur } : {}) }), ...opts,
+            }).catch(e => console.warn('Watch save failed', e));
+        }
+    },
+
+    // The end of the video, or into the played window by playing: the
+    // episode is played, as the page's Mark played does it (an alternate's
+    // mark carries the AUDIO's length, since the mark is the episode's). A
+    // failed write waits in the outbox like the player's finish does.
+    _watchFinished(w) {
+        if (w.finished || !w.ready) return;
+        w.finished = true;
+        const d = w.video.duration > 0 ? w.video.duration : 0;
+        const epDur = w.ep.duration || w.ep.audioFile?.duration || 0;
+        const dur = w.v.sameAsAudio ? (d || epDur) : epDur;
+        const body = { isFinished: true, progress: 1, currentTime: dur, duration: dur };
+        this._watchProgress(w, body);
+        (this._playedHere ||= new Set()).add(w.episodeId);
+        if (w.v.sameAsAudio) {
+            try { localStorage.removeItem(`pholia_pos_${w.itemId}:${w.episodeId}`); } catch {}
+        } else {
+            this._saveWatch(w, { force: true });   // the video's own place: its end
+        }
+        ABS.updateProgress(`${w.itemId}/${w.episodeId}`, body)
+            .catch(() => this._queueEpisodeFinished({ id: w.itemId, episodeId: w.episodeId, media: { duration: dur } }));
+        this._invalidateTabCache();
+    },
+
+    _closeWatch({ redraw = true } = {}) {
+        const w = this._watch;
+        if (!w) return;
+        this._watch = null;
+        clearInterval(w.timer);
+        w.offs.forEach(off => off());
+        const pos = w.video.currentTime;
+        this._saveWatch(w, { force: w.held });
+        // Drop the stream: these files are gigabytes, through the Worker.
+        try { w.video.pause(); w.video.removeAttribute('src'); w.video.load(); } catch {}
+        w.el.remove();
+        // The episode's own file, held paused by the player: put the player
+        // where the watching stopped (its seek for a paused element, as its
+        // skip buttons do), so Listen carries on from there, and let it sync
+        // again. Played to the end too: left where it was, its next sync
+        // would be a "replay" from long before the end and un-mark it.
+        if (w.held && w.ready && Number.isFinite(pos) && this._isLoadedEpisode(w.itemId, w.episodeId)
+            && !Player.isPlaying && Math.abs(pos - Player.getGlobalTime()) >= 1) {
+            Player.loadTime(pos, 'watch', { keepPaused: true });
+        }
+        if (w.stoppedSync && !Player.syncInterval && Player.item) Player.startSync();
+        if (!redraw) return;
+        const cur = this._epPageFor(w.itemId, w.episodeId);
+        if (cur) this._rerenderEpisodePage(cur);
     },
 
     // ── Episode analysis (ABS_shim, run on wharf) ──
@@ -5783,6 +6141,7 @@ const App = {
             if (this._isLoadedEpisode(item.id, ep.id)) { Player.toggle(); return; }
             this.playEpisode(item.id, ep.id, ep, item, { queue: s.queue, startAt: s.played ? 0 : undefined });
         });
+        page.querySelector('[data-ep-watch]')?.addEventListener('click', () => this._openWatch(s, 0));
         page.querySelectorAll('[data-ep-tab]').forEach(b => b.addEventListener('click', () => {
             s.tab = b.dataset.epTab;
             page.querySelectorAll('[data-ep-tab]').forEach(x => x.setAttribute('aria-selected', String(x === b)));
