@@ -1549,6 +1549,7 @@ const App = {
             this._abbRoot = root;
         }
         const content = document.getElementById('content');
+        this._topIfNewPage(content);
         content.innerHTML = '';
         content.appendChild(this._abbRoot);
         this.abbLoadRdList();
@@ -2390,6 +2391,10 @@ const App = {
 
     switchTab(tab) {
         this.checkForSwUpdate();
+        // Another tab, or a tab's root from a page pushed on it: a new page,
+        // drawn from the top (setContent). Redrawing the tab on screen keeps
+        // its scroll, as before.
+        if (tab !== this.currentTab || this.navStack.length) this._pageChange = true;
         this.currentTab = tab;
         this.navStack = [];
         this._searchReopen = null;
@@ -2425,6 +2430,7 @@ const App = {
     pushNav(title, render) {
         this.checkForSwUpdate();
         if (this._navRestoring) { this.setNavTop(title, render); return; }
+        this._pageChange = true;
         this.navStack.push({ title, render: render || null });
         document.getElementById('header-title').textContent = title;
         document.getElementById('back-btn').classList.toggle('hidden', this.navStack.length < 1);
@@ -2446,6 +2452,7 @@ const App = {
     goBack() {
         if (this.navStack.length) {
             const reopen = this._searchReopen;
+            this._pageChange = true;
             this.navStack.pop();
             const top = this.navStack[this.navStack.length - 1];
             if (top && top.render) {
@@ -2469,9 +2476,29 @@ const App = {
     },
 
     setContent(html) {
-        document.getElementById('content').innerHTML = html;
+        const content = document.getElementById('content');
+        this._topIfNewPage(content);
+        content.innerHTML = html;
         this._markShelves();
         this.paintPlayingEpisode();
+    },
+
+    // The first paint after a navigation (pushNav, goBack, switchTab to
+    // another page) starts at the top, set explicitly. It used to inherit
+    // whatever the scroller held, and WebKit pulls an out-of-range offset
+    // back after layout only when no user scroll is in progress
+    // (RenderLayerScrollableArea::updateScrollInfoAfterLayout), which on iOS
+    // includes a flick's momentum. So Back tapped while LINUX Unplugged's
+    // 30,000 px list was still gliding left the short Library scrolled
+    // thousands of px past its end: blank (Joseph, 2026-10-22). A
+    // programmatic scroll reaches the UI process whatever the gesture state.
+    // Set before the swap, while the old page's layout is still clean, so it
+    // costs no extra layout. Redraws of the same page don't set the flag
+    // and keep their scroll.
+    _topIfNewPage(content) {
+        if (!this._pageChange) return;
+        this._pageChange = false;
+        content.scrollTop = 0;
     },
 
     // Mark each .h-scroll with can-scroll / at-end so CSS can fade the right
@@ -5282,7 +5309,13 @@ const App = {
         const archBadge = ep.archiveState === 'done' ? this._storageBadge(ep.audioFile?.storage) : '';
         // The time ("12:34 left") has its own span: the playing episode's
         // row keeps it current (paintPlayingEpisode).
-        const line = bits.map((b, i) => !b ? '' : i === 2 ? `<span class="ep-time">${esc(b)}</span>` : esc(b)).filter(Boolean).join(' · ');
+        // An episode with a video (ABS_shim's `videos`; the episode page has
+        // the Watch button) gets a quiet camera after its length, or after
+        // the date when there is none. Outside .ep-time, whose text the
+        // player rewrites.
+        const vidAt = ep.videos?.length ? [2, 1, 0].find(i => bits[i]) : undefined;
+        const vid = '<span class="ep-video" role="img" aria-label="Has video" title="Has video"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="13" height="12" rx="2"/><path d="M15 10.5 22 7v10l-7-3.5z"/></svg></span>';
+        const line = bits.map((b, i) => !b ? '' : (i === 2 ? `<span class="ep-time">${esc(b)}</span>` : esc(b)) + (i === vidAt ? vid : '')).filter(Boolean).join(' · ');
         h += `<span class="tracklist-title">${dlBadge}${archBadge}<span class="episode-title">${esc(ep.title || 'Untitled')}</span><br><span class="text-muted">${line}</span></span>`;
         h += '</button>';
         // A feed episode the caller hid gets Show again, and one that isn't

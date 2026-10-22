@@ -257,10 +257,19 @@ header h2 { font-size: 1.125rem; font-weight: 600; }
 main.dragging { transition: none; }
 main.settling { transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1); }
 
+/* isolation: the scroller must be a stacking context. WebKit gives each
+   positioned element that scrolls inside an overflow scroller but paints
+   into a stacking context OUTSIDE it a composited layer of its own
+   (OverflowScrollPositioning), moved by the scrolling tree on every frame.
+   An episode row has three (the li, its progress fill, .episode-main), so a
+   500-episode show page was 1,507 layers: the stutter Joseph saw scrolling
+   LINUX Unplugged (2026-10-22). Isolated, it is 3. Nothing in main has to
+   rise above the header or the bars, and overlays are appended to body. */
 main {
     flex: 1; overflow-y: auto; padding: 1rem;
     padding-bottom: calc(1rem + var(--tab-height) + var(--safe-bottom));
     background: var(--content-bg);
+    isolation: isolate;
 }
 #main-screen.player-active main {
     padding-bottom: calc(1rem + var(--tab-height) + var(--player-height) + var(--safe-bottom));
@@ -274,9 +283,11 @@ main {
 .section-title:first-child { margin-top: 0; }
 
 /* ── Horizontal scroll row ── */
+/* isolation: the same layer-per-card trap as main's, for a shelf's cards. */
 .h-scroll {
     display: flex; gap: 0.75rem; overflow-x: auto; padding-bottom: 0.5rem;
     scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch;
+    isolation: isolate;
 }
 .h-scroll::-webkit-scrollbar { display: none; }
 /* Shelves scroll sideways, which nothing used to signal. Two cues: the
@@ -1132,6 +1143,10 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
 .episodes-head .podcast-toggle { font-weight: 400; text-transform: none; letter-spacing: 0; }
 
 .ep-arch { display: inline-flex; align-items: center; justify-content: center; width: 1.05rem; height: 1.05rem; margin-right: 0.35rem; border-radius: 50%; background: var(--text-muted); color: var(--bg, #000); vertical-align: -0.12rem; }
+/* An episode with a video: a small camera in the grey line, a signifier only
+   (Watch is on the episode page). */
+.ep-video { display: inline-block; margin-left: 0.3rem; color: var(--text-muted); vertical-align: -0.15em; line-height: 0; }
+.ep-video svg { display: block; }
 .episode-dlbtn { background: none; border: none; color: var(--text-muted); padding: 0.4rem 0.3rem; cursor: pointer; flex-shrink: 0; font-size: 0.75rem; min-width: 2rem; }
 .episode-dlbtn.busy { color: var(--accent); }
 .episodes-head select { font-size: 0.85rem; padding: 0.2rem 0.3rem; border-radius: var(--radius); border: 1px solid var(--border); background: var(--card-bg); color: var(--text); text-transform: none; letter-spacing: 0; }
