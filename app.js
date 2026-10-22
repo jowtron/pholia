@@ -5310,11 +5310,11 @@ const App = {
         // The time ("12:34 left") has its own span: the playing episode's
         // row keeps it current (paintPlayingEpisode).
         // An episode with a video (ABS_shim's `videos`; the episode page has
-        // the Watch button) gets a quiet camera after its length, or after
+        // the Watch button) gets a camera tab after its length, or after
         // the date when there is none. Outside .ep-time, whose text the
         // player rewrites.
         const vidAt = ep.videos?.length ? [2, 1, 0].find(i => bits[i]) : undefined;
-        const vid = '<span class="ep-video" role="img" aria-label="Has video" title="Has video"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="13" height="12" rx="2"/><path d="M15 10.5 22 7v10l-7-3.5z"/></svg></span>';
+        const vid = '<span class="ep-video" role="img" aria-label="Has video" title="Has video"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="1.5" y="5.5" width="14" height="13" rx="2.5"/><path d="M16.5 10.2 22.5 6.6v10.8l-6-3.6z"/></svg></span>';
         const line = bits.map((b, i) => !b ? '' : (i === 2 ? `<span class="ep-time">${esc(b)}</span>` : esc(b)) + (i === vidAt ? vid : '')).filter(Boolean).join(' · ');
         h += `<span class="tracklist-title">${dlBadge}${archBadge}<span class="episode-title">${esc(ep.title || 'Untitled')}</span><br><span class="text-muted">${line}</span></span>`;
         h += '</button>';

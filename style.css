@@ -1143,9 +1143,11 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
 .episodes-head .podcast-toggle { font-weight: 400; text-transform: none; letter-spacing: 0; }
 
 .ep-arch { display: inline-flex; align-items: center; justify-content: center; width: 1.05rem; height: 1.05rem; margin-right: 0.35rem; border-radius: 50%; background: var(--text-muted); color: var(--bg, #000); vertical-align: -0.12rem; }
-/* An episode with a video: a small camera in the grey line, a signifier only
-   (Watch is on the episode page). */
-.ep-video { display: inline-block; margin-left: 0.3rem; color: var(--text-muted); vertical-align: -0.15em; line-height: 0; }
+/* An episode with a video: a solid camera on an accent tab in the grey line,
+   a signifier only (Watch is on the episode page). Same colours as the
+   downloaded badge, a different shape, so it reads at a glance while
+   scrolling without being mistaken for it. */
+.ep-video { display: inline-flex; align-items: center; justify-content: center; margin-left: 0.35rem; padding: 0.12rem 0.3rem; border-radius: 0.3rem; background: var(--accent); color: #fff; vertical-align: -0.2em; line-height: 0; }
 .ep-video svg { display: block; }
 .episode-dlbtn { background: none; border: none; color: var(--text-muted); padding: 0.4rem 0.3rem; cursor: pointer; flex-shrink: 0; font-size: 0.75rem; min-width: 2rem; }
 .episode-dlbtn.busy { color: var(--accent); }
