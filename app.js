@@ -485,6 +485,7 @@ const App = {
         document.getElementById('content').addEventListener('scroll', (e) => {
             if (e.target.classList?.contains('h-scroll')) this._markShelves(e.target);
         }, true);
+        this._watchPageScroll(document.getElementById('content'));
         window.addEventListener('resize', () => this._markShelves());
 
         // Search
@@ -1552,6 +1553,7 @@ const App = {
         this._topIfNewPage(content);
         content.innerHTML = '';
         content.appendChild(this._abbRoot);
+        this._placeNewPage(content);
         this.abbLoadRdList();
         this.abbLoadFacets();
     },
@@ -2394,7 +2396,7 @@ const App = {
         // Another tab, or a tab's root from a page pushed on it: a new page,
         // drawn from the top (setContent). Redrawing the tab on screen keeps
         // its scroll, as before.
-        if (tab !== this.currentTab || this.navStack.length) this._pageChange = true;
+        if (tab !== this.currentTab || this.navStack.length) this._pageChange = 0;
         this.currentTab = tab;
         this.navStack = [];
         this._searchReopen = null;
@@ -2430,7 +2432,11 @@ const App = {
     pushNav(title, render) {
         this.checkForSwUpdate();
         if (this._navRestoring) { this.setNavTop(title, render); return; }
-        this._pageChange = true;
+        // Where the page being left was scrolled to, for Back.
+        const y = document.getElementById('content').scrollTop;
+        const below = this.navStack[this.navStack.length - 1];
+        if (below) below.scroll = y; else this._rootScroll = { tab: this.currentTab, y };
+        this._pageChange = 0;
         this.navStack.push({ title, render: render || null });
         document.getElementById('header-title').textContent = title;
         document.getElementById('back-btn').classList.toggle('hidden', this.navStack.length < 1);
@@ -2452,9 +2458,12 @@ const App = {
     goBack() {
         if (this.navStack.length) {
             const reopen = this._searchReopen;
-            this._pageChange = true;
             this.navStack.pop();
             const top = this.navStack[this.navStack.length - 1];
+            // Back to where that page was left (pushNav noted it), the tab's
+            // own page included.
+            const root = this._rootScroll;
+            this._pageChange = top ? (top.scroll || 0) : (root?.tab === this.currentTab ? root.y : 0);
             if (top && top.render) {
                 document.getElementById('header-title').textContent = top.title;
                 this._navRestoring = true;
@@ -2479,26 +2488,97 @@ const App = {
         const content = document.getElementById('content');
         this._topIfNewPage(content);
         content.innerHTML = html;
+        this._placeNewPage(content);
         this._markShelves();
         this.paintPlayingEpisode();
     },
 
     // The first paint after a navigation (pushNav, goBack, switchTab to
-    // another page) starts at the top, set explicitly. It used to inherit
-    // whatever the scroller held, and WebKit pulls an out-of-range offset
-    // back after layout only when no user scroll is in progress
-    // (RenderLayerScrollableArea::updateScrollInfoAfterLayout), which on iOS
-    // includes a flick's momentum. So Back tapped while LINUX Unplugged's
-    // 30,000 px list was still gliding left the short Library scrolled
-    // thousands of px past its end: blank (Joseph, 2026-10-22). A
-    // programmatic scroll reaches the UI process whatever the gesture state.
-    // Set before the swap, while the old page's layout is still clean, so it
-    // costs no extra layout. Redraws of the same page don't set the flag
-    // and keep their scroll.
+    // another page) starts where it should, set explicitly: the top of a new
+    // page, or where a page was left when Back returns to it (_pageChange
+    // holds which; null = a redraw of the page on screen, which keeps its
+    // scroll). It used to inherit whatever the scroller held, and WebKit
+    // pulls an out-of-range offset back after layout only when no user
+    // scroll is in progress (RenderLayerScrollableArea::
+    // updateScrollInfoAfterLayout), which on iOS includes a flick's momentum.
+    // So Back tapped while LINUX Unplugged's 30,000 px list was still gliding
+    // left the short Library scrolled thousands of px past its end: blank
+    // (Joseph, 2026-10-22).
+    //
+    // Setting scrollTop wasn't enough on its own: with the list still gliding
+    // the Library still came up blank (the same day, after the first fix),
+    // because the glide lives in the UI process's scroll view and carries on
+    // past a programmatic scroll. So a moving scroller is first made
+    // overflow: hidden (_stopMomentum), which takes away that scroll view
+    // and its glide, then given its place.
+    //
+    // Before the swap: the top is set while the old page's layout is still
+    // clean, so it costs no extra layout. A moving one is only stopped here
+    // and placed after the swap (setting scrollTop now would lay the long
+    // old page out again under the changed overflow).
     _topIfNewPage(content) {
-        if (!this._pageChange) return;
-        this._pageChange = false;
-        content.scrollTop = 0;
+        const y = this._pageChange;
+        if (y == null) return;
+        this._pageChange = null;
+        const moving = Date.now() - (this._scrolledAt || 0) < 250;
+        if (moving) this._stopMomentum(content);
+        else if (!y) content.scrollTop = 0;
+        this._placeAt = (y || moving) ? { y, until: Date.now() + 8000 } : null;
+    },
+
+    // After the swap: a page that is going back to its place. A page drawn
+    // in steps (Loading, then the list) may be too short the first time;
+    // the place is kept for the next paint until the page can reach it, a
+    // touch on the page, or 8 s.
+    _placeNewPage(content) {
+        const at = this._placeAt;
+        if (!at) return;
+        if (Date.now() > at.until) { this._placeAt = null; return; }
+        content.scrollTop = at.y;
+        if (content.scrollHeight - content.clientHeight >= at.y - 1) this._placeAt = null;
+        if (this._stopping) this._stopping.y = at.y;
+    },
+
+    // overflow: hidden takes the scroller out of WebKit's composited
+    // scrolling, so iOS drops the UIScrollView carrying the glide; it is
+    // remade at the DOM's offset when overflow comes back. The hidden state
+    // has to reach the UI process in a commit of its own, hence a timer, not
+    // the next frame. Scroll updates the UI process sent before it saw the
+    // change can still land meanwhile, so the place is set once more after.
+    _stopMomentum(content) {
+        content.style.overflowY = 'hidden';
+        clearTimeout(this._stopping?.timer);
+        const stop = { y: null };
+        stop.timer = setTimeout(() => {
+            content.style.overflowY = '';
+            if (this._stopping !== stop) return;
+            this._stopping = null;
+            if (stop.y != null) content.scrollTop = stop.y;
+        }, 150);
+        this._stopping = stop;
+    },
+
+    _watchPageScroll(content) {
+        content.addEventListener('scroll', (e) => {
+            if (e.target !== content) return;
+            this._scrolledAt = Date.now();
+            // The safety net: a page scrolled more than a screen past its end
+            // can only be a glide carried in from a longer one (a rubber-band
+            // overshoot is a fraction of that). Stop it and show the end.
+            const max = content.scrollHeight - content.clientHeight;
+            if (content.scrollTop - max > content.clientHeight) {
+                this._stopMomentum(content);
+                content.scrollTop = max;
+                if (this._stopping) this._stopping.y = max;
+            }
+        }, { passive: true });
+        // The listener takes over: no more jumps to a remembered place.
+        const mine = () => {
+            this._placeAt = null;
+            if (this._stopping) this._stopping.y = null;
+        };
+        content.addEventListener('touchstart', mine, { passive: true });
+        content.addEventListener('wheel', mine, { passive: true });
     },
 
     // Mark each .h-scroll with can-scroll / at-end so CSS can fade the right
