@@ -1438,6 +1438,7 @@ const App = {
     shimFollows: false, // shim has personal podcast lists: follow / unfollow, hide per person
     shimCanSubscribe: false, // may follow podcasts: canSubscribe, else canGrab
     shimPreview: false, // shim stores a show without following it (canPreview): directory results open
+    shimListenAnalyse: false, // shim analyses an episode at once for listening (canListenAnalyse): "Play without ads"
     abbLibraryId: null,
     _abbRoot: null,
 
@@ -1459,6 +1460,7 @@ const App = {
             this.shimFollows = !!s && typeof s.canSubscribe === 'boolean';
             this.shimCanSubscribe = this.shimFollows ? s.canSubscribe : this.shimCanAdd;
             this.shimPreview = !!s && s.canPreview === true;
+            this.shimListenAnalyse = !!s && s.canListenAnalyse === true;
             // A podcast library has no Add screen: its search finds podcasts
             // (_dirSearchOn). The header icon is AudioBookBay's alone.
             if (s && this.currentMediaType === 'podcast') {
@@ -1469,7 +1471,7 @@ const App = {
                 const mine = folders.find(f => f.libraryId === this.currentLibraryId) || folders[0];
                 if (mine) { ok = true; this.abbFolderId = mine.id; this.abbLibraryId = mine.libraryId; }
             }
-        } catch { this.isShim = false; this.shimFollows = false; this.shimCanSubscribe = false; this.shimPreview = false; /* not a shim, or no access */ }
+        } catch { this.isShim = false; this.shimFollows = false; this.shimCanSubscribe = false; this.shimPreview = false; this.shimListenAnalyse = false; /* not a shim, or no access */ }
         if (this.isShim) this._pushStart();
         this.abbAvailable = ok;
         btn.classList.toggle('hidden', !ok);
@@ -3027,10 +3029,11 @@ const App = {
     async showLatest() {
         document.getElementById('header-title').textContent = 'Latest';
         return this._renderTab('latest', async () => {
-            const [data, progress, dl] = await Promise.all([
+            // Downloads as last known; the bind step settles them.
+            const dl = this._dlIdsNow();
+            const [data, progress] = await Promise.all([
                 ABS.request(`/api/libraries/${this.currentLibraryId}/recent-episodes?limit=50`),
                 this._episodeProgress(),
-                Offline.fullyDownloadedIds(),
             ]);
             const episodes = data.episodes || [];
             if (!episodes.length) return '<div class="empty-state">No recent episodes</div>';
@@ -3041,6 +3044,8 @@ const App = {
             return { html, bindData: episodes };
         }, (episodes) => {
             const content = document.getElementById('content');
+            const list = content.querySelector('.tracklist');
+            this._afterDownloadsScan(list, () => list.isConnected);
             // A cold-launch paint of last session's render comes without the
             // episodes: rows still play, the lookup happens on tap.
             if (!episodes) {
@@ -3139,12 +3144,15 @@ const App = {
         let drawn = '';
         if (cached) {
             this.setNavTop(cached.name);
-            drawn = this._drawPlaylist(cached, this._epProgressLast || new Map(), Offline._fullyLast?.ids || new Set());
+            drawn = this._drawPlaylist(cached, this._epProgressLast || new Map(), this._dlIdsNow());
         } else this.showLoading();
         const gen = this._playlistSaves;
-        let pl, progress, dl;
+        let pl, progress;
+        // Downloads as last known (_dlIdsNow): settled in place once the
+        // scan lands, here for the instant paint and again after a redraw.
+        this._afterDownloadsScan(content, () => this.navStack[this.navStack.length - 1] === top);
         try {
-            [pl, progress, dl] = await Promise.all([ABS.request(`/api/playlists/${id}`), this._episodeProgress(), Offline.fullyDownloadedIds()]);
+            [pl, progress] = await Promise.all([ABS.request(`/api/playlists/${id}`), this._episodeProgress()]);
         } catch (e) {
             if (!cached && this.navStack[this.navStack.length - 1] === top) this.setContent(`<div class="loading">Error: ${esc(e.message)}</div>`);
             return;
@@ -3157,7 +3165,8 @@ const App = {
         this.setNavTop(pl.name);
         this._overlayProgress(progress, (pl.items || []).map(i => i.episode));
         const scroll = content.scrollTop;
-        if (this._drawPlaylist(pl, progress, dl, drawn) !== drawn && cached) content.scrollTop = scroll;
+        if (this._drawPlaylist(pl, progress, this._dlIdsNow(), drawn) !== drawn && cached) content.scrollTop = scroll;
+        this._afterDownloadsScan(content, () => this.navStack[this.navStack.length - 1] === top);
     },
 
     // Draws a playlist page; returns its markup, and does nothing when that
@@ -3222,7 +3231,7 @@ const App = {
                 this._playlistData.set(pl.id, saved);
                 this._invalidateTabCache('playlists');
                 this._overlayProgress(fresh, (saved.items || []).map(i => i.episode));
-                if (this.navStack[this.navStack.length - 1] === top) this._drawPlaylist(saved, fresh, Offline._fullyLast?.ids || dl);
+                if (this.navStack[this.navStack.length - 1] === top) this._drawPlaylist(saved, fresh, this._dlIdsNow());
             } catch (e) {
                 control.revert();
                 content.querySelectorAll('[data-pl-hide-played], [data-pl-sort]').forEach(el => { el.disabled = false; });
@@ -4679,7 +4688,9 @@ const App = {
         const meta = item.media?.metadata || {};
         const episodes = this._sortEpisodes([...(item.media?.episodes || [])], this._podSort(item.id));
         this.setNavTop(meta.title || 'Unknown', () => this._reloadPodcast(item.id));
-        const [progress, dl] = await Promise.all([this._episodeProgress(), Offline.fullyDownloadedIds()]);
+        // Downloads as last known; settled in place below when the scan lands.
+        const dl = this._dlIdsNow();
+        const progress = await this._episodeProgress();
         this._overlayProgress(progress, item.media?.episodes);
 
         let html = `<div class="detail-view" data-pod-show="${esc(item.id)}">`;
@@ -4775,9 +4786,12 @@ const App = {
         // takes it out of view at once. One switch for every show, per phone.
         const filter = this._podFilter();
         const unplayed = episodes.filter(ep => !progress.get(ep.id)?.isFinished).length;
-        const downloadedHere = episodes.filter(ep => dl.has(`${item.id}~${ep.id}`)).length;
         const archived = episodes.filter(ep => ep.archiveState === 'done').length;
-        const counts = [`${unplayed} unplayed`, downloadedHere ? `${downloadedHere} on this phone` : '', archived ? `${archived} on pCloud` : ''].filter(Boolean).join(' · ');
+        const countsFor = (ids) => {
+            const downloadedHere = episodes.filter(ep => ids.has(`${item.id}~${ep.id}`)).length;
+            return [`${unplayed} unplayed`, downloadedHere ? `${downloadedHere} on this phone` : '', archived ? `${archived} on pCloud` : ''].filter(Boolean).join(' · ');
+        };
+        const counts = countsFor(dl);
         const opt = (v, label) => `<option value="${v}"${filter === v ? ' selected' : ''}>${label}</option>`;
         html += '<div class="section-title episodes-head"><span>Episodes</span>'
             + `<span class="text-muted episodes-count">${counts}</span>`
@@ -4858,6 +4872,13 @@ const App = {
             }
         };
         applyFilter(filter);
+        const page = content.querySelector('[data-pod-show]');
+        this._afterDownloadsScan(page, () => page.isConnected, (ids, changed) => {
+            if (!changed) return;
+            const c = page.querySelector('.episodes-count');
+            if (c) c.textContent = countsFor(ids);
+            applyFilter(page.querySelector('[data-ep-filter]')?.value || filter);
+        });
         content.querySelector('[data-ep-filter]')?.addEventListener('change', (e) => {
             const f = e.currentTarget.value;
             try { localStorage.setItem('pholia_pod_filter', f); } catch {}
@@ -5089,7 +5110,13 @@ const App = {
         const content = document.getElementById('content');
         const list = content.querySelector('#feed-list');
         const more = content.querySelector('#feed-more');
-        const [progress, dl] = await Promise.all([this._episodeProgress(), Offline.fullyDownloadedIds()]);
+        // Downloads as last known; later pages use the fresh scan's answer.
+        let dl = this._dlIdsNow();
+        Offline.fullyDownloadedIds().then(ids => {
+            dl = ids;
+            if (list.isConnected) this._settleRowsDownloaded(list, ids);
+        });
+        const progress = await this._episodeProgress();
         let offset = 0, total = 0, gen = 0;
         const load = async () => {
             more.disabled = true;
@@ -5357,6 +5384,67 @@ const App = {
         return `<span class="ep-arch" title="Archived on ${esc(name)}" aria-label="Archived on ${esc(name)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18h10a4 4 0 0 0 .6-7.96A6 6 0 0 0 6.1 9.2 4.5 4.5 0 0 0 7 18z"/></svg></span>`;
     },
 
+    _DL_BADGE: '<span class="ep-dl" title="Downloaded to this phone" aria-label="Downloaded"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12M6 11l6 6 6-6M5 21h14"/></svg></span>',
+
+    // Small marks after a row's length (2026-11-08), quieter than the
+    // video tab: chapters from the publisher (an outlined list), chapters
+    // ABS_shim's analysis wrote (a tinted list with a spark; the shim says
+    // which in `analysis.chaptersSource`, and without an analysis any
+    // chapters are the feed's or the file's own), and a plain muted
+    // scissors when the analysis has looked for ads in the file served now.
+    _episodeMarks(ep) {
+        const list = '<path d="M10 6h11M10 12h11M10 18h11"/>';
+        let h = '';
+        if (ep.chapters?.length > 1) {
+            h += ep.analysis?.chaptersSource === 'generated'
+                ? `<span class="ep-mark ep-mark-gen" role="img" aria-label="Chapters made by Rhapsode" title="Chapters made by Rhapsode"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round">${list}<path d="M4 3.2l1.1 2.7 2.7 1.1-2.7 1.1L4 10.8 2.9 8.1.2 7l2.7-1.1z" fill="currentColor" stroke="none"/><circle cx="4" cy="16" r="1.6" fill="currentColor" stroke="none"/></svg></span>`
+                : `<span class="ep-mark" role="img" aria-label="Chapters from the publisher" title="Chapters from the publisher"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round">${list}<g fill="currentColor" stroke="none"><circle cx="4" cy="6" r="1.7"/><circle cx="4" cy="12" r="1.7"/><circle cx="4" cy="18" r="1.7"/></g></svg></span>`;
+        }
+        if (ep.analysis) {
+            const n = ep.analysis.ads?.length || 0;
+            const t = n ? `Rhapsode found ${n} ad${n === 1 ? '' : 's'}` : 'Rhapsode found no ads';
+            h += `<span class="ep-mark ep-mark-ads" role="img" aria-label="${t}" title="${t}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12"/></svg></span>`;
+        }
+        return h;
+    },
+
+    // ── Lists don't wait for the downloads scan (2026-11-08) ──
+    // The "fully downloaded" scan re-lists the whole audio cache and is
+    // memoised on _coverageVersion, which every chunk write bumps, so while
+    // an episode streams every list that awaited it waited a second or
+    // more on an iPhone (a show page opened ~6 s after its data came in).
+    // Lists now draw with the last answer (this page load's, else last
+    // session's) and settle their rows' "on this phone" marks in place
+    // when a fresh scan lands, without redrawing (scroll, Back, handlers).
+    _dlIdsNow() {
+        const last = Offline._fullyLast;
+        if (last) return last.ids;
+        return new Set(this._loadKnownOffline().map(i => Offline.oid(i)));
+    },
+    _settleRowsDownloaded(root, ids) {
+        let changed = false;
+        for (const li of root.querySelectorAll('.episode-row')) {
+            const isDl = ids.has(`${li.dataset.itemId}~${li.dataset.episodeId}`);
+            if (li.classList.contains('is-downloaded') === isDl) continue;
+            changed = true;
+            li.classList.toggle('is-downloaded', isDl);
+            if (isDl) { if (!li.querySelector('.ep-dl')) li.querySelector('.tracklist-title')?.insertAdjacentHTML('afterbegin', this._DL_BADGE); }
+            else li.querySelector('.ep-dl')?.remove();
+            const q = li.querySelector('[data-quick-dl]');
+            if (q && !q.classList.contains('busy')) q.hidden = isDl;
+        }
+        return changed;
+    },
+    // `alive()` says the list is still the one on screen; `then(ids,
+    // changed)` updates whatever else counts downloads.
+    _afterDownloadsScan(root, alive, then) {
+        Offline.fullyDownloadedIds().then(ids => {
+            if (!root || !alive()) return;
+            const changed = this._settleRowsDownloaded(root, ids);
+            then?.(ids, changed);
+        });
+    },
+
     _episodeRowHtml(itemId, ep, prog, opts = {}) {
         const played = !!prog?.isFinished;
         const pct = played ? 0 : Math.round((prog?.progress || 0) * 1000) / 10;
@@ -5383,7 +5471,7 @@ const App = {
         // on the right plays it, as in Pocket Casts.
         h += '<button class="tracklist-play episode-open" aria-label="Episode details">';
         if (opts.cover) h += `<img class="ep-cover" src="${ABS.coverUrl(itemId)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
-        const dlBadge = isDl ? '<span class="ep-dl" title="Downloaded to this phone" aria-label="Downloaded"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12M6 11l6 6 6-6M5 21h14"/></svg></span>' : '';
+        const dlBadge = isDl ? this._DL_BADGE : '';
         // Archived: the logo of the service holding the copy (the episode's
         // audioFile.storage, sent by ABS_shim), a plain cloud for one without.
         const archBadge = ep.archiveState === 'done' ? this._storageBadge(ep.audioFile?.storage) : '';
@@ -5393,9 +5481,12 @@ const App = {
         // the Watch button) gets a camera tab after its length, or after
         // the date when there is none. Outside .ep-time, whose text the
         // player rewrites.
-        const vidAt = ep.videos?.length ? [2, 1, 0].find(i => bits[i]) : undefined;
-        const vid = '<span class="ep-video" role="img" aria-label="Has video" title="Has video"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="1.5" y="5.5" width="14" height="13" rx="2.5"/><path d="M16.5 10.2 22.5 6.6v10.8l-6-3.6z"/></svg></span>';
-        const line = bits.map((b, i) => !b ? '' : (i === 2 ? `<span class="ep-time">${esc(b)}</span>` : esc(b)) + (i === vidAt ? vid : '')).filter(Boolean).join(' · ');
+        // Then the chapter marks (_episodeMarks): the publisher's chapters,
+        // or ones Rhapsode's analysis wrote, and whether its ads are known.
+        const marks = (ep.videos?.length ? '<span class="ep-video" role="img" aria-label="Has video" title="Has video"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="1.5" y="5.5" width="14" height="13" rx="2.5"/><path d="M16.5 10.2 22.5 6.6v10.8l-6-3.6z"/></svg></span>' : '')
+            + this._episodeMarks(ep);
+        const vidAt = marks ? [2, 1, 0].find(i => bits[i]) : undefined;
+        const line = bits.map((b, i) => !b ? '' : (i === 2 ? `<span class="ep-time">${esc(b)}</span>` : esc(b)) + (i === vidAt ? marks : '')).filter(Boolean).join(' · ');
         h += `<span class="tracklist-title">${dlBadge}${archBadge}<span class="episode-title">${esc(ep.title || 'Untitled')}</span><br><span class="text-muted">${line}</span></span>`;
         h += '</button>';
         // A feed episode the caller hid gets Show again, and one that isn't
@@ -5410,7 +5501,9 @@ const App = {
             h += '<button class="episode-dlbtn" data-quick-archive aria-label="Archive to pCloud" title="Archive to pCloud"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18h10a4 4 0 0 0 .6-7.96A6 6 0 0 0 6.1 9.2 4.5 4.5 0 0 0 7 18z"/><path d="M12 15V10M9.5 12.5 12 10l2.5 2.5"/></svg></button>';
         }
         // Download to this phone, one tap, without opening the ⋯ menu.
-        if (!addable && !unhidable && !isDl && ep.audioFile?.ino && opts.dl) h += '<button class="episode-dlbtn" data-quick-dl aria-label="Download to this phone" title="Download to this phone"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12M6 11l6 6 6-6M5 21h14"/></svg></button>';
+        // Drawn hidden on a downloaded row, so a late downloads scan
+        // (_settleRowsDownloaded) can show it without rebinding.
+        if (!addable && !unhidable && ep.audioFile?.ino && opts.dl) h += `<button class="episode-dlbtn" data-quick-dl${isDl ? ' hidden' : ''} aria-label="Download to this phone" title="Download to this phone"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12M6 11l6 6 6-6M5 21h14"/></svg></button>`;
         // Play, or pause while it's the one playing (CSS swaps the icon on
         // the row's is-playing / is-paused classes, set by paintPlayingEpisode).
         h += '<button class="episode-playbtn" aria-label="Play"><svg class="i-play" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg><svg class="i-pause" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg></button>';
@@ -5566,9 +5659,11 @@ const App = {
         const navTitle = item.media?.metadata?.title || 'Episode';
         if (opts.pushed) this.setNavTop(navTitle, render); else this.pushNav(navTitle, render);
         this._applyNotesMemo(item.id, ep);
-        const [progress, dl, analysis] = await Promise.all([
+        // Downloads as last known (_dlIdsNow); a fresh scan that disagrees
+        // redraws the page once it lands (below).
+        const dl = this._dlIdsNow();
+        const [progress, analysis] = await Promise.all([
             opts.progress || this._episodeProgress().then(m => this._overlayProgress(m, [ep])),
-            Offline.fullyDownloadedIds(),
             this._analysisFor(this._episodeItem(item, ep), ep.analysis),
         ]);
 
@@ -5637,6 +5732,10 @@ const App = {
         h += '</div>';
         this.setContent(h);
         this._bindEpisodePage(s);
+        const shownDl = dl.has(`${item.id}~${ep.id}`);
+        Offline.fullyDownloadedIds().then(ids => {
+            if (ids.has(`${item.id}~${ep.id}`) !== shownDl && this._epPageShowing(s)) this._rerenderEpisodePage(s);
+        });
         if (tab === 'transcript') this._loadEpisodeTranscript(s);
         this._paintEpisodePage(true);
         if (this.isShim && this.shimCanAdd) this._loadAnalysisState(s);
@@ -6080,6 +6179,8 @@ const App = {
         if (out) out.textContent = (st ? ' ' + this._analysisText(st) : '');
         const btn = document.querySelector('#content [data-ep-analyse]');
         if (btn && st) btn.hidden = !this._analysisWanted(st);
+        const noAds = document.querySelector('#content [data-ep-noads]');
+        if (noAds && st) noAds.hidden = st.configured === false || !!st.analysis;
         s.analysisState = st?.state || null;
     },
     // "Analyse now" is offered only when pressing it would do something:
@@ -6127,6 +6228,163 @@ const App = {
         this._rerenderEpisodePage(s);
     },
 
+    // ── Play without ads (ABS_shim `canListenAnalyse`, 2026-11-08) ──
+    // For an episode with no analysis of the file served now: ask the shim
+    // to analyse it NOW (`{listen: true}`: the front of the queue, streamed
+    // copy, no pCloud archive first), wait for it on the phone, then play
+    // it the ordinary way so the player's ad skipping (skip.ads) applies.
+    // The wait lives on App (`_noAds`) and in a sheet on <body>, so it
+    // survives moving around the app; one at a time. Cancel only stops
+    // waiting here: the job may still finish, which is fine.
+    _noAds: null,
+    NOADS_POLL_MS: 4000,
+    NOADS_GIVE_UP_MS: 3 * 3600 * 1000,
+    _noAdsUrl(w) { return `/api/podcasts/${encodeURIComponent(w.itemId)}/episode/${encodeURIComponent(w.episodeId)}/analysis`; },
+    async playWithoutAds(item, ep, queue = null) {
+        if (this._noAds) this._stopNoAds();
+        const w = this._noAds = { itemId: item.id, episodeId: ep.id, item, ep, queue, started: Date.now(), timer: null, el: null, fails: 0 };
+        this._paintNoAds(w, { title: 'Asking Rhapsode to remove the ads…', busy: true });
+        let st;
+        try {
+            st = await this._shimCall(`${this._noAdsUrl(w)}/run`, { method: 'POST', body: JSON.stringify({ listen: true }) });
+        } catch (err) {
+            if (this._noAds === w) this._noAdsFailed(w, err.message);
+            return;
+        }
+        if (this._noAds !== w) return;
+        // The episode page, if it's this episode's, shows the state line too.
+        const page = this._epPageFor(w.itemId, w.episodeId);
+        if (page && st) { this._paintAnalysisState(page, st); this._watchAnalysis(page); }
+        this._noAdsState(w, st);
+    },
+    async _noAdsPoll(w) {
+        w.timer = null;
+        if (this._noAds !== w) return;
+        let st = null;
+        try { st = await this._shimCall(this._noAdsUrl(w)); w.fails = 0; } catch { w.fails++; }
+        if (this._noAds !== w) return;
+        if (!st) {
+            if (w.fails >= 3) this._paintNoAds(w, { title: 'Can\'t reach the server', sub: 'Still trying. You can play now with ads instead.' });
+            w.timer = setTimeout(() => this._noAdsPoll(w), this.NOADS_POLL_MS);
+            return;
+        }
+        this._noAdsState(w, st);
+    },
+    _noAdsState(w, st) {
+        if (this._noAds !== w) return;
+        if (st?.analysis || st?.state === 'done') { this._noAdsDone(w); return; }
+        if (st?.configured === false) { this._noAdsFailed(w, 'Ad removal isn\'t set up on this server.'); return; }
+        if (st?.state === 'error') { this._noAdsFailed(w, st.current?.error || st.error || 'The analysis failed.'); return; }
+        if (Date.now() - w.started > this.NOADS_GIVE_UP_MS) { this._noAdsFailed(w, 'It hasn\'t started after three hours.'); return; }
+        this._paintNoAds(w, this._noAdsWaitText(w, st));
+        w.timer = setTimeout(() => this._noAdsPoll(w), this.NOADS_POLL_MS);
+    },
+    // What the wait is for, from GET …/analysis. Tolerant: the quiet
+    // reasons (the Mac asleep, busy) arrive as `waitingFor`, `reason` or
+    // the queued row's `error` text, depending on the shim's age.
+    _noAdsWaitText(w, st) {
+        const c = st?.current || {};
+        const island = String(c.island || st?.island || '');
+        const where = !island || /^mac/i.test(island) ? 'your Mac' : island;
+        const Where = where[0].toUpperCase() + where.slice(1);
+        const why = [st?.waitingFor, st?.reason, c.reason, typeof st?.held === 'string' ? st.held : '', c.error, st?.error]
+            .filter(x => typeof x === 'string').join(' ');
+        const mins = Math.floor((Date.now() - w.started) / 60000);
+        const waited = mins >= 1 ? ` (${mins} min so far)` : '';
+        if (st?.state === 'running') return { title: `Analysing on ${where}…`, sub: `Finding the ads so they can be skipped${waited}.`, busy: true };
+        if (/unreachable|unconfigured|offline|asleep|sleep/i.test(why)) return { title: `${Where} seems to be asleep or offline`, sub: `It starts as soon as it wakes${waited}.` };
+        if (/archive/i.test(why)) return { title: 'Copying it to pCloud first…', sub: waited.trim(), busy: true };
+        if (/other|busy|running/i.test(why) || st?.held) return { title: 'Waiting for another episode to finish', sub: `${Where} analyses one at a time; this one is next${waited}.`, busy: true };
+        return { title: `Queued on ${where}…`, sub: `It should start within a couple of minutes${waited}.`, busy: true };
+    },
+    async _noAdsDone(w) {
+        this._paintNoAds(w, { title: 'Analysed. Starting…', busy: true });
+        let fresh = null;
+        try { fresh = await this._shimCall(`/api/podcasts/${encodeURIComponent(w.itemId)}/episode/${encodeURIComponent(w.episodeId)}`); } catch {}
+        if (this._noAds !== w) return;
+        // Every copy of this episode we hold takes the new chapters and ad
+        // ranges: ours, the show's list (playEpisode finds it there), the
+        // episode page's, and the player's when it has the episode.
+        const page = this._epPageFor(w.itemId, w.episodeId);
+        const patch = fresh ? { chapters: fresh.chapters || [], analysis: fresh.analysis || null, dynamicAds: !!fresh.dynamicAds } : null;
+        if (patch) {
+            const listed = w.item.media?.episodes?.find(e => e.id === w.episodeId);
+            for (const e of new Set([w.ep, listed, page?.ep].filter(Boolean))) Object.assign(e, patch);
+        }
+        if (!w.ep.analysis) {
+            this._noAdsFailed(w, fresh ? 'It was analysed, but the file the show serves has changed since, so its ads can\'t be skipped.' : 'Couldn\'t fetch the episode.');
+            return;
+        }
+        if (this._isLoadedEpisode(w.itemId, w.episodeId) && Player.item?.media) {
+            Player.item.media.analysis = w.ep.analysis;
+            if (w.ep.chapters.length) { Player.item.media.chapters = w.ep.chapters; Player.chapters = w.ep.chapters; }
+            Player._setAnalysisFor(Player.item);
+        }
+        this._invalidateTabCache?.();
+        if (page) { page.transcriptP = null; this._rerenderEpisodePage(page); }
+        // Started without a tap: iOS may refuse play() when the player
+        // element hasn't played yet in this page load. Then the sheet
+        // offers Play, which is a tap.
+        // The sheet goes as soon as it plays; if nothing plays within 1.5 s
+        // of playEpisode returning (15 s at most), it offers Play.
+        const t0 = Date.now();
+        let returned = 0;
+        this._noAdsPlay(w).catch(() => {}).then(() => { returned = Date.now(); });
+        while (this._noAds === w) {
+            if (this._isLoadedEpisode(w.itemId, w.episodeId) && Player.isPlaying) { this._stopNoAds(); return; }
+            if ((returned && Date.now() - returned > 1500) || Date.now() - t0 > 15000) break;
+            await new Promise(r => setTimeout(r, 250));
+        }
+        if (this._noAds !== w) return;
+        this._paintNoAds(w, { title: 'Ready: the ads will be skipped', sub: '', play: 'Play' });
+    },
+    _noAdsPlay(w) {
+        if (this._isLoadedEpisode(w.itemId, w.episodeId)) {
+            if (Player.audio.paused) Player.play();
+            return Promise.resolve();
+        }
+        return this.playEpisode(w.itemId, w.episodeId, w.ep, w.item, { queue: w.queue });
+    },
+    _noAdsFailed(w, msg) {
+        clearTimeout(w.timer); w.timer = null;
+        this._paintNoAds(w, { title: 'Couldn\'t remove the ads', sub: msg, play: 'Play with ads', cancel: 'Close', error: true });
+    },
+    _stopNoAds() {
+        const w = this._noAds;
+        if (!w) return;
+        this._noAds = null;
+        clearTimeout(w.timer);
+        w.el?.remove();
+    },
+    // The sheet: above the mini player and the tab bar, and above the
+    // fullscreen player too, so the wait stays in view wherever you go.
+    _paintNoAds(w, { title = '', sub = '', busy = false, play = 'Play now with ads', cancel = 'Cancel', error = false }) {
+        if (this._noAds !== w) return;
+        if (!w.el) {
+            w.el = document.createElement('div');
+            w.el.className = 'noads-sheet';
+            w.el.setAttribute('role', 'status');
+            w.el.innerHTML = '<div class="noads-head"><span class="noads-spin" aria-hidden="true"></span><div class="noads-text">'
+                + '<div class="noads-ep"></div><div class="noads-title"></div><div class="noads-sub"></div></div></div>'
+                + '<div class="noads-btns"><button type="button" class="noads-cancel"></button><button type="button" class="noads-play"></button></div>';
+            w.el.querySelector('.noads-ep').textContent = w.ep.title || 'Episode';
+            w.el.querySelector('.noads-cancel').addEventListener('click', () => { if (this._noAds === w) this._stopNoAds(); });
+            w.el.querySelector('.noads-play').addEventListener('click', () => {
+                if (this._noAds !== w) return;
+                this._stopNoAds();
+                this._noAdsPlay(w).catch(() => {});
+            });
+            document.body.appendChild(w.el);
+        }
+        w.el.classList.toggle('is-busy', busy);
+        w.el.classList.toggle('is-error', error);
+        w.el.querySelector('.noads-title').textContent = title;
+        const s = w.el.querySelector('.noads-sub');
+        s.textContent = sub; s.hidden = !sub;
+        w.el.querySelector('.noads-play').textContent = play;
+        w.el.querySelector('.noads-cancel').textContent = cancel;
+    },
+
     _episodeActionsHtml(item, ep, { played, downloaded, playlistId }) {
         const icon = (d) => `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
         const btn = (attr, svg, label, cls = '') => `<button class="ep-act${cls}" ${attr}>${svg}<span>${esc(label)}</span></button>`;
@@ -6156,6 +6414,11 @@ const App = {
             more.push('<span class="text-muted">Hidden for you</span><button class="text-btn" data-ep-unhide>Show again</button>');
         } else if (this.isShim && ep.inLibrary === false) {
             if (this.shimCanAdd) more.push('<button class="text-btn" data-ep-add>Add to the show</button>');
+        }
+        // Play without ads (ABS_shim canListenAnalyse): analyse it now, wait
+        // on the phone, then play with the ads skipped (playWithoutAds).
+        if (this.isShim && this.shimCanAdd && this.shimListenAnalyse && !ep.analysis) {
+            more.push('<button class="text-btn ep-noads" data-ep-noads>Play without ads</button>');
         }
         if (this.isShim && this.shimCanAdd) {
             // Hidden while an analysis of the file served now exists (the shim
@@ -6368,6 +6631,7 @@ const App = {
                 if (out) out.textContent = ' ' + err.message;
             } finally { btn.disabled = false; }
         });
+        page.querySelector('[data-ep-noads]')?.addEventListener('click', () => this.playWithoutAds(item, ep, s.queue));
         page.querySelector('[data-ep-unlist]')?.addEventListener('click', async () => {
             try {
                 await ABS.request(`/api/playlists/${s.opts.playlistId}/item/${item.id}/${ep.id}`, { method: 'DELETE' });
