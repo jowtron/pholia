@@ -6284,18 +6284,17 @@ const App = {
     // the queued row's `error` text, depending on the shim's age.
     _noAdsWaitText(w, st) {
         const c = st?.current || {};
-        const island = String(c.island || st?.island || '');
-        const where = !island || /^mac/i.test(island) ? 'your Mac' : island;
-        const Where = where[0].toUpperCase() + where.slice(1);
+        // Never names the machine doing the work (Joseph, 2026-11-09:
+        // other people use this; "your Mac" told them where it runs).
         const why = [st?.waitingFor, st?.reason, c.reason, typeof st?.held === 'string' ? st.held : '', c.error, st?.error]
             .filter(x => typeof x === 'string').join(' ');
         const mins = Math.floor((Date.now() - w.started) / 60000);
         const waited = mins >= 1 ? ` (${mins} min so far)` : '';
-        if (st?.state === 'running') return { title: `Analysing on ${where}…`, sub: `Finding the ads so they can be skipped${waited}.`, busy: true };
-        if (/unreachable|unconfigured|offline|asleep|sleep/i.test(why)) return { title: `${Where} seems to be asleep or offline`, sub: `It starts as soon as it wakes${waited}.` };
+        if (st?.state === 'running') return { title: 'Removing the ads…', sub: `Finding the ads so they can be skipped${waited}.`, busy: true };
+        if (/unreachable|unconfigured|offline|asleep|sleep/i.test(why)) return { title: 'Ad removal is offline right now', sub: `It starts as soon as it's back${waited}.` };
         if (/archive/i.test(why)) return { title: 'Copying it to pCloud first…', sub: waited.trim(), busy: true };
-        if (/other|busy|running/i.test(why) || st?.held) return { title: 'Waiting for another episode to finish', sub: `${Where} analyses one at a time; this one is next${waited}.`, busy: true };
-        return { title: `Queued on ${where}…`, sub: `It should start within a couple of minutes${waited}.`, busy: true };
+        if (/other|busy|running/i.test(why) || st?.held) return { title: 'Waiting for another episode to finish', sub: `Episodes are done one at a time; this one is next${waited}.`, busy: true };
+        return { title: 'Queued…', sub: `It should start within a couple of minutes${waited}.`, busy: true };
     },
     async _noAdsDone(w) {
         this._paintNoAds(w, { title: 'Analysed. Starting…', busy: true });
@@ -7690,8 +7689,6 @@ const App = {
         if (h) return m ? `${h} h ${m} min` : `${h} h`;
         return r ? `${m} min ${r} s` : `${m} min`;
     },
-    _anIsland(id) { return id ? ({ mac: 'Mac' }[id] || String(id)) : ''; },
-    _anOn(id) { return id === 'mac' ? 'on the Mac' : id ? 'on ' + id : ''; },
     _anReason(r) { return { asked: 'asked', played: 'after you played it', new: 'new episode' }[r] || ''; },
     // "anthropic/claude-sonnet-5.5" → "Claude Sonnet 5.5".
     _anModel(m) {
@@ -7712,16 +7709,16 @@ const App = {
     _anWaitWhy(err) {
         const code = String(err || '').split(':')[0].trim();
         return {
-            island_unreachable: 'the computer that does it isn\'t answering',
-            node_busy: 'that computer is busy',
-            project_not_routed: 'no computer is set up for it yet',
+            island_unreachable: 'it\'s offline right now',
+            node_busy: 'it\'s busy',
+            project_not_routed: 'it isn\'t set up yet',
         }[code] || String(err);
     },
 
     _anRunHtml(run) {
         const open = run.episodeId && run.libraryItemId
             ? ` data-an-ep="${esc(String(run.episodeId))}" data-an-item="${esc(String(run.libraryItemId))}"` : ' disabled';
-        const head = [run.showTitle, run.at ? this._pushWhen(run.at) : '', this._anIsland(run.island), this._anReason(run.reason)].filter(Boolean).join(' · ');
+        const head = [run.showTitle, run.at ? this._pushWhen(run.at) : '', this._anReason(run.reason)].filter(Boolean).join(' · ');
         const audio = Number(run.audioSeconds) > 0
             ? `${this._anDur(run.audioSeconds)} of audio` + (Number(run.whisperSeconds) > 0 ? `, transcribed in ${this._anDur(run.whisperSeconds)}` : '')
             : (Number(run.whisperSeconds) > 0 ? `Transcribed in ${this._anDur(run.whisperSeconds)}` : '');
@@ -7750,7 +7747,7 @@ const App = {
     },
     _anActiveHtml(a) {
         let state;
-        if (a.state === 'running') state = 'Running' + (a.island ? ' ' + this._anOn(a.island) : '');
+        if (a.state === 'running') state = 'Running';
         else if (a.waitingFor === 'archive') state = 'Waiting for its pCloud copy';
         else state = 'Waiting' + (a.error ? ': ' + this._anWaitWhy(a.error) : '');
         const sub = [a.showTitle, this._anReason(a.reason), a.since ? 'since ' + this._pushWhen(a.since).replace(/^today /, '') : ''].filter(Boolean).join(' · ');
