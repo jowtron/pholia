@@ -1665,6 +1665,18 @@ const Player = {
         }
         setText('fs-narrator', narrator ? 'Narrated by ' + narrator : '');
         setText('fs-chapter', chLabel);
+        // The episode's chapter and ad marks, as on its row in a list.
+        const ma = this.item.episodeId ? this.item.media?.analysis || null : null;
+        const marksKey = this.item.episodeId ? `${this.item.episodeId}|${this.chapters?.length || 0}|${ma ? (ma.size + ':' + (ma.ads?.length || 0) + ':' + (ma.chaptersSource || '')) : ''}` : '';
+        if (last['fs-marks|key'] !== marksKey) {
+            last['fs-marks|key'] = marksKey;
+            const el = document.getElementById('fs-marks');
+            if (el) {
+                const html = marksKey && App?._episodeMarks ? App._episodeMarks({ chapters: this.chapters, analysis: ma }, { labels: true }) : '';
+                el.innerHTML = html;
+                el.hidden = !html;
+            }
+        }
         setText('fs-elapsed', elapsedTxt);
         setText('fs-remaining', remTxt);
 

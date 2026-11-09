@@ -5392,18 +5392,21 @@ const App = {
     // which in `analysis.chaptersSource`, and without an analysis any
     // chapters are the feed's or the file's own), and a plain muted
     // scissors when the analysis has looked for ads in the file served now.
-    _episodeMarks(ep) {
+    // opts.labels (the fullscreen player, 2026-11-09): each mark also says
+    // what it means in words, since there's room there and no hover.
+    _episodeMarks(ep, opts = {}) {
         const list = '<path d="M10 6h11M10 12h11M10 18h11"/>';
+        const word = (t) => opts.labels ? `<span class="ep-mark-text">${t}</span>` : '';
         let h = '';
         if (ep.chapters?.length > 1) {
             h += ep.analysis?.chaptersSource === 'generated'
-                ? `<span class="ep-mark ep-mark-gen" role="img" aria-label="Chapters made by Rhapsode" title="Chapters made by Rhapsode"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round">${list}<path d="M4 3.2l1.1 2.7 2.7 1.1-2.7 1.1L4 10.8 2.9 8.1.2 7l2.7-1.1z" fill="currentColor" stroke="none"/><circle cx="4" cy="16" r="1.6" fill="currentColor" stroke="none"/></svg></span>`
-                : `<span class="ep-mark" role="img" aria-label="Chapters from the publisher" title="Chapters from the publisher"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round">${list}<g fill="currentColor" stroke="none"><circle cx="4" cy="6" r="1.7"/><circle cx="4" cy="12" r="1.7"/><circle cx="4" cy="18" r="1.7"/></g></svg></span>`;
+                ? `<span class="ep-mark ep-mark-gen" role="img" aria-label="Chapters made by Rhapsode" title="Chapters made by Rhapsode"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round">${list}<path d="M4 3.2l1.1 2.7 2.7 1.1-2.7 1.1L4 10.8 2.9 8.1.2 7l2.7-1.1z" fill="currentColor" stroke="none"/><circle cx="4" cy="16" r="1.6" fill="currentColor" stroke="none"/></svg>${word('Chapters by Rhapsode')}</span>`
+                : `<span class="ep-mark" role="img" aria-label="Chapters from the publisher" title="Chapters from the publisher"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round">${list}<g fill="currentColor" stroke="none"><circle cx="4" cy="6" r="1.7"/><circle cx="4" cy="12" r="1.7"/><circle cx="4" cy="18" r="1.7"/></g></svg>${word('Publisher chapters')}</span>`;
         }
         if (ep.analysis) {
             const n = ep.analysis.ads?.length || 0;
             const t = n ? `Rhapsode found ${n} ad${n === 1 ? '' : 's'}` : 'Rhapsode found no ads';
-            h += `<span class="ep-mark ep-mark-ads" role="img" aria-label="${t}" title="${t}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12"/></svg></span>`;
+            h += `<span class="ep-mark ep-mark-ads" role="img" aria-label="${t}" title="${t}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12"/></svg>${word(n ? `${n} ad${n === 1 ? '' : 's'} found` : 'No ads found')}</span>`;
         }
         return h;
     },
@@ -7630,9 +7633,9 @@ const App = {
     // The select's value for media.analyse: '' is Auto (null on the server).
     _analyseValue(v) { return v === 'on' || v === 'off' ? v : ''; },
     _analyseHelp(v) {
-        if (v === 'on') return 'On: every new episode, and any you play. Shows that insert ads wait until the episode is archived.';
+        if (v === 'on') return 'On: every new episode, and any you play. Shows that insert ads wait until the episode is archived; Play without ads on an episode doesn\'t.';
         if (v === 'off') return 'Off: only when you tap Analyse now on an episode.';
-        return 'Auto: episodes from hosts that insert ads (once archived), and any without chapters or a transcript.';
+        return 'Auto: episodes from hosts that insert ads (once archived), and any without chapters or a transcript. Play without ads on an episode doesn\'t wait for the archive.';
     },
     _anRunsUrl(extra) {
         return `/api/analysis/runs?${extra}&${ABS._tzQuery()}`;

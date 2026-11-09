@@ -1156,6 +1156,11 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
 .ep-mark svg { display: block; }
 .ep-mark-gen { border-color: transparent; background: color-mix(in srgb, var(--accent) 22%, transparent); }
 .ep-mark-ads { border-color: transparent; padding-left: 0.05rem; padding-right: 0.05rem; color: var(--text-muted); }
+.ep-mark-text { margin-left: 0.3rem; font-size: 0.75rem; line-height: 1.2; }
+.fs-marks { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.35rem; margin: 0.35rem 0 0.1rem; }
+.fs-marks[hidden] { display: none; }
+.fs-marks .ep-mark { margin-left: 0; padding: 0.15rem 0.45rem; }
+.fs-marks .ep-mark-ads { padding: 0.15rem 0.45rem; border: 1px solid color-mix(in srgb, var(--text-muted) 40%, transparent); }
 .episode-dlbtn[hidden] { display: none; }
 .episode-dlbtn { background: none; border: none; color: var(--text-muted); padding: 0.4rem 0.3rem; cursor: pointer; flex-shrink: 0; font-size: 0.75rem; min-width: 2rem; }
 .episode-dlbtn.busy { color: var(--accent); }
