@@ -1667,12 +1667,13 @@ const Player = {
         setText('fs-chapter', chLabel);
         // The episode's chapter and ad marks, as on its row in a list.
         const ma = this.item.episodeId ? this.item.media?.analysis || null : null;
-        const marksKey = this.item.episodeId ? `${this.item.episodeId}|${this.chapters?.length || 0}|${ma ? (ma.size + ':' + (ma.ads?.length || 0) + ':' + (ma.chaptersSource || '')) : ''}` : '';
+        const mh = this.item.episodeId ? this.item.media?.audioHost || null : null;
+        const marksKey = this.item.episodeId ? `${this.item.episodeId}|${this.chapters?.length || 0}|${ma ? (ma.size + ':' + (ma.ads?.length || 0) + ':' + (ma.chaptersSource || '')) : ''}|${mh?.name || ''}` : '';
         if (last['fs-marks|key'] !== marksKey) {
             last['fs-marks|key'] = marksKey;
             const el = document.getElementById('fs-marks');
             if (el) {
-                const html = marksKey && App?._episodeMarks ? App._episodeMarks({ chapters: this.chapters, analysis: ma }, { labels: true }) : '';
+                const html = marksKey && App?._episodeMarks ? App._episodeMarks({ chapters: this.chapters, analysis: ma, audioHost: mh }, { labels: true }) : '';
                 el.innerHTML = html;
                 el.hidden = !html;
             }

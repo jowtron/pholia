@@ -685,6 +685,11 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
     -webkit-mask-image: linear-gradient(to bottom, #000 60%, transparent);
     mask-image: linear-gradient(to bottom, #000 60%, transparent);
 }
+/* An episode's notes as HTML (paragraphs, lists, links, timestamps). */
+.fs-description.is-rich { white-space: normal; overflow-wrap: anywhere; }
+.fs-description.is-rich p, .fs-description.is-rich ul, .fs-description.is-rich ol, .fs-description.is-rich blockquote { margin: 0 0 0.6em; }
+.fs-description.is-rich ul, .fs-description.is-rich ol { padding-left: 1.2rem; }
+.fs-description.is-rich a { color: var(--accent); }
 .fs-description-toggle {
     background: none; border: none; color: var(--accent); cursor: pointer;
     font-size: 0.8rem; padding: 4px 0; margin-top: 2px;
@@ -1157,6 +1162,14 @@ html.hide-collections .tab[data-tab="collections"] { display: none; }
 .ep-mark-gen { border-color: transparent; background: color-mix(in srgb, var(--accent) 22%, transparent); }
 .ep-mark-ads { border-color: transparent; padding-left: 0.05rem; padding-right: 0.05rem; color: var(--text-muted); }
 .ep-mark-text { margin-left: 0.3rem; font-size: 0.75rem; line-height: 1.2; }
+/* "No ads" (the analysis found no inserted ads) and the audio host's name:
+   text pills. No ads is a filled accent tint, unlike the outlined chapter
+   tabs; the host is muted, it's information rather than news. */
+.ep-mark-noads, .ep-mark-host { font-size: 0.7rem; font-weight: 600; line-height: 1.25; padding: 0.02rem 0.35rem; vertical-align: 0.05em; white-space: nowrap; }
+.ep-mark-noads { border-color: transparent; background: color-mix(in srgb, var(--accent) 85%, transparent); color: var(--bg); }
+.ep-mark-host { font-weight: 500; color: var(--text-muted); border-color: color-mix(in srgb, var(--text-muted) 40%, transparent); }
+.fs-marks .ep-mark-noads, .fs-marks .ep-mark-host { font-size: 0.75rem; }
+.ep-hero-marks { margin: 0.4rem 0 0.2rem; }
 .fs-marks { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.35rem; margin: 0.35rem 0 0.1rem; }
 .fs-marks[hidden] { display: none; }
 .fs-marks .ep-mark { margin-left: 0; padding: 0.15rem 0.45rem; }

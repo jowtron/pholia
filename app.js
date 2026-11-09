@@ -710,6 +710,15 @@ const App = {
             if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); coverWrap.classList.toggle('is-flipped'); }
         });
 
+        // A timestamp in an episode's notes plays from there (links open in
+        // a new tab by themselves, _notesHtml).
+        document.getElementById('fs-description').addEventListener('click', (e) => {
+            const ts = e.target.closest('.ep-ts');
+            if (!ts || !Player.item?.episodeId) return;
+            const t = Number(ts.dataset.t);
+            if (Number.isFinite(t)) Player.loadTime(t, 'fs-notes');
+        });
+
         // FS description expand/collapse
         document.getElementById('fs-description-toggle').addEventListener('click', () => {
             const d = document.getElementById('fs-description');
@@ -3407,6 +3416,10 @@ const App = {
                     authorName: smeta.title || '',
                     podcastTitle: smeta.title || '',
                     description: this._plainText(ep.description || ep.subtitle || ''),
+                    // The notes as sent (sanitized HTML), for the fullscreen
+                    // player's links and timestamps; `description` stays plain
+                    // text for everything else (Media Session).
+                    descriptionHtml: ep.description || ep.subtitle || '',
                     // ABS_shim sent a snippet: the fullscreen player asks for the rest.
                     descriptionTrimmed: !!ep.descriptionTrimmed,
                     publishedAt: ep.publishedAt || null,
@@ -3423,6 +3436,8 @@ const App = {
                 // ranges for the player, where chapters/transcript come from).
                 analysis: ep.analysis || null,
                 dynamicAds: !!ep.dynamicAds,
+                // ABS_shim's `audioHost` ({name, host}): the fullscreen marks.
+                audioHost: ep.audioHost || null,
             },
         };
     },
@@ -5403,10 +5418,29 @@ const App = {
                 ? `<span class="ep-mark ep-mark-gen" role="img" aria-label="Chapters made by Rhapsode" title="Chapters made by Rhapsode"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round">${list}<path d="M4 3.2l1.1 2.7 2.7 1.1-2.7 1.1L4 10.8 2.9 8.1.2 7l2.7-1.1z" fill="currentColor" stroke="none"/><circle cx="4" cy="16" r="1.6" fill="currentColor" stroke="none"/></svg>${word('Chapters by Rhapsode')}</span>`
                 : `<span class="ep-mark" role="img" aria-label="Chapters from the publisher" title="Chapters from the publisher"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round">${list}<g fill="currentColor" stroke="none"><circle cx="4" cy="6" r="1.7"/><circle cx="4" cy="12" r="1.7"/><circle cx="4" cy="18" r="1.7"/></g></svg>${word('Publisher chapters')}</span>`;
         }
-        if (ep.analysis) {
-            const n = ep.analysis.ads?.length || 0;
-            const t = n ? `Rhapsode found ${n} ad${n === 1 ? '' : 's'}` : 'Rhapsode found no ads';
-            h += `<span class="ep-mark ep-mark-ads" role="img" aria-label="${t}" title="${t}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12"/></svg>${word(n ? `${n} ad${n === 1 ? '' : 's'} found` : 'No ads found')}</span>`;
+        // "No ads" (2026-11-10): the analysis of the file served now found
+        // no ad the HOST inserted (ABS_shim's `analysis.ads`, kind
+        // 'inserted'); ads read by the presenters are part of the show and
+        // only mentioned in the title. Otherwise the scissors says how many
+        // were found, as before.
+        const ads = ep.analysis?.ads || [];
+        const inserted = ads.filter(a => a.kind === 'inserted').length;
+        if (ep.analysis && !inserted) {
+            const t = ads.length ? `No inserted ads (Rhapsode found ${ads.length} read by the show itself)` : 'Rhapsode found no ads in this episode';
+            h += `<span class="ep-mark ep-mark-noads" role="img" aria-label="${t}" title="${t}">No ads</span>`;
+        } else if (ep.analysis) {
+            const n = ads.length;
+            const t = `Rhapsode found ${n} ad${n === 1 ? '' : 's'}`;
+            h += `<span class="ep-mark ep-mark-ads" role="img" aria-label="${t}" title="${t}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12"/></svg>${word(`${n} ad${n === 1 ? '' : 's'} found`)}</span>`;
+        }
+        // Who serves the audio (ABS_shim's `audioHost`, e.g. "PRX",
+        // "Megaphone", or a self-hosted domain). The same for every episode
+        // of a show, so only where there's room for words (the fullscreen
+        // player, the episode page), never on rows, and not beside "No ads".
+        const hostName = ep.audioHost?.name;
+        if (opts.labels && hostName && !(ep.analysis && !inserted)) {
+            const t = `Audio served by ${hostName}` + (ep.audioHost.host && ep.audioHost.host !== hostName ? ` (${ep.audioHost.host})` : '');
+            h += `<span class="ep-mark ep-mark-host" role="img" aria-label="${esc(t)}" title="${esc(t)}">${esc(hostName)}</span>`;
         }
         return h;
     },
@@ -5708,6 +5742,9 @@ const App = {
         if (meta.title) h += `<button class="ep-hero-show" data-ep-show>${esc(meta.title)}</button>`;
         h += `<h2 class="ep-hero-title">${esc(ep.title || 'Untitled')}</h2>`;
         if (metaLine) h += `<div class="ep-hero-meta">${esc(metaLine)}</div>`;
+        // The marks with words, as in the fullscreen player (No ads, or the host).
+        const heroMarks = this._episodeMarks(ep, { labels: true });
+        if (heroMarks) h += `<div class="fs-marks ep-hero-marks">${heroMarks}</div>`;
         h += `<div class="ep-hero-bar"><div data-ep-bar style="width:${pct}%"></div></div>`;
         // An episode with video (ABS_shim's `videos`) gets Watch beside
         // Play, which stays the default and is unchanged.
@@ -8226,6 +8263,7 @@ const App = {
                 // Failed (offline): the snippet stays, and the next opening asks again.
                 if (ep.descriptionTrimmed || Player.item !== item || !md.descriptionTrimmed) return;
                 md.description = this._plainText(full);
+                md.descriptionHtml = full;
                 md.descriptionTrimmed = false;
                 this._renderFsDescription();
             });
@@ -8233,7 +8271,14 @@ const App = {
         const desc = md?.description?.trim();
         if (!desc) { wrap.hidden = true; return; }
         wrap.hidden = false;
-        body.textContent = desc;
+        // An episode's notes keep their links and timestamps (2026-11-10:
+        // LINUX Unplugged's 52 links were flattened to text here, while the
+        // episode page showed them). Books stay plain text.
+        const html = Player.item?.episodeId && md.descriptionHtml
+            ? this._notesHtml(md.descriptionHtml, Player.item.media?.duration || 0) : '';
+        body.classList.toggle('is-rich', !!html);
+        if (html) body.innerHTML = html;
+        else body.textContent = desc;
         body.classList.add('is-collapsed');
         btn.textContent = 'Read more';
         // Show the toggle only if the text actually overflows the collapsed height
