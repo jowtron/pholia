@@ -511,7 +511,12 @@ const Player = {
         const gt = this.getGlobalTime();
         const prev = this._lastTickGt;
         this._lastTickGt = gt;
-        if (prev == null || gt - prev > 10 || gt < prev) return;
+        if (prev == null || gt - prev > 10 || gt < prev) {
+            // A jump that lands inside an ad was chosen (a seek back into
+            // it): that ad is left to play, with the button.
+            if (prev != null) this._adChosen = this._adPlan()?.auto.find(a => gt >= a.start && gt < a.end) || null;
+            return;
+        }
         if (this._checkAds(prev, gt)) return;
         const end = this._skipPoints()?.end;
         if (end && prev < end && gt >= end) this._skipOutro();
@@ -528,13 +533,24 @@ const Player = {
     // (App._analysisFor), as before the analysis existed.
     _analysis: null,
     _pillAd: null,
+    _adChosen: null,    // an auto ad the listener seeked into on purpose
+    _adLate: false,     // the ad list arrived after playback had started
     _setAnalysisFor(item) {
         this._analysis = null;
+        this._adChosen = null;
+        this._adLate = false;
         this._paintAdPill(null);
         const a = item?.episodeId ? item.media?.analysis : null;
         if (!a?.ads?.length) return;
+        // The size check behind _analysisFor reads Cache Storage, which can
+        // take seconds while an episode streams, and "Play without ads"
+        // hands the player its analysis after playback began. Either way
+        // the first second, where a pre-roll is "entered", has passed by
+        // the time the list is here: _adLate lets the next tick skip the
+        // ad it is inside (2026-11-09: the pre-roll played with only the
+        // button showing).
         Promise.resolve(App?._analysisFor ? App._analysisFor(item, a) : a)
-            .then(ok => { if (this.item === item) this._analysis = ok || null; })
+            .then(ok => { if (this.item === item) { this._analysis = ok || null; this._adLate = !!ok; } })
             .catch(() => {});
     },
     _adPlan() {
@@ -556,9 +572,15 @@ const Player = {
     // (a jump) is left alone, and gets the button instead.
     _checkAds(prev, gt) {
         const plan = this._adPlan();
+        const late = this._adLate;
+        this._adLate = false;
         if (!plan?.auto.length) return false;
         for (const ad of plan.auto) {
-            const entering = gt >= ad.start && gt < ad.end - 0.5 && (prev < ad.start || (ad.start < 1.5 && prev < 1.5));
+            if (ad === this._adChosen) continue;
+            // A pre-roll counts as entered anywhere inside it (a resume
+            // part-way through one, a list that arrived late); so does any
+            // ad on the first tick after a late list.
+            const entering = gt >= ad.start && gt < ad.end - 0.5 && (prev < ad.start || ad.start < 1.5 || late);
             if (!entering) continue;
             // Back-to-back ads (a break of several): land past all of them.
             let to = ad.end;
