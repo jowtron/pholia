@@ -5419,30 +5419,50 @@ const App = {
                 : `<span class="ep-mark" role="img" aria-label="Chapters from the publisher" title="Chapters from the publisher"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round">${list}<g fill="currentColor" stroke="none"><circle cx="4" cy="6" r="1.7"/><circle cx="4" cy="12" r="1.7"/><circle cx="4" cy="18" r="1.7"/></g></svg>${word('Publisher chapters')}</span>`;
         }
         // "No ads" (2026-11-10): the analysis of the file served now found
-        // no ad the HOST inserted (ABS_shim's `analysis.ads`, kind
-        // 'inserted'); ads read by the presenters are part of the show and
-        // only mentioned in the title. Otherwise the scissors says how many
-        // were found, as before.
+        // no ad of ANY kind. Otherwise the scissors, with its words and
+        // title saying how many of each kind (_adSummary): Joseph found
+        // "No ads" beside "1 ad found" confusing, a host read is an ad too.
         const ads = ep.analysis?.ads || [];
-        const inserted = ads.filter(a => a.kind === 'inserted').length;
-        if (ep.analysis && !inserted) {
-            const t = ads.length ? `No inserted ads (Rhapsode found ${ads.length} read by the show itself)` : 'Rhapsode found no ads in this episode';
+        if (ep.analysis && !ads.length) {
+            const t = 'Rhapsode found no ads in this episode';
             h += `<span class="ep-mark ep-mark-noads" role="img" aria-label="${t}" title="${t}">No ads</span>`;
         } else if (ep.analysis) {
-            const n = ads.length;
-            const t = `Rhapsode found ${n} ad${n === 1 ? '' : 's'}`;
-            h += `<span class="ep-mark ep-mark-ads" role="img" aria-label="${t}" title="${t}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12"/></svg>${word(`${n} ad${n === 1 ? '' : 's'} found`)}</span>`;
+            const s = this._adSummary(ads);
+            const t = `Rhapsode found ${s}`;
+            h += `<span class="ep-mark ep-mark-ads" role="img" aria-label="${t}" title="${t}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12"/></svg>${word(s)}</span>`;
         }
         // Who serves the audio (ABS_shim's `audioHost`, e.g. "PRX",
         // "Megaphone", or a self-hosted domain). The same for every episode
         // of a show, so only where there's room for words (the fullscreen
         // player, the episode page), never on rows, and not beside "No ads".
         const hostName = ep.audioHost?.name;
-        if (opts.labels && hostName && !(ep.analysis && !inserted)) {
+        if (opts.labels && hostName && !(ep.analysis && !ads.length)) {
             const t = `Audio served by ${hostName}` + (ep.audioHost.host && ep.audioHost.host !== hostName ? ` (${ep.audioHost.host})` : '');
             h += `<span class="ep-mark ep-mark-host" role="img" aria-label="${esc(t)}" title="${esc(t)}">${esc(hostName)}</span>`;
         }
         return h;
+    },
+    // "2 ads: 1 inserted, 1 host read" / "1 inserted ad" / "2 host-read
+    // ads" / "1 promo". Kinds are ABS_shim's: 'inserted' = added to this
+    // copy by the host (often still voiced by the presenters), 'host-read'
+    // = in the episode as recorded, 'promo' = a plug for another show.
+    _adSummary(ads) {
+        const c = { inserted: 0, read: 0, promo: 0 };
+        for (const a of ads || []) {
+            if (a.kind === 'inserted') c.inserted++;
+            else if (a.kind === 'promo') c.promo++;
+            else c.read++;
+        }
+        const n = c.inserted + c.read + c.promo;
+        if (!n) return 'no ads';
+        const parts = [];
+        if (c.inserted) parts.push(`${c.inserted} inserted`);
+        if (c.read) parts.push(`${c.read} host read`);
+        if (c.promo) parts.push(`${c.promo} promo${c.promo === 1 ? '' : 's'}`);
+        if (parts.length > 1) return `${n} ads: ${parts.join(', ')}`;
+        if (c.promo) return parts[0];
+        const kind = c.inserted ? 'inserted' : 'host-read';
+        return `${n} ${kind} ad${n === 1 ? '' : 's'}`;
     },
 
     // ── Lists don't wait for the downloads scan (2026-11-08) ──
@@ -6206,8 +6226,7 @@ const App = {
         if (st.state === 'error') return 'Analysis failed: ' + (c.error || 'unknown error');
         const a = st.analysis;
         if (!a) return c.size === st.currentSize ? 'Analysed' : '';
-        const n = a.ads?.length || 0;
-        const bits = [n ? `${n} ad${n === 1 ? '' : 's'} found` : 'no ads found'];
+        const bits = [this._adSummary(a.ads)];
         if (a.chaptersSource === 'generated') bits.push('chapters written');
         if (a.transcriptSource === 'whisper') bits.push('transcript made');
         else if (a.aligned && a.transcriptSource === 'publisher') bits.push('times aligned');
