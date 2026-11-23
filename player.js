@@ -292,10 +292,22 @@ const Player = {
 
     // Play with logging + one retry when the element reports ready. Every
     // programmatic play goes through here so rejections land in the log.
+    // The retry is for a slow first load (a ~40 s first byte has been seen),
+    // so it lapses after 90 s, on a pause, and when a newer play supersedes
+    // it: a refused play used to leave a `canplay` listener on the element
+    // indefinitely, and any later load, even hours on, would start the audio.
+    _playGen: 0,
     _tryPlay(source) {
+        const gen = ++this._playGen;
+        const pauseSeq = this._pauseSeq;
+        const at = Date.now();
         this.audio.play().catch(err => {
             this._logPlayRejection(source, err);
             this.audio.addEventListener('canplay', () => {
+                if (gen !== this._playGen || pauseSeq !== this._pauseSeq || Date.now() - at > 90000) {
+                    this._logPlayRejection(source + '@canplay-lapsed', { name: 'lapsed' });
+                    return;
+                }
                 this.audio.play().catch(e2 => this._logPlayRejection(source + '@canplay', e2));
             }, { once: true });
         });

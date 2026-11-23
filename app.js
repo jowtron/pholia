@@ -1211,7 +1211,16 @@ const App = {
         // data clobbering newer state. 5 s slack covers normal sync jitter.
         if (Player.item?.id === item.id && Player.item?.episodeId === item.episodeId) {
             const localTime = Player.getGlobalTime();
-            if (serverTime > localTime + 5) Player.loadTime(serverTime);
+            // Move the playhead ONLY, never play: this runs on every return
+            // to the foreground with the player stopped, and until 2026-11-24
+            // a plain loadTime here started the audio whenever the server
+            // was ahead, e.g. on opening the app hours after stopping
+            // (Joseph: "it starts playing and wakes my wife up").
+            if (serverTime > localTime + 5) {
+                const pausedAt = Player._pausedAt;
+                await Player.loadTime(serverTime, 'server-catchup', { keepPaused: true });
+                if (Player.audio.paused) Player._pausedAt = pausedAt; // rewind-after-pause still applies
+            }
         }
         // Re-render the detail view so the resume time / chapter highlight /
         // % complete reflect the new progress.
