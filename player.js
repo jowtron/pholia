@@ -1285,6 +1285,35 @@ const Player = {
         };
     },
 
+    // What the scrubbers (mini, fullscreen, lock screen) span: the chapter
+    // playing, or the whole book/episode. A setting per device, separate for
+    // books and episodes (2026-11-23: Amy found per-chapter bars on podcasts
+    // confusing, where chapters are often a few minutes long).
+    barScope() {
+        const key = this.item?.episodeId ? 'pholia_bar_episode' : 'pholia_bar_book';
+        return localStorage.getItem(key) === 'whole' ? 'whole' : 'chapter';
+    },
+    getBarProgress() {
+        if (this.barScope() === 'chapter') return this.getChapterProgress();
+        const gt = this.getGlobalTime(), dur = this.getTotalDuration();
+        return {
+            progress: dur > 0 ? (gt / dur) * 100 : 0,
+            elapsed: gt,
+            remaining: Math.max(0, dur - gt),
+            duration: dur,
+        };
+    },
+    seekToBarPercent(pct) {
+        if (this.barScope() === 'chapter') this.seekToChapterPercent(pct);
+        else this.seekToGlobalPercent(pct);
+    },
+    // A changed setting shows at once, not at the next differing tick.
+    refreshBar() {
+        this._lastUI = {};
+        this.updateUI();
+        this._updatePositionState();
+    },
+
     play() {
         // An errored media element is inert — play() is a silent no-op. A
         // user tap must ALWAYS revive playback: reload the same src via
@@ -1566,7 +1595,7 @@ const Player = {
         const gt = this.getGlobalTime();
         const dur = this.getTotalDuration();
         const ch = this.getCurrentChapter();
-        const chp = this.getChapterProgress();
+        const chp = this.getBarProgress();
         const last = this._lastUI;
 
         // Skip the write if the value hasn't changed — avoids style invalidation
@@ -1726,13 +1755,13 @@ const Player = {
         this._updatePositionState();
     },
 
-    // Publish chapter-relative position so the iOS/macOS now-playing
-    // scrubber reflects the current chapter, not the whole book.
-    // Falls back to whole-book values when the item has no chapters.
+    // Publish the position the in-app scrubber shows (barScope): by default
+    // chapter-relative, so the iOS/macOS now-playing scrubber reflects the
+    // current chapter. Whole-book values when the item has no chapters.
     _updatePositionState() {
         if (!('mediaSession' in navigator) || !this.item) return;
         if (typeof navigator.mediaSession.setPositionState !== 'function') return;
-        const chp = this.getChapterProgress();
+        const chp = this.getBarProgress();
         const duration = chp.duration;
         if (!isFinite(duration) || duration <= 0) return;
         const position = Math.max(0, Math.min(chp.elapsed, duration));

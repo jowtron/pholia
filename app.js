@@ -536,6 +536,12 @@ const App = {
         document.getElementById('setting-auto-rewind').addEventListener('change', e => {
             localStorage.setItem('pholia_auto_rewind', e.target.checked ? 'true' : 'false');
         });
+        for (const [id, key] of [['setting-bar-episode', 'pholia_bar_episode'], ['setting-bar-book', 'pholia_bar_book']]) {
+            document.getElementById(id).addEventListener('change', e => {
+                localStorage.setItem(key, e.target.value);
+                Player.refreshBar();
+            });
+        }
         document.getElementById('setting-keep-played').addEventListener('change', e => {
             localStorage.setItem('pholia_keep_played_episodes', e.target.checked ? 'true' : 'false');
         });
@@ -624,7 +630,7 @@ const App = {
         ppSeek.addEventListener('touchstart', () => ppSeek.dataset.dragging = 'true');
         ppSeek.addEventListener('change', () => {
             delete ppSeek.dataset.dragging;
-            Player.seekToChapterPercent(parseFloat(ppSeek.value));
+            Player.seekToBarPercent(parseFloat(ppSeek.value));
         });
         ppSeek.addEventListener('click', e => e.stopPropagation());
 
@@ -659,14 +665,12 @@ const App = {
         fsSeek.addEventListener('mousedown', () => fsSeek.dataset.dragging = 'true');
         fsSeek.addEventListener('touchstart', () => fsSeek.dataset.dragging = 'true');
         fsSeek.addEventListener('input', () => {
-            const ch = Player.getCurrentChapter();
-            const dur = ch ? (ch.end - ch.start) : Player.getTotalDuration();
-            const t = (fsSeek.value / 100) * dur;
+            const t = (fsSeek.value / 100) * Player.getBarProgress().duration;
             document.getElementById('fs-elapsed').textContent = formatTime(t);
         });
         fsSeek.addEventListener('change', () => {
             delete fsSeek.dataset.dragging;
-            Player.seekToChapterPercent(parseFloat(fsSeek.value));
+            Player.seekToBarPercent(parseFloat(fsSeek.value));
         });
 
         // FS sleep
@@ -7951,6 +7955,8 @@ const App = {
         document.getElementById('setting-keep-played').checked = localStorage.getItem('pholia_keep_played_episodes') === 'true';
         document.getElementById('setting-autoplay-next').checked = localStorage.getItem('pholia_autoplay_next') !== 'false';
         document.getElementById('setting-auto-rewind').checked = localStorage.getItem('pholia_auto_rewind') !== 'false';
+        document.getElementById('setting-bar-episode').value = localStorage.getItem('pholia_bar_episode') === 'whole' ? 'whole' : 'chapter';
+        document.getElementById('setting-bar-book').value = localStorage.getItem('pholia_bar_book') === 'whole' ? 'whole' : 'chapter';
         document.getElementById('setting-hide-collections').checked = localStorage.getItem('pholia_hide_collections') === 'true';
         const swExp = localStorage.getItem('pholia_sw_experimental') === 'true';
         document.getElementById('setting-sw-experimental').checked = swExp;

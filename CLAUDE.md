@@ -395,6 +395,7 @@ Every cover used to be a square crop (`object-fit: cover`) or, in the fullscreen
   20 s under an hour, 30 s beyond; nothing under 5 s. Tracked from the
   element's `pause` event, so an interruption by a call counts too; any seek
   clears it.
+- **What the progress bar spans** (2026-11-23, Settings → "Podcast progress bar" / "Book progress bar", `localStorage` `pholia_bar_episode` / `pholia_bar_book` = `chapter` (default) or `whole`): `Player.barScope()` picks per item kind, `getBarProgress()` / `seekToBarPercent()` feed the mini and fullscreen scrubbers, their times and the lock screen's `setPositionState`, and `refreshBar()` repaints on change. Amy asked for the whole episode on podcasts, whose chapters are often a few minutes long. Use these, not `getChapterProgress()`, for anything a scrubber shows.
 - **Listening stats** (Settings → Listening → Stats): tiles, a 30-day bar
   chart, weekday bars, this year's review, most-listened books and recent
   sessions, from the shim's `/api/me/listening-stats` and
