@@ -287,6 +287,8 @@ A drag starting inside a `.h-scroll` shelf is left alone **only while that shelf
 
 ## Player Quirks Learned
 
+- **The first play of a page load needs the tap's permission, which runs out (2026-11-24).** A play tap awaits the session and the service worker's pin (`pinMediaMode`, up to 8 s) before `play()`; Joseph's log that day had the pin at 8-11 s and `play-rejected NotAllowedError` on every first play, so the mini player opened paused. `Player.init` now plays-and-pauses the source-less element on the first real tap (`touchend`/`click`, capture; retried while WebKit refuses a scroll's touchend), which lifts WebKit's restriction for the element's life. Not yet confirmed on a phone. The pin's slowness itself is open: the same log had the downloads scan at 24-30 s (3.7 s in September); `scan-detail` lines (items, listMs, coverageMs) now say where it goes.
+
 - **Nothing may start playback without a tap (2026-11-24).** Opening the app hours after stopping started the audio (and woke Joseph's wife): `_refreshCurrentItemProgress` (every return to the foreground with the player stopped) reseated the playhead to the server's newer position with a plain `loadTime`, which plays. It now passes `keepPaused: true`. Any `loadTime` not triggered by the listener must do the same. `_tryPlay`'s retry-on-`canplay` after a refused play now lapses after 90 s, on a pause, or when a newer play supersedes it; before, the listener sat on the element indefinitely.
 
 - **Don't add a buffering "recovery" that nudges `currentTime` after a stall** — it forcibly seeks during normal short buffer underruns and causes louder glitches than the brief stall would have. (Removed in 49924c9.)

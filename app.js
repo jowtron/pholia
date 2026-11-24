@@ -9199,11 +9199,16 @@ const Offline = {
         if (m && m.version === ver && Date.now() - m.ts < this.FULLY_MEMO_TTL_MS) return m;
         if (m?.pending) return m.pending;
         const pending = (async () => {
+            const t0 = performance.now();
             const items = await this.listDownloaded();
+            const t1 = performance.now();
             const ids = new Set();
             let full = [];
             if (items.length) {
                 const coverages = await this._coverageBatch(items);
+                // Where a slow scan's time goes (24-30 s on 2026-11-24, 3.7 s
+                // in September): reading the records, or the chunk walk.
+                try { App?._pushLog?.('audio', { ev: 'scan-detail', items: items.length, listMs: Math.round(t1 - t0), coverageMs: Math.round(performance.now() - t1) }); } catch {}
                 full = items.filter(item => this._isFullyDownloadedFromCoverage(item, coverages.get(this.oid(item))));
                 for (const item of full) ids.add(this.oid(item));
             }

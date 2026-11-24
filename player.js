@@ -35,11 +35,37 @@ const Player = {
         this.audio.addEventListener('ended', () => this.onTrackEnded());
         // A silent seek (see loadTime) pauses and resumes under the hood;
         // don't let that pair of events flip the play button.
-        this.audio.addEventListener('play', () => { if (!this._silentSeek) this.setPlaying(true); });
+        // ...nor the gesture unlock below, which plays and pauses an element
+        // with no source yet.
+        this.audio.addEventListener('play', () => { if (!this._silentSeek && this.audio.src) this.setPlaying(true); });
         // The element's own pause event, not Player.pause(): a phone call or
         // another app taking the audio session pauses without going through
         // our button, and the rewind on resume should still apply.
-        this.audio.addEventListener('pause', () => { if (!this._silentSeek) { this.setPlaying(false); this._pausedAt = Date.now(); } });
+        this.audio.addEventListener('pause', () => { if (!this._silentSeek && this.audio.src) { this.setPlaying(false); this._pausedAt = Date.now(); } });
+        // iOS lets a media element play only from inside a tap, and a tap's
+        // permission runs out within seconds. A play tap awaits the session
+        // and the service worker's pin before it can call play(): on
+        // 2026-11-24 the pin took 8-11 s and every first play was refused
+        // (NotAllowedError), so the mini player opened paused and needed a
+        // second tap. WebKit lifts the restriction for the element's life once
+        // play() is called during a tap, source or not, so the first tap of
+        // the page load does exactly that and pauses again. Only while the
+        // element has no source: one with a source was started by a tap
+        // already, and playing it here would be heard.
+        // A touchend that ends a scroll is no tap to WebKit and is refused
+        // (NotAllowedError), so it tries again on the next one until a play
+        // is allowed (the pause then rejects it with AbortError) or a tap has
+        // given the element a source.
+        const done = () => { for (const ev of ['touchend', 'click']) document.removeEventListener(ev, unlock, true); };
+        const unlock = () => {
+            if (this.audio.src) return done();
+            try {
+                const p = this.audio.play();
+                this.audio.pause();
+                p?.then?.(done, err => { if (err?.name !== 'NotAllowedError') done(); });
+            } catch {}
+        };
+        for (const ev of ['touchend', 'click']) document.addEventListener(ev, unlock, true);
         // Sustained playback clears the recovery budget so transient stalls
         // over a long listening session don't exhaust 3 attempts forever.
         this.audio.addEventListener('playing', () => { this._audioRecoveryAttempts = 0; });
