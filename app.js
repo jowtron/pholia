@@ -9007,49 +9007,110 @@ const Offline = {
         const out = new Map();
         if (!items.length) return out;
         try {
-            const cache = await caches.open(this.AUDIO_CACHE);
-            const allUrls = (await cache.keys()).map(r => r.url);
-            const urlSet = new Set(allUrls);
-
-            const chunksByPrefix = new Map();
-            for (const u of allUrls) {
-                const idx = u.indexOf('__chunk=');
-                if (idx === -1) continue;
-                const prefix = u.substring(0, idx + '__chunk='.length);
-                const n = parseInt(u.substring(idx + '__chunk='.length), 10);
-                if (isNaN(n)) continue;
-                let set = chunksByPrefix.get(prefix);
-                if (!set) { set = new Set(); chunksByPrefix.set(prefix, set); }
-                set.add(n);
-            }
-
+            const t0 = performance.now();
+            const view = (await this._swCoverageView()) || (await this._pageCoverageView());
+            const t1 = performance.now();
             const ver = this._coverageVersion;
+            const mine = new Set();
             for (const item of items) {
                 const tracks = item.media?.audioFiles || [];
-                const coverage = await Promise.all(tracks.map(async (t) => {
+                const coverage = tracks.map((t) => {
                     const key = this.keyFor(ABS.trackUrl(item.id, t.ino));
-                    const metaUrl = this.chunkMetaKey(key);
-                    if (urlSet.has(metaUrl)) {
-                        try {
-                            const metaRes = await cache.match(metaUrl);
-                            const meta = await metaRes.json();
-                            const chunkPrefix = key + (key.includes('?') ? '&' : '?') + '__chunk=';
-                            const cached = chunksByPrefix.get(chunkPrefix) || new Set();
-                            return { totalSize: meta.totalSize, chunkSize: meta.chunkSize, numChunks: meta.numChunks, cached };
-                        } catch { return null; }
-                    }
-                    if (urlSet.has(key)) return { legacy: true };
+                    mine.add(key);
+                    const meta = view.metas.get(key);
+                    if (meta) return { totalSize: meta.totalSize, chunkSize: meta.chunkSize, numChunks: meta.numChunks, cached: view.chunks.get(key) || new Set() };
+                    if (view.plain.has(key)) return { legacy: true };
                     return null;
-                }));
+                });
                 out.set(this.oid(item), coverage);
                 if (this._coverageVersion === ver) {
                     this._coverageCache.set(this.oid(item), { coverage, version: ver });
                 }
             }
+            this._logCoverageShape(view, mine, Math.round(t1 - t0));
             return out;
         } catch {
             return out;
         }
+    },
+
+    // The audio cache as {metas: Map<key, meta>, chunks: Map<key, Set<n>>,
+    // plain: Set<key>}, from the service worker's own walk (sw.js COVERAGE).
+    // null when there is no controller or it doesn't answer (a worker from
+    // before this message existed); the caller then walks the cache itself.
+    async _swCoverageView() {
+        const ctrl = navigator.serviceWorker?.controller;
+        if (!ctrl) return null;
+        const reply = await new Promise((resolve) => {
+            const ch = new MessageChannel();
+            const timer = setTimeout(() => resolve(null), 15000);
+            ch.port1.onmessage = (e) => { clearTimeout(timer); resolve(e.data); };
+            try { ctrl.postMessage({ type: 'COVERAGE' }, [ch.port2]); } catch { clearTimeout(timer); resolve(null); }
+        });
+        if (!reply?.ok) return null;
+        return {
+            source: 'sw',
+            metas: new Map(reply.metas),
+            chunks: new Map(reply.chunks.map(([k, a]) => [k, new Set(a)])),
+            plain: new Set(reply.plain),
+        };
+    },
+
+    async _pageCoverageView() {
+        const cache = await caches.open(this.AUDIO_CACHE);
+        const keys = (await cache.keys()).map(r => r.url);
+        const metas = new Map(), chunks = new Map(), plain = new Set();
+        const metaUrls = [];
+        for (const u of keys) {
+            let i = u.indexOf('__chunk=');
+            if (i !== -1) {
+                const n = parseInt(u.substring(i + 8), 10);
+                if (isNaN(n)) continue;
+                const k = u.substring(0, i - 1);
+                let set = chunks.get(k);
+                if (!set) { set = new Set(); chunks.set(k, set); }
+                set.add(n);
+                continue;
+            }
+            i = u.indexOf('__meta=1');
+            if (i !== -1) { metaUrls.push([u.substring(0, i - 1), u]); continue; }
+            if (u.includes('__complete=1')) continue;
+            plain.add(u);
+        }
+        await Promise.all(metaUrls.map(async ([k, u]) => {
+            try {
+                const m = await (await cache.match(u)).json();
+                if (m && m.chunkSize && m.numChunks && m.totalSize) metas.set(k, m);
+            } catch {}
+        }));
+        return { source: 'page', metas, chunks, plain };
+    },
+
+    // What is in the audio cache that no downloaded item accounts for:
+    // chunks of deleted or auto-removed episodes, or downloads saved under
+    // the server's old hostname (the cache key includes the host). Counts
+    // and hostnames only, never a URL.
+    _logCoverageShape(view, mine, ms) {
+        try {
+            let chunks = 0, bytes = 0, orphanFiles = 0, orphanChunks = 0, orphanBytes = 0;
+            const orphanHosts = {};
+            for (const [k, set] of view.chunks) {
+                const size = view.metas.get(k)?.chunkSize || this.CHUNK_SIZE;
+                chunks += set.size; bytes += set.size * size;
+                if (mine.has(k)) continue;
+                orphanFiles++; orphanChunks += set.size; orphanBytes += set.size * size;
+                let host = '?';
+                try { host = new URL(k).host; } catch {}
+                orphanHosts[host] = (orphanHosts[host] || 0) + 1;
+            }
+            const MB = (b) => Math.round(b / 1048576);
+            App?._pushLog?.('audio', {
+                ev: 'cache-shape', source: view.source, ms,
+                files: view.chunks.size, chunks, mb: MB(bytes),
+                orphanFiles, orphanChunks, orphanMb: MB(orphanBytes), orphanHosts,
+                plain: view.plain.size,
+            });
+        } catch {}
     },
 
     _isFullyDownloadedFromCoverage(item, coverage) {

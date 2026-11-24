@@ -108,7 +108,34 @@ self.addEventListener('message', e => {
     if (e.data?.type === 'SW_VERSION') {
         try { e.ports?.[0]?.postMessage({ build: SW_BUILD }); } catch {}
     }
-    if (e.data?.type === 'CACHE_CHANGED') loadCachedKeys();
+    if (e.data?.type === 'CACHE_CHANGED') {
+        const run = loadCachedKeys();
+        keysRefresh = run;
+        run.finally(() => { if (keysRefresh === run) keysRefresh = null; });
+    }
+    if (e.data?.type === 'COVERAGE') {
+        // The page's downloads check asks for the key walk this worker
+        // already holds instead of walking the audio cache itself: on a
+        // 2.3 GB cache cache.keys() alone took ~7 s on 2026-11-25, and two
+        // walks at once (page + worker) delayed the play-time pin past 8 s.
+        // Waits for a refresh a CACHE_CHANGED just started (messages from
+        // one client arrive in order), so a finished download is counted.
+        const port = e.ports && e.ports[0];
+        (async () => {
+            try {
+                if (keysRefresh) await keysRefresh;
+                await ensureKeys();
+                const plain = [];
+                for (const u of cachedKeys) if (!u.includes('__chunk=') && !u.includes('__meta=1') && !u.includes('__complete=1')) plain.push(u);
+                port?.postMessage({
+                    ok: true,
+                    metas: [...cachedMetas],
+                    chunks: [...cachedChunks].map(([k, s]) => [k, [...s]]),
+                    plain,
+                });
+            } catch { try { port?.postMessage({ ok: false }); } catch {} }
+        })();
+    }
     if (e.data?.type === 'SW_CONFIG') {
         swDebugLog = !!e.data.swDebugLog;
         configLoaded = Promise.resolve();
@@ -285,6 +312,8 @@ let cachedChunks = null;
 // One in-flight key walk at a time: a burst of Range requests on a fresh
 // worker would otherwise each start their own cache.keys() pass.
 let keysLoading = null;
+// The walk a CACHE_CHANGED started, while it runs (COVERAGE waits for it).
+let keysRefresh = null;
 function ensureKeys() {
     if (cachedKeys !== null) return Promise.resolve();
     if (!keysLoading) keysLoading = loadCachedKeys().finally(() => { keysLoading = null; });
