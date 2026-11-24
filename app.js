@@ -8182,6 +8182,7 @@ const App = {
         if (!list) return;
         list.innerHTML = '<div class="downloads-empty">Loading…</div>';
         await Offline.cleanupPhantoms();
+        this._renderLeftoverAudio();
         const items = await Offline.listDownloaded();
         if (!items.length) {
             list.innerHTML = '<div class="downloads-empty">Nothing cached yet</div>';
@@ -8221,6 +8222,27 @@ const App = {
             for (const item of items) await Offline.deleteBook(item);
             this._invalidateHomeCache();
             this.renderDownloadsList();
+        };
+    },
+
+    // Audio saved under another server address (the cache key includes the
+    // host): after abs-shim.jderrick.app became rhapsode.jderrick.app,
+    // 1.66 GB of Joseph's 2.4 GB cache was downloads nothing could find any
+    // more, and every launch's cache walk paid for them (2026-11-25).
+    async _renderLeftoverAudio() {
+        const row = document.getElementById('downloads-leftover');
+        if (!row) return;
+        const left = await Offline.leftoverAudio().catch(() => null);
+        if (!left || !left.keys.length) { row.classList.add('hidden'); return; }
+        row.classList.remove('hidden');
+        document.getElementById('downloads-leftover-size').textContent =
+            `${left.keys.length} file${left.keys.length === 1 ? '' : 's'} • ${formatBytes(left.bytes)}`;
+        const btn = document.getElementById('downloads-leftover-clear');
+        btn.disabled = false; btn.textContent = 'Clear';
+        btn.onclick = async () => {
+            btn.disabled = true; btn.textContent = 'Clearing…';
+            await Offline.deleteLeftoverAudio(left).catch(() => {});
+            this._renderLeftoverAudio();
         };
     },
 
@@ -9351,6 +9373,41 @@ const Offline = {
                 if (!kept.has(item.id)) await audioCache.delete(this.keyFor(ABS.coverUrl(item.id)));
             }
         } catch {}
+    },
+
+    // Chunked audio no downloaded item accounts for AND saved under a host
+    // other than the current server's. The host test keeps a download in
+    // progress (chunks written before its record) and this server's own
+    // sliding-window caches out of it.
+    async leftoverAudio() {
+        const view = (await this._swCoverageView()) || (await this._pageCoverageView());
+        const here = new URL(ABS.trackUrl('x', 'y')).host;
+        const mine = new Set();
+        for (const item of await this.listDownloaded()) {
+            for (const t of item.media?.audioFiles || []) mine.add(this.keyFor(ABS.trackUrl(item.id, t.ino)));
+        }
+        const keys = [];
+        let bytes = 0;
+        const all = new Set([...view.chunks.keys(), ...view.metas.keys()]);
+        for (const k of all) {
+            if (mine.has(k)) continue;
+            let host = '';
+            try { host = new URL(k).host; } catch { continue; }
+            if (host === here) continue;
+            keys.push(k);
+            bytes += (view.chunks.get(k)?.size || 0) * (view.metas.get(k)?.chunkSize || this.CHUNK_SIZE);
+        }
+        return { keys, bytes, chunks: view.chunks };
+    },
+
+    async deleteLeftoverAudio(left) {
+        const cache = await caches.open(this.AUDIO_CACHE);
+        for (const k of left.keys) {
+            for (const n of left.chunks.get(k) || []) await cache.delete(this.chunkKey(k, n));
+            await cache.delete(this.chunkMetaKey(k));
+            await cache.delete(this.completeKey(k));
+        }
+        this.notifySwCacheChanged();
     },
 
     async listDownloaded() {
