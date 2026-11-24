@@ -55,53 +55,61 @@ self.addEventListener('activate', e => {
                 if (new URL(req.url).pathname.startsWith('/api/')) await shell.delete(req);
             }
         } catch (e) { /* best effort */ }
-        // Purge legacy whole-file entries larger than 50 MB. They OOM the tab
-        // when the SW tries to slice them in serveCached.
-        try {
-            const audio = await caches.open(OFFLINE_AUDIO_CACHE);
-            const audioKeys = await audio.keys();
-            for (const req of audioKeys) {
-                if (req.url.includes('__chunk=') || req.url.includes('__meta=') || req.url.includes('__complete=')) continue;
-                const r = await audio.match(req);
-                if (!r) continue;
-                const len = parseInt(r.headers.get('content-length') || '0', 10);
-                if (len > 50 * 1024 * 1024) await audio.delete(req);
-            }
-        } catch {}
-        // Migrate: ensure the __complete sentinel matches actual chunk
-        // presence for every chunked entry. The fetch handler intercepts
-        // ONLY entries with this sentinel — partial caches need to fall
-        // through to native fetch to avoid iOS WebKit's SW-media-fetch
-        // latency penalty. Without this, books fully downloaded before
-        // the sentinel was introduced would never be intercepted.
-        try {
-            const audio = await caches.open(OFFLINE_AUDIO_CACHE);
-            const audioKeys = await audio.keys();
-            const allUrls = new Set(audioKeys.map(r => r.url));
-            for (const req of audioKeys) {
-                if (!/[?&]__meta=1$/.test(req.url)) continue;
-                const baseKey = req.url.replace(/[?&]__meta=1$/, '');
-                const completeUrl = baseKey + (baseKey.includes('?') ? '&' : '?') + '__complete=1';
-                let meta;
-                try { meta = await (await audio.match(req)).json(); } catch { continue; }
-                let allPresent = true;
-                for (let i = 0; i < (meta.numChunks || 0); i++) {
-                    const chunkUrl = baseKey + (baseKey.includes('?') ? '&' : '?') + '__chunk=' + i;
-                    if (!allUrls.has(chunkUrl)) { allPresent = false; break; }
-                }
-                if (allPresent && !allUrls.has(completeUrl)) {
-                    await audio.put(completeUrl, new Response(''));
-                } else if (!allPresent && allUrls.has(completeUrl)) {
-                    await audio.delete(completeUrl);
-                }
-            }
-        } catch {}
-        // Eagerly populate cachedKeys so the fetch handler can decide
-        // synchronously whether to intercept cross-origin requests.
-        await loadCachedKeys();
         await self.clients.claim();
+        // Everything that walks the audio cache runs AFTER activation, not
+        // inside it. iOS holds every fetch of a controlled page until
+        // activate settles, and on a 2.3 GB cache the walks below (two
+        // passes + a key load) kept the app from loading at all after the
+        // 2026-11-25 update: no /api/libraries answer in 22 s. Both
+        // migrations are idempotent, so a worker killed half way just
+        // finishes them on the next update.
+        migrateAudioCache().catch(() => {}).finally(() => ensureKeys());
     })());
 });
+
+async function migrateAudioCache() {
+    // Purge legacy whole-file entries larger than 50 MB. They OOM the tab
+    // when the SW tries to slice them in serveCached.
+    try {
+        const audio = await caches.open(OFFLINE_AUDIO_CACHE);
+        const audioKeys = await audio.keys();
+        for (const req of audioKeys) {
+            if (req.url.includes('__chunk=') || req.url.includes('__meta=') || req.url.includes('__complete=')) continue;
+            const r = await audio.match(req);
+            if (!r) continue;
+            const len = parseInt(r.headers.get('content-length') || '0', 10);
+            if (len > 50 * 1024 * 1024) await audio.delete(req);
+        }
+    } catch {}
+    // Migrate: ensure the __complete sentinel matches actual chunk
+    // presence for every chunked entry. The fetch handler intercepts
+    // ONLY entries with this sentinel — partial caches need to fall
+    // through to native fetch to avoid iOS WebKit's SW-media-fetch
+    // latency penalty. Without this, books fully downloaded before
+    // the sentinel was introduced would never be intercepted.
+    try {
+        const audio = await caches.open(OFFLINE_AUDIO_CACHE);
+        const audioKeys = await audio.keys();
+        const allUrls = new Set(audioKeys.map(r => r.url));
+        for (const req of audioKeys) {
+            if (!/[?&]__meta=1$/.test(req.url)) continue;
+            const baseKey = req.url.replace(/[?&]__meta=1$/, '');
+            const completeUrl = baseKey + (baseKey.includes('?') ? '&' : '?') + '__complete=1';
+            let meta;
+            try { meta = await (await audio.match(req)).json(); } catch { continue; }
+            let allPresent = true;
+            for (let i = 0; i < (meta.numChunks || 0); i++) {
+                const chunkUrl = baseKey + (baseKey.includes('?') ? '&' : '?') + '__chunk=' + i;
+                if (!allUrls.has(chunkUrl)) { allPresent = false; break; }
+            }
+            if (allPresent && !allUrls.has(completeUrl)) {
+                await audio.put(completeUrl, new Response(''));
+            } else if (!allPresent && allUrls.has(completeUrl)) {
+                await audio.delete(completeUrl);
+            }
+        }
+    } catch {}
+}
 
 self.addEventListener('message', e => {
     if (e.data?.type === 'SKIP_WAITING') self.skipWaiting();
