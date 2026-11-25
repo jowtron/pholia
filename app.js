@@ -1458,6 +1458,7 @@ const App = {
     abbFolderId: null,
     shimCanAdd: false, // shim says the caller may add (ABB grabs; podcast subscribe on an older shim)
     shimFollows: false, // shim has personal podcast lists: follow / unfollow, hide per person
+    _debrid: 'Real-Debrid',
     shimCanSubscribe: false, // may follow podcasts: canSubscribe, else canGrab
     shimPreview: false, // shim stores a show without following it (canPreview): directory results open
     shimListenAnalyse: false, // shim analyses an episode at once for listening (canListenAnalyse): "Play without ads"
@@ -1483,11 +1484,14 @@ const App = {
             this.shimCanSubscribe = this.shimFollows ? s.canSubscribe : this.shimCanAdd;
             this.shimPreview = !!s && s.canPreview === true;
             this.shimListenAnalyse = !!s && s.canListenAnalyse === true;
+            // The torrent service grabs go through (TorBox or Real-Debrid,
+            // ABS_shim 2026-11-26), named in every grab message.
+            this._debrid = s?.debridName || 'Real-Debrid';
             // A podcast library has no Add screen: its search finds podcasts
             // (_dirSearchOn). The header icon is AudioBookBay's alone.
             if (s && this.currentMediaType === 'podcast') {
                 ok = false;
-            } else if (s && s.rdTokenSet && s.canGrab !== false) {
+            } else if (s && (s.debrid || s.rdTokenSet) && s.canGrab !== false) {
                 const st = await ABS.request('/api/admin/storage/status');
                 const folders = (st?.folders || []).filter(f => f.provider === 'pcloud_oauth');
                 const mine = folders.find(f => f.libraryId === this.currentLibraryId) || folders[0];
@@ -1558,7 +1562,7 @@ const App = {
                 '</div>' +
                 '<div id="abb-active" class="abb-active hidden"><div class="section-title">In progress</div><div id="abb-rd-progress" class="abb-progress"></div></div>' +
                 '<div id="abb-results"></div>' +
-                '<details id="abb-rd" class="abb-rd"><summary>On Real-Debrid <span id="abb-rd-count" class="text-muted"></span></summary>' +
+                '<details id="abb-rd" class="abb-rd"><summary>On ' + this._debrid + ' <span id="abb-rd-count" class="text-muted"></span></summary>' +
                   '<p class="text-muted abb-pick-hint">Grabs run in this tab. If the app was closed mid-grab the torrents are still here — Finish collects a completed one, Watch resumes waiting, Delete removes it.</p>' +
                   '<div id="abb-rd-list" class="text-muted">Not loaded.</div>' +
                   '<button class="text-btn" id="abb-rd-refresh">Refresh</button>' +
@@ -1754,7 +1758,7 @@ const App = {
         const groups = this._abbRdShowAll ? all : all.filter(g => !this._abbLooksVideo(g.filename));
         count.textContent = all.length ? `(${groups.length}${hidden.length ? ' + ' + hidden.length + ' video' : ''})` : '';
         box.innerHTML = '';
-        if (!groups.length) box.innerHTML = `<div class="text-muted">${all.length ? 'Nothing audiobook-looking on Real-Debrid.' : 'Nothing on Real-Debrid.'}</div>`;
+        if (!groups.length) box.innerHTML = `<div class="text-muted">${all.length ? 'Nothing audiobook-looking on ' + this._debrid + '.' : 'Nothing on ' + this._debrid + '.'}</div>`;
         if (hidden.length || this._abbRdShowAll) {
             const t = document.createElement('button');
             t.className = 'text-btn';
@@ -1815,7 +1819,7 @@ const App = {
         const active = this._abbRoot.querySelector('#abb-active');
         active.classList.remove('hidden');
         active.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-        const row = this._abbRow(listEl, g.filename, 'Checking on Real-Debrid…');
+        const row = this._abbRow(listEl, g.filename, 'Checking on ' + this._debrid + '…');
         try {
             const infos = [];
             for (const t of g.live) {
@@ -1847,7 +1851,7 @@ const App = {
             }
             const missing = chosen.filter(f => !byFile.has(f.id));
             if (missing.length) {
-                row.setStatus(`Adding ${missing.length} torrent(s) to Real-Debrid…`);
+                row.setStatus(`Adding ${missing.length} torrent(s) to ${this._debrid}…`);
                 const magnet = 'magnet:?xt=urn:btih:' + hash + '&dn=' + encodeURIComponent(g.filename);
                 for (const f of missing) {
                     try { const a = await this._abbAddPaced(magnet, f.id, row, `Adding ${missing.indexOf(f) + 1} / ${missing.length}`); byFile.set(f.id, a.id); }
@@ -1877,7 +1881,7 @@ const App = {
             for (const p of plan) { const tid = byFile.get(p.id); if (!byTorrent.has(tid)) byTorrent.set(tid, p.dest); }
             const torrents = [...byTorrent].map(([id, dest]) => ({ id, dest }));
             if (!torrents.length) throw new Error('Nothing to track');
-            row.setStatus(`${torrents.length} torrent(s) — waiting for Real-Debrid`);
+            row.setStatus(`${torrents.length} torrent(s) — waiting for ${this._debrid}`);
             await this.abbTrackTorrents(torrents, this.abbFolderId, listEl, row, { hash: groupHash, title: groupName });
         } catch (e) {
             row.fail(e.message || String(e));
@@ -2028,7 +2032,7 @@ const App = {
                 const wait = rate ? this._RD_RETRY_WAITS_MS[attempt] : null;
                 if (wait == null) throw e;
                 for (let left = Math.round(wait / 1000); left > 0; left--) {
-                    row.setStatus(`${label} — Real-Debrid is rate-limiting, retrying in ${left}s`);
+                    row.setStatus(`${label} — ${this._debrid} is rate-limiting, retrying in ${left}s`);
                     await this._sleep(1000);
                 }
             }
@@ -2044,10 +2048,10 @@ const App = {
 
     async abbGrab(res, listEl) {
         const folderId = this.abbFolderId;
-        const row = this._abbRow(listEl, 'Real-Debrid', res.magnet ? 'Reading magnet…' : 'Resolving on AudioBookBay…');
+        const row = this._abbRow(listEl, this._debrid, res.magnet ? 'Reading magnet…' : 'Resolving on AudioBookBay…');
         try {
             const m = await this._shimCall('/api/admin/abb/resolve', { method: 'POST', body: JSON.stringify(res.magnet ? { magnet: res.magnet } : { url: res.url }) });
-            row.setStatus('Asking Real-Debrid what’s in it…');
+            row.setStatus('Asking ' + this._debrid + ' what’s in it…');
             const peek = await this._shimCall('/api/admin/abb/torrents', { method: 'POST', body: JSON.stringify({ magnet: m.magnet, inspect: true }) });
             const candidates = (peek.files || []).filter(f => f.isAudio || f.isArchive);
             if (!candidates.length) throw new Error('Torrent contains no audio files');
@@ -2080,14 +2084,14 @@ const App = {
                 }
             }
             const plan = this.abbPlanDest(dest, chosen);
-            row.setStatus(`Adding ${plan.length} torrent(s) to Real-Debrid…`);
+            row.setStatus(`Adding ${plan.length} torrent(s) to ${this._debrid}…`);
             // A manual Retry is still offered once the automatic ladder above
             // gives up, since by then something other than pacing is wrong.
             const torrents = [];
             const retryAdd = (p) => {
                 const r = this._abbRow(listEl, p.dest, '');
                 const retry = () => {
-                    r.setStatus('Adding to Real-Debrid…');
+                    r.setStatus('Adding to ' + this._debrid + '…');
                     this._abbAddPaced(m.magnet, p.id, r, 'Adding')
                         .then((a) => { removeBtn(); return this.abbTrackTorrents([{ id: a.id, dest: p.dest }], folderId, listEl, r, { hash, title: m.title }); })
                         .then((ok) => { this.abbLoadRdList(); if (ok) this._invalidateTabCache(); })
@@ -2109,8 +2113,8 @@ const App = {
                 row.setStatus(`Added ${torrents.length} / ${plan.length} torrent(s)…`);
                 if (i + 1 < plan.length) await this._sleep(this._RD_ADD_PACE_MS);
             }
-            if (!torrents.length) throw new Error('Nothing could be added to Real-Debrid');
-            row.setStatus(`${torrents.length} torrent(s) — waiting for Real-Debrid`);
+            if (!torrents.length) throw new Error('Nothing could be added to ' + this._debrid + '');
+            row.setStatus(`${torrents.length} torrent(s) — waiting for ${this._debrid}`);
             return await this.abbTrackTorrents(torrents, folderId, listEl, row, { hash, title: m.title });
         } catch (e) {
             row.fail(e.message || String(e));
@@ -2142,7 +2146,7 @@ const App = {
                     for (const [, p] of pending) p.row.fail('Cancelled');
                     pending.clear();
                     removeCancel();
-                    row.fail('Cancelled — torrents left on Real-Debrid (resume from the On Real-Debrid panel)');
+                    row.fail('Cancelled — torrents left on ' + this._debrid + ' (resume from the On ' + this._debrid + ' panel)');
                     return false;
                 }
                 for (const [id, p] of [...pending]) {
@@ -2152,17 +2156,17 @@ const App = {
                     if (st.error && !st.downloads) { p.row.fail(st.error); pending.delete(id); continue; }
                     if (st.progress !== p.lastProgress) { p.lastProgress = st.progress; p.lastChangeAt = Date.now(); }
                     else if (st.status !== 'downloaded' && Date.now() - p.lastChangeAt > STALL_MS) {
-                        p.row.fail(`No progress for 20 min (${st.seeders || 0} seeders) — gave up; it's still on Real-Debrid to retry later`);
+                        p.row.fail(`No progress for 20 min (${st.seeders || 0} seeders) — gave up; it's still on ${this._debrid} to retry later`);
                         pending.delete(id); continue;
                     }
                     if (st.status === 'downloaded' && st.downloads) {
                         pending.delete(id);
-                        p.row.complete('Ready on Real-Debrid');
+                        p.row.complete('Ready on ' + this._debrid + '');
                         fetches.push((async () => {
                             for (const d of st.downloads) {
                                 if (!d.isAudio && !d.isArchive) continue;
                                 if (d.ext === 'rar' || d.ext === '7z') {
-                                    this._abbRow(listEl, d.filename, '').fail(`Real-Debrid produced a ${d.ext}; extract it via the shim's browser upload`);
+                                    this._abbRow(listEl, d.filename, '').fail(`${this._debrid} produced a ${d.ext}; extract it via the shim's browser upload`);
                                     continue;
                                 }
                                 const registered = await this.abbFetchToPcloud(folderId, d.download, p.dest, listEl, source);
